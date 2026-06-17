@@ -46,6 +46,7 @@
     "test:coverage": "vitest run --project unit --project integration --coverage"
   },
   "dependencies": {
+    "@moku-labs/common": "0.1.1",
     "@moku-labs/core": "0.1.4"
   },
   "devDependencies": {

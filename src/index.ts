@@ -11,6 +11,11 @@ const framework = createCore(coreConfig, {
 // ─── Plugins + Types ──────────────────────────────────────────
 export * from "./plugins";
 
+// ─── Core plugins (log + env from @moku-labs/common; stage is worker-local) ───
+export { envPlugin, logPlugin } from "@moku-labs/common";
+export { stagePlugin } from "./plugins/stage";
+export type { StageApi } from "./plugins/stage";
+
 // ─── Framework API + helpers ─────────────────────────────────
 export const { createApp, createPlugin } = framework;
 export { endpoint } from "./plugins/server/helpers";

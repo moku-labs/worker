@@ -1,9 +1,9 @@
 /**
  * @file Framework configuration — Config + Events types, core plugin registration.
  */
+import { envPlugin, logPlugin } from "@moku-labs/common";
 import { createCoreConfig } from "@moku-labs/core";
-import { envPlugin } from "./plugins/env";
-import { logPlugin } from "./plugins/log";
+import { stagePlugin } from "./plugins/stage";
 
 /** Per-request Cloudflare bindings object (env). Framework-level shared type. */
 export type WorkerEnv = Record<string, unknown>;
@@ -33,7 +33,10 @@ const defaultConfig: WorkerConfig = {
 export const coreConfig = createCoreConfig<
   WorkerConfig,
   WorkerEvents,
-  [typeof logPlugin, typeof envPlugin]
->("moku-worker", { config: defaultConfig, plugins: [logPlugin, envPlugin] });
+  [typeof logPlugin, typeof envPlugin, typeof stagePlugin]
+>("moku-worker", {
+  config: defaultConfig,
+  plugins: [logPlugin, envPlugin, stagePlugin]
+});
 
 export const { createPlugin, createCore } = coreConfig;

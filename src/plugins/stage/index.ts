@@ -1,13 +1,16 @@
 /**
- * env — Core Plugin (Nano tier).
+ * stage — Core Plugin (Nano tier).
  *
- * Stage / dev-mode detection. Flat-injected as `ctx.env` on every regular
- * plugin's context (spec/02 §6). No state, no events, no depends, no lifecycle.
+ * Deployment-stage / dev-mode detection. Flat-injected as `ctx.stage` on every
+ * regular plugin's context (spec/02 §6). No state, no events, no depends, no lifecycle.
+ *
+ * Worker-specific: `@moku-labs/common`'s `env` plugin covers env-VARIABLE access
+ * (`get`/`require`/`has`), NOT deployment-stage detection — so the worker keeps
+ * stage detection as its own small core plugin rather than reimplementing log/env.
  *
  * @see README.md
  */
-// createCorePlugin is framework-agnostic — imported directly from @moku-labs/core,
-// NOT routed through ../../config (spec/03 §5 imports it from @moku-labs/core).
+// createCorePlugin is framework-agnostic — imported directly from @moku-labs/core.
 import { createCorePlugin } from "@moku-labs/core";
 
 /** This plugin's own config type (Nano tier — declared inline, no types.ts). */
@@ -22,15 +25,15 @@ type Config = {
   stage: "production" | "development" | "test";
 };
 
-/** The ctx.env accessor surface injected on every regular plugin's context. */
-export type EnvApi = {
+/** The ctx.stage accessor surface injected on every regular plugin's context. */
+export type StageApi = {
   /**
    * Whether this Worker runs in the development stage.
    *
    * @returns True iff `stage === "development"`.
    * @example
    * ```typescript
-   * if (ctx.env.isDev()) return Response.json({ stack: err.stack });
+   * if (ctx.stage.isDev()) return Response.json({ stack: err.stack });
    * ```
    */
   isDev(): boolean;
@@ -41,7 +44,7 @@ export type EnvApi = {
    * @returns True iff `stage === "production"`.
    * @example
    * ```typescript
-   * const cc = ctx.env.isProduction() ? "public, max-age=31536000" : "no-store";
+   * const cc = ctx.stage.isProduction() ? "public, max-age=31536000" : "no-store";
    * ```
    */
   isProduction(): boolean;
@@ -52,10 +55,10 @@ export type EnvApi = {
    * @returns The resolved stage value.
    * @example
    * ```typescript
-   * ctx.log.info(`running in ${ctx.env.stage()} mode`);
+   * ctx.log.info("startup", { stage: ctx.stage.current() });
    * ```
    */
-  stage(): "production" | "development" | "test";
+  current(): "production" | "development" | "test";
 };
 
 /**
@@ -68,9 +71,9 @@ const defaultConfig: Config = {
 };
 
 /**
- * env core plugin — stage / dev-mode detection, flat-injected on every regular
- * plugin's context as `ctx.env` (spec/02 §6). No state, no events, no depends,
- * no lifecycle hooks.
+ * stage core plugin — deployment-stage / dev-mode detection, flat-injected on
+ * every regular plugin's context as `ctx.stage` (spec/02 §6). No state, no
+ * events, no depends, no lifecycle hooks.
  *
  * @see README.md
  * @example
@@ -78,22 +81,22 @@ const defaultConfig: Config = {
  * // Inside any regular plugin's api factory:
  * api: (ctx) => ({
  *   errorBody: (e: Error) =>
- *     ctx.env.isDev() ? e.stack ?? e.message : "Internal Error",
+ *     ctx.stage.isDev() ? e.stack ?? e.message : "Internal Error",
  * })
  * ```
  */
-export const envPlugin = createCorePlugin("env", {
+export const stagePlugin = createCorePlugin("stage", {
   config: defaultConfig,
   /**
-   * Builds the env accessor surface from the resolved stage.
+   * Builds the stage accessor surface from the resolved stage.
    *
    * @param ctx - Core plugin context (spec/02 §6 — `{ config, state }` only;
    *   no `global`, `emit`, or `require`). `state` is unused by this plugin.
    * @param ctx.config - The resolved plugin config containing the deployment stage.
-   * @returns The `ctx.env` API: `isDev`, `isProduction`, `stage`.
+   * @returns The `ctx.stage` API: `isDev`, `isProduction`, `current`.
    * @example
    * ```typescript
-   * const api = envPlugin.spec.api({ config: { stage: "development" }, state: {} });
+   * const api = stagePlugin.spec.api({ config: { stage: "development" }, state: {} });
    * api.isDev(); // true
    * ```
    */
@@ -104,7 +107,7 @@ export const envPlugin = createCorePlugin("env", {
      * @returns True iff `stage === "development"`.
      * @example
      * ```typescript
-     * if (ctx.env.isDev()) return Response.json({ stack: err.stack });
+     * if (ctx.stage.isDev()) return Response.json({ stack: err.stack });
      * ```
      */
     isDev: (): boolean => config.stage === "development",
@@ -115,7 +118,7 @@ export const envPlugin = createCorePlugin("env", {
      * @returns True iff `stage === "production"`.
      * @example
      * ```typescript
-     * const cc = ctx.env.isProduction() ? "public, max-age=31536000" : "no-store";
+     * const cc = ctx.stage.isProduction() ? "public, max-age=31536000" : "no-store";
      * ```
      */
     isProduction: (): boolean => config.stage === "production",
@@ -126,9 +129,9 @@ export const envPlugin = createCorePlugin("env", {
      * @returns The resolved stage.
      * @example
      * ```typescript
-     * ctx.log.info(`running in ${ctx.env.stage()} mode`);
+     * ctx.log.info("startup", { stage: ctx.stage.current() });
      * ```
      */
-    stage: (): "production" | "development" | "test" => config.stage
+    current: (): "production" | "development" | "test" => config.stage
   })
 });

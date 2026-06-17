@@ -1,0 +1,72 @@
+{
+  "name": "@moku-labs/worker",
+  "version": "0.1.0",
+  "description": "Cloudflare Worker framework for Moku — Durable Objects, Queues, R2, D1, and KV plugins that compose with Moku Web.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./cli": {
+      "import": {
+        "types": "./dist/cli.d.mts",
+        "default": "./dist/cli.mjs"
+      },
+      "require": {
+        "types": "./dist/cli.d.cts",
+        "default": "./dist/cli.cjs"
+      }
+    }
+  },
+  "files": ["dist", "LICENSE", "README.md"],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=24.0.0",
+    "bun": ">=1.3.14"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "validate": "publint && attw --pack . --profile node16",
+    "lint": "biome check . && eslint .",
+    "lint:fix": "biome check --write . && eslint --fix .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:coverage": "vitest run --project unit --project integration --coverage"
+  },
+  "dependencies": {
+    "@moku-labs/core": "0.1.4"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.3",
+    "@arethetypeswrong/core": "0.18.3",
+    "@biomejs/biome": "2.4.16",
+    "@cloudflare/workers-types": "4.20260617.1",
+    "@types/bun": "1.3.14",
+    "@vitest/coverage-istanbul": "4.0.18",
+    "eslint": "9.39.3",
+    "eslint-config-biome": "2.1.3",
+    "eslint-plugin-jsdoc": "62.6.0",
+    "eslint-plugin-sonarjs": "4.0.0",
+    "eslint-plugin-unicorn": "63.0.0",
+    "globals": "17.4.0",
+    "jiti": "2.6.1",
+    "lefthook": "2.1.1",
+    "publint": "0.3.21",
+    "tsdown": "0.22.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.58.0",
+    "vitest": "4.0.18"
+  }
+}

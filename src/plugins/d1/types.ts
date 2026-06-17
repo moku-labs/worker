@@ -3,6 +3,7 @@
  */
 import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEnv, WorkerEvents } from "../../config";
+import type { BindingsApi, bindingsPlugin } from "../bindings";
 
 /**
  * d1 plugin configuration.
@@ -88,5 +89,16 @@ export type Api = {
   deployManifest: () => DeployManifest;
 };
 
-/** Internal context type — own config first, no state, no d1-local events. */
-export type D1Ctx = PluginCtx<Config, Record<string, never>, WorkerEvents>;
+/**
+ * Internal context type — own config first, no state, no d1-local events.
+ * Intersected with a narrow `require` typed to the one dependency d1 resolves.
+ */
+export type D1Ctx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
+  /**
+   * Resolve a dependency plugin's api. d1 only ever resolves `bindingsPlugin`.
+   *
+   * @param plugin - The bindingsPlugin instance.
+   * @returns The resolved bindings api.
+   */
+  require(plugin: typeof bindingsPlugin): BindingsApi;
+};

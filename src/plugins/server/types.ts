@@ -68,18 +68,18 @@ export type ServerState = {
   match(method: string, path: string): MatchResult | null;
 };
 
-/** Any plugin instance — mirrors core's RequireFunction constraint (require/has are not on PluginCtx). */
-type AnyPlugin = PluginInstance<
-  string,
-  unknown,
-  unknown,
-  Record<string, unknown>,
-  Record<string, unknown>
->;
+/** Any plugin instance — mirrors core's un-exported RequireFunction constraint. */
+// biome-ignore lint/suspicious/noExplicitAny: mirrors core's unexported RequireFunction constraint; PluginInstance type-args must be `any` (not `unknown`) for variance
+type AnyPlugin = PluginInstance<string, any, any, any, any>;
 
-/** Extract a plugin instance's API type. */
-type ApiOf<P> =
-  P extends PluginInstance<string, unknown, unknown, infer A, Record<string, unknown>> ? A : never;
+/**
+ * Extract a plugin instance's API type. Extracts via the `_phantom.api` slot —
+ * identical to core's un-exported `ExtractPluginApi`, so this `RequireFn` is
+ * assignable FROM core's real `ctx.require` (whose return is `ExtractPluginApi<P>`).
+ * Extracting via the `PluginInstance<…, infer A, …>` pattern would NOT unify with
+ * `ExtractPluginApi<P>` for an unresolved generic `P`.
+ */
+type ApiOf<P> = P extends { readonly _phantom: { readonly api: infer A } } ? A : never;
 
 /** Cross-plugin reach used inside handlers: require(plugin) returns that plugin's API. Mirrors ctx.require. */
 export type RequireFn = <P extends AnyPlugin>(plugin: P) => ApiOf<P>;
@@ -108,8 +108,13 @@ export type RequestContext = {
 /** Per-plugin event map merged into the server context. */
 export type ServerEvents = { "server:matched": { path: string; method: string } };
 
-/** Full server plugin context (own config + state + merged events). */
-export type ServerCtx = PluginCtx<ServerConfig, ServerState, WorkerEvents & ServerEvents>;
+/** Full server plugin context (own config + state + merged events + cross-plugin reach). */
+export type ServerCtx = PluginCtx<ServerConfig, ServerState, WorkerEvents & ServerEvents> & {
+  /** Cross-plugin require threaded into each RequestContext. */
+  require: RequireFn;
+  /** Presence check for an optional plugin. */
+  has: (name: string) => boolean;
+};
 
 /** Public api surface of the server plugin. */
 export type Api = {

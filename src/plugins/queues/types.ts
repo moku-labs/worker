@@ -3,6 +3,7 @@
  */
 import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEnv, WorkerEvents } from "../../config";
+import type { BindingsApi, bindingsPlugin } from "../bindings";
 
 /**
  * queues plugin configuration. Flat; complete defaults so omission never yields undefined.
@@ -69,5 +70,19 @@ export type Api = {
   deployManifest(): DeployManifest;
 };
 
-/** Internal context type — own config first, no state, merged queue events. */
-export type Ctx = PluginCtx<Config, Record<string, never>, WorkerEvents & QueueEvents>;
+/**
+ * Internal context type — own config first, no state, merged queue events.
+ *
+ * `PluginCtx` exposes only `config`/`state`/`emit`; `require` is composed in here
+ * (core's "advanced composition" note), typed to the one dependency queues resolves —
+ * `require(bindingsPlugin)` → `BindingsApi`. Core does not export `RequireFunction`.
+ */
+export type Ctx = PluginCtx<Config, Record<string, never>, WorkerEvents & QueueEvents> & {
+  /**
+   * Resolve a dependency plugin's api. queues only ever resolves `bindingsPlugin`.
+   *
+   * @param plugin - The bindings plugin instance.
+   * @returns The resolved bindings api.
+   */
+  require(plugin: typeof bindingsPlugin): BindingsApi;
+};

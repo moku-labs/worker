@@ -3,6 +3,7 @@
  */
 import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEnv, WorkerEvents } from "../../config";
+import type { BindingsApi, bindingsPlugin } from "../bindings";
 
 export type { StorageProvider } from "./providers/types";
 
@@ -78,5 +79,18 @@ export type StorageApi = {
   deployManifest(): StorageManifest;
 };
 
-/** Internal context type — own config first, no state, no storage events. */
-export type StorageCtx = PluginCtx<StorageConfig, Record<string, never>, WorkerEvents>;
+/**
+ * Internal context type — own config first, no state, no storage events.
+ * Intersected with a narrow `require` typed to the one dependency storage
+ * resolves — mirrors the kv/api.ts pattern (PluginCtx has no `require` by
+ * default; core does not export a generic RequireFunction).
+ */
+export type StorageCtx = PluginCtx<StorageConfig, Record<string, never>, WorkerEvents> & {
+  /**
+   * Resolve a dependency plugin's api. storage only ever resolves bindingsPlugin.
+   *
+   * @param plugin - The bindingsPlugin instance.
+   * @returns The resolved bindings api.
+   */
+  require(plugin: typeof bindingsPlugin): BindingsApi;
+};

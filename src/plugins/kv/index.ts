@@ -1,64 +1,27 @@
 /**
- * @file kv — Micro-tier plugin skeleton. Thin wrapper over a Cloudflare KV namespace.
+ * kv plugin — Micro tier.
+ *
+ * Thin wrapper over a Cloudflare KV namespace. Resolves the namespace per request
+ * via the bindings plugin; never stores env (design §1a / SB4).
+ * No state, no events, no hooks, no onInit/onStart/onStop (request-scoped).
+ *
  * @see README.md
  */
-import type { PluginCtx } from "@moku-labs/core";
-import type { WorkerEnv as WorkerEnvironment, WorkerEvents } from "../../config";
 import { createPlugin } from "../../config";
 import { bindingsPlugin } from "../bindings";
+import { createKvApi } from "./api";
 
-/**
- * Configuration for the kv plugin. Flat; complete default so omission never yields undefined.
- */
-type Config = {
-  /** KV namespace binding name resolved off the request env. Default "KV". */
-  binding: string;
-};
+export type { KvApi } from "./api";
 
-/** The app.kv surface (env-first key/value access + deploy metadata). */
-export type KvApi = {
-  /** Read a value by key; null when absent. */
-  get(env: WorkerEnvironment, key: string): Promise<string | null>;
-  /** Write a string value, optionally with KV put options. */
-  put(
-    env: WorkerEnvironment,
-    key: string,
-    value: string,
-    opts?: KVNamespacePutOptions
-  ): Promise<void>;
-  /** Remove a key (no-op if absent). */
-  delete(env: WorkerEnvironment, key: string): Promise<void>;
-  /** List keys, optionally filtered/paginated. */
-  list(
-    env: WorkerEnvironment,
-    opts?: KVNamespaceListOptions
-  ): Promise<KVNamespaceListResult<unknown, string>>;
-  /** This plugin's own deploy metadata, read by the deploy plugin. */
-  deployManifest(): { kind: "kv"; binding: string };
-};
-
-const defaultConfig: Config = {
-  binding: "KV"
-};
-
-/** THIS plugin's own config first; empty state = Record<string, never>. */
-type Context = PluginCtx<Config, Record<string, never>, WorkerEvents>;
-
-/**
- * Builds the app.kv.* api. Resolves the KV namespace off the request env per call.
- *
- * @param _ctx - The kv plugin context (unused in skeleton).
- * @example
- * ```ts
- * const api = createKvApi(ctx);
- * ```
- */
-const createKvApi = (_ctx: Context): KvApi => {
-  throw new Error("not implemented");
-};
+/** Typed default — no inline `as` cast in `config` (R6 / spec/11 §Part 2). */
+const defaultConfig = { binding: "KV" };
 
 /**
  * Micro tier — thin env-first wrapper over a Cloudflare KV namespace.
+ *
+ * Resolves the KV namespace per request via `ctx.require(bindingsPlugin)`;
+ * never stores env in state (design §1a / SB4). No lifecycle hooks —
+ * request-scoped; nothing to open or close.
  *
  * @see README.md
  */

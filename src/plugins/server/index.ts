@@ -1,40 +1,50 @@
 /**
- * @file server — Standard tier plugin skeleton. HTTP routing + request/scheduled dispatch.
+ * server — Standard tier plugin.
+ *
+ * HTTP routing + request/scheduled dispatch + the Worker-entry surface for
+ * `@moku-labs/worker`. Compiles a declarative `Endpoint` list into a
+ * specificity-sorted matcher table (`state.match`) with method `ALL` support
+ * and `{name}`/`{name?}` path params. Emits global `request:start`/`request:end`
+ * and per-plugin `server:matched`. Re-exports the pure `endpoint()` builder.
+ *
+ * `depends: [bindingsPlugin]` ensures bindings is resolved first; endpoint
+ * handlers can then cross-reach other plugins via `ctx.require` threaded
+ * through each `RequestContext` (spec/08 §7).
+ *
  * @see README.md
  */
 import { createPlugin } from "../../config";
 import { bindingsPlugin } from "../bindings";
 import { createServerApi } from "./api";
 import { endpoint } from "./helpers";
-import { createServerState } from "./state";
+import { compileServerState, createServerState } from "./state";
 import type { ServerConfig, ServerEvents } from "./types";
 
+/** Typed config default — no inline `as` cast (R6; spec/11 §Part 2). */
 const defaultConfig: ServerConfig = { endpoints: [] };
 
 /**
- * Standard tier — HTTP routing + request/scheduled dispatch over a compiled endpoint table.
- *
- * `events` is declared first and via `register.map<ServerEvents>` so the plugin's own events
- * infer into the factory context; the api/createState/onInit wiring is therefore arrow-wrapped
- * (contextually typed) rather than a bare reference. See README.md.
+ * Standard tier — HTTP routing + request/scheduled dispatch over a compiled
+ * endpoint table. Emits `server:matched` (per-plugin) plus global
+ * `request:start` / `request:end` declared in `WorkerEvents`.
  *
  * @see README.md
  */
 export const serverPlugin = createPlugin("server", {
+  // events FIRST so ServerEvents infers into ctx for type-safe emit (spec/15 §5)
   // eslint-disable-next-line jsdoc/require-jsdoc -- structural event-register callback
   events: register =>
-    register.map<ServerEvents>({
-      "server:matched": "An endpoint matched a request"
-    }),
+    register.map<ServerEvents>({ "server:matched": "An endpoint matched a request" }),
   depends: [bindingsPlugin] as const,
   config: defaultConfig,
-  // eslint-disable-next-line jsdoc/require-jsdoc -- structural state wiring (arg transform)
+  // eslint-disable-next-line jsdoc/require-jsdoc -- structural state wiring
   createState: ({ config }) => createServerState(config.endpoints),
   // eslint-disable-next-line jsdoc/require-jsdoc -- structural api wiring (contextual typing)
   api: ctx => createServerApi(ctx),
-  // eslint-disable-next-line jsdoc/require-jsdoc -- empty onInit; endpoint table compiled at build
-  onInit: _ctx => {
-    // Compiled at build — sorts/validates the endpoint table.
+  // onInit: one-time sort + validation (justified; compileServerState does the work)
+  // eslint-disable-next-line jsdoc/require-jsdoc -- structural wiring; logic in state.ts
+  onInit: ctx => {
+    compileServerState(ctx.state);
   },
   helpers: { endpoint }
 });

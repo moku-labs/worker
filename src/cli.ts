@@ -4,3 +4,4 @@
 
 export { cliPlugin } from "./plugins/cli";
 export { deployPlugin } from "./plugins/deploy";
+export type { ExternalManifest, ResourceManifest } from "./plugins/deploy/types";

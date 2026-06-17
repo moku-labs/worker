@@ -1,14 +1,22 @@
 /**
- * @file deploy plugin — type definitions skeleton.
+ * @file deploy plugin — type definitions (Config, ResourceManifest, ExternalManifest, Ctx, Api).
  */
-import type { PluginCtx } from "@moku-labs/core";
-import type { WorkerEvents } from "../../config";
+import type { PluginCtx, PluginInstance } from "@moku-labs/core";
+
+import type { WorkerConfig, WorkerEvents } from "../../config";
 
 /** deploy plugin configuration. Flat; complete defaults so omission never yields undefined. */
 export type Config = {
-  /** Wrangler config file generated/updated and read by `wrangler deploy`. Default "wrangler.jsonc". */
+  /**
+   * Wrangler config file generated/updated and read by `wrangler deploy`. Default "wrangler.jsonc".
+   * Also the file parsed in the universal/non-moku path.
+   */
   configFile: string;
-  /** Non-interactive mode. Default false. */
+  /**
+   * CI mode. When true (or when stdout is non-TTY), the guided flow NEVER prompts.
+   * CF credentials are read from the Node env (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID).
+   * Default false.
+   */
   ci: boolean;
 };
 
@@ -20,7 +28,10 @@ export type ResourceManifest =
   | { kind: "queue"; producers: string[] }
   | { kind: "do"; bindings: Record<string, string> };
 
-/** The whole deploy manifest the pipeline consumes (assembled, or caller-supplied for the universal path). */
+/**
+ * The whole deploy manifest the pipeline consumes (assembled, or caller-supplied for the
+ * universal path).
+ */
 export type ExternalManifest = {
   /** Worker name. */
   name: string;
@@ -30,7 +41,7 @@ export type ExternalManifest = {
   resources: ResourceManifest[];
 };
 
-/** Public api surface of the deploy plugin. */
+/** Public api surface of the deploy plugin, mounted at app.deploy.*. */
 export type Api = {
   /**
    * Run the full deploy pipeline (detect -> provision -> config -> upload -> deploy).
@@ -40,25 +51,77 @@ export type Api = {
    * @param opts.yes - Skip confirmation prompts (non-interactive).
    * @param opts.manifest - Caller-supplied universal manifest (bypasses auto-detection).
    * @returns Resolves once the deploy completes.
+   * @example
+   * ```ts
+   * await app.deploy.run({ guided: true });
+   * await app.deploy.run({ manifest: { name: "w", compatibilityDate: "2026-06-17", resources: [] } });
+   * ```
    */
   run(opts?: { guided?: boolean; yes?: boolean; manifest?: ExternalManifest }): Promise<void>;
+
   /**
    * Start a local Cloudflare dev session via `wrangler dev`.
    *
    * @param opts - Optional port override.
    * @param opts.port - Local dev port to bind.
    * @returns Resolves when the dev session ends.
+   * @example
+   * ```ts
+   * await app.deploy.dev({ port: 8787 });
+   * ```
    */
   dev(opts?: { port?: number }): Promise<void>;
+
   /**
    * Scaffold a starting wrangler config (and CI files when ci is set).
    *
    * @param opts - Optional ci flag.
    * @param opts.ci - Also scaffold CI workflow files.
    * @returns Resolves once scaffolding is written.
+   * @example
+   * ```ts
+   * await app.deploy.init({ ci: true });
+   * ```
    */
   init(opts?: { ci?: boolean }): Promise<void>;
 };
 
-/** Internal context type — own config first, no state, global events only. */
-export type Ctx = PluginCtx<Config, Record<string, never>, WorkerEvents>;
+// ─── ctx.require composition (mirrors src/plugins/server/types.ts) ───────────────────
+// Proven assignable FROM core's real ctx.require (which returns ExtractPluginApi<P>). A single
+// generic RequireFn is used instead of per-plugin `require` OVERLOADS: TypeScript cannot check
+// core's generic `require` against a multi-overload target (the return collapses to `unknown`),
+// but it DOES unify against one generic signature. Each call site still narrows precisely —
+// ctx.require(storagePlugin) → StorageApi (with its deployManifest()).
+/** Loosest plugin-instance shape — the `require` type-parameter constraint (mirrors core's RequireFunction). */
+// biome-ignore lint/suspicious/noExplicitAny: mirrors core's unexported RequireFunction constraint; PluginInstance type-args must be `any` (not `unknown`) for variance
+type AnyPlugin = PluginInstance<string, any, any, any, any>;
+
+/**
+ * Extract a plugin instance's API type via the `_phantom.api` slot — identical to core's
+ * un-exported `ExtractPluginApi`, so `RequireFn` is assignable FROM core's real `ctx.require`.
+ */
+type ApiOf<P> = P extends { readonly _phantom: { readonly api: infer A } } ? A : never;
+
+/** Cross-plugin reach: `require(plugin)` returns that plugin's API. Mirrors core's `ctx.require`. */
+type RequireFn = <P extends AnyPlugin>(plugin: P) => ApiOf<P>;
+
+/**
+ * Internal context type — own config first, no state, global events only.
+ *
+ * `PluginCtx` surfaces only config/state/emit; the runtime fields core also injects
+ * (`global`, `require`, `has`) are composed in here via intersection. `require` uses the
+ * general `RequireFn` so every ctx.require(xPlugin) resolves to that plugin's Api.
+ */
+export type Ctx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
+  /** Frozen global framework config (name, compatibilityDate, stage). */
+  readonly global: Readonly<WorkerConfig>;
+  /** Resolve a dependency plugin's api (storage / kv / d1 / queues / durableObjects). */
+  readonly require: RequireFn;
+  /**
+   * Returns true when the named plugin was included in createApp({ plugins }).
+   *
+   * @param name - Plugin name string.
+   * @returns Whether the plugin is present.
+   */
+  has(name: string): boolean;
+};

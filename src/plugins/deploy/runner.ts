@@ -1,16 +1,83 @@
 /**
- * @file deploy plugin — wrangler subprocess wrapper skeleton (node:child_process).
+ * @file deploy plugin — wrangler subprocess wrapper (node:child_process).
+ *
+ * Spawns `wrangler` with the given args and resolves the deployed URL
+ * (extracted from stdout for `wrangler deploy`), or the full stdout for other verbs.
+ * This module is node-only; never imported by the runtime Worker bundle.
  */
+import { spawn } from "node:child_process";
 
 /**
- * Spawn `wrangler` with the given args and resolve the deployed URL (or "" for non-deploy verbs).
+ * Extract the deployed URL from `wrangler deploy` stdout.
+ * Wrangler prints a line like: "Published my-worker (1.23 sec)  https://..."
+ * or "Deployed my-worker (1.23 sec) https://...".
  *
- * @param _args - Wrangler CLI arguments.
+ * @param output - The combined stdout from wrangler deploy.
+ * @returns The deployed URL, or empty string when not found.
+ * @example
+ * ```ts
+ * extractDeployedUrl("Deployed my-worker (0.5 sec) https://my-worker.workers.dev");
+ * // "https://my-worker.workers.dev"
+ * ```
+ */
+const extractDeployedUrl = (output: string): string => {
+  // Match "https://<anything>.workers.dev" or any https URL on a line
+  const match = /https:\/\/[^\s]+\.workers\.dev[^\s]*/u.exec(output);
+  return match?.[0] ?? "";
+};
+
+/**
+ * Spawn `wrangler` with the given args and resolve the output string.
+ * For `wrangler deploy`, the resolved value is the deployed URL parsed from stdout.
+ * For all other verbs (dev, kv namespace create, etc.), the resolved value is stdout.
+ *
+ * @param args - Wrangler CLI arguments (e.g. ["deploy", "--config", "wrangler.jsonc"]).
+ * @returns Resolves with the deployed URL (deploy verb) or full stdout (other verbs).
+ * @throws {Error} When wrangler exits with a non-zero code.
  * @example
  * ```ts
  * const url = await runWrangler(["deploy", "--config", "wrangler.jsonc"]);
+ * await runWrangler(["kv", "namespace", "create", "CACHE"]);
  * ```
  */
-export function runWrangler(_args: string[]): Promise<string> {
-  throw new Error("not implemented");
-}
+export const runWrangler = (args: string[]): Promise<string> =>
+  new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
+
+    // wrangler is a trusted dev/peer dependency resolved from the local node_modules/.bin.
+    // eslint-disable-next-line sonarjs/no-os-command-from-path -- wrangler is a pinned peer dep resolved from node_modules/.bin
+    const child = spawn("wrangler", args, {
+      env: { ...process.env },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      errChunks.push(chunk);
+    });
+
+    child.on("error", err => {
+      reject(new Error(`[moku-worker] Failed to spawn wrangler.\n  ${err.message}`));
+    });
+
+    child.on("close", code => {
+      const stdout = Buffer.concat(chunks).toString("utf8");
+      const stderr = Buffer.concat(errChunks).toString("utf8");
+
+      if (code !== 0) {
+        reject(
+          new Error(
+            `[moku-worker] wrangler exited with code ${String(code)}.\n  ${stderr || stdout}`
+          )
+        );
+        return;
+      }
+
+      const isDeploy = args[0] === "deploy";
+      resolve(isDeploy ? extractDeployedUrl(stdout) : stdout);
+    });
+  });

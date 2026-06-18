@@ -52,8 +52,8 @@ jobs:
         run: |
           set -euo pipefail
           # package.json on a protected branch goes stale; the latest tag is the truth.
-          base="$(git tag --list 'v*' --sort=-v:refname | head -1)"
-          base="${base#v}"
+          prev="$(git tag --list 'v*' --sort=-v:refname | head -1)" # previous release tag, or "" on the first release
+          base="${prev#v}"
           base="${base:-0.0.0}"
           # Set package.json to the base, then bump — no git tag, no push from npm.
           npm version "$base" --no-git-tag-version --allow-same-version >/dev/null
@@ -61,6 +61,7 @@ jobs:
           new="${new#v}"
           echo "version=$new" >> "$GITHUB_OUTPUT"
           echo "tag=v$new" >> "$GITHUB_OUTPUT"
+          echo "prev_tag=$prev" >> "$GITHUB_OUTPUT" # explicit changelog base for --notes-start-tag
       - name: Commit the bump locally and push the TAG ONLY
         env:
           TAG: ${{ steps.bump.outputs.tag }}
@@ -76,6 +77,7 @@ jobs:
       - name: Create the GitHub release with native notes
         env:
           TAG: ${{ steps.bump.outputs.tag }}
+          PREV_TAG: ${{ steps.bump.outputs.prev_tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -83,11 +85,19 @@ jobs:
           # attacker-influenceable commit text). --verify-tag fails closed if the tag is missing.
           # A release created with the default GITHUB_TOKEN does NOT re-fire release:published,
           # so the publish job below runs inline in this same run for the dispatch path.
+          # Changelog base: pass the previous tag EXPLICITLY. The tag-only model tags each version
+          # on a separate bump commit that is NOT an ancestor of the next, so GitHub's auto
+          # base-detection fails and lists the FULL history (cumulative notes). --notes-start-tag
+          # forces a correct delta; omit it on the first release (no previous tag).
+          notes=(--generate-notes)
+          if [ -n "$PREV_TAG" ]; then
+            notes+=(--notes-start-tag "$PREV_TAG")
+          fi
           # A prerelease tag (contains '-', e.g. v1.2.3-rc.0) must be flagged --prerelease so
           # GitHub does not surface an rc as the repo's "Latest release"; stable tags get --latest.
           case "$TAG" in
-            *-*) gh release create "$TAG" --generate-notes --verify-tag --title "$TAG" --prerelease --latest=false ;;
-            *)   gh release create "$TAG" --generate-notes --verify-tag --title "$TAG" --latest ;;
+            *-*) gh release create "$TAG" "${notes[@]}" --verify-tag --title "$TAG" --prerelease --latest=false ;;
+            *)   gh release create "$TAG" "${notes[@]}" --verify-tag --title "$TAG" --latest ;;
           esac
 
   # 3. Build + package the tarball WITHOUT the publish token in scope (optional hardening).

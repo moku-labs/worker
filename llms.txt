@@ -1,0 +1,255 @@
+# @moku-labs/worker
+
+> Server-side Cloudflare Workers app + deploy framework built on @moku-labs/core (0.1.4). Durable Objects, Queues, R2, D1, and KV as composable Moku plugins. Depends on @moku-labs/common (0.1.1) for the log + env core plugins. Package version 0.1.0.
+
+## Core Concepts
+
+### Plugin architecture
+Each Cloudflare primitive is a Moku plugin that resolves its binding per request off the
+Cloudflare `env` object. A `server` plugin owns HTTP routing and request/scheduled dispatch.
+Deploy tooling (`deploy`, `cli`) is built from the same model but kept out of the runtime bundle.
+
+- Regular plugins mount their api on `app.<name>` (e.g. `app.server`, `app.kv`).
+- Core plugins are flat-injected on every plugin's `ctx`: `ctx.log`, `ctx.env`, `ctx.stage`.
+- Plugin NAME strings are bare ("server", "kv", "durableObjects"); exported INSTANCES carry the
+  `Plugin` suffix (`serverPlugin`, `kvPlugin`, `durableObjectsPlugin`). `durableObjects` is camelCase.
+
+### Config composition (three-layer Moku model)
+- Layer 1 — `src/config.ts`: `createCoreConfig` declares `WorkerConfig` + `WorkerEvents` and
+  registers core plugins (log, env, stage).
+- Layer 2 — `src/index.ts`: `createCore` exposes `createApp` / `createPlugin`; wires `bindings` +
+  `server` as framework defaults.
+- Layer 3 — consumer app: `createApp({ config, plugins, pluginConfigs })`.
+
+`createApp` is synchronous, built once per isolate at module load, and frozen. Stateless Workers
+never call `app.start()` / `app.stop()` — no plugin holds a long-lived connection.
+
+### Runtime vs node-only (two entry points)
+- `@moku-labs/worker` (`.` → src/index.ts): request-time runtime. Ships in the Worker bundle.
+- `@moku-labs/worker/cli` (`./cli` → src/cli.ts): build-time deploy/CLI. Uses node:child_process +
+  node:fs; NEVER bundled into the Worker (design HC11). Importing deployPlugin from the bare entry
+  is intentionally impossible.
+- NOTE: the specs mention a `@moku-labs/worker/worker` subpath — it does NOT exist. Only `.` and `./cli`.
+
+### Env per request, never stored
+One isolate serves concurrent requests. Every binding-resolving method takes the per-request `env`
+as its FIRST argument; `env` lives only on the call stack and is never captured in plugin state, so
+concurrent requests cannot leak each other's bindings. Inside a `server` handler, `env` (and a
+cross-plugin `require`) arrive on the per-request `RequestContext`.
+
+### Deploy manifest contract
+Each resource plugin exposes a build-time `deployManifest()`. The `deploy` plugin reads each via
+`ctx.require(<plugin>).deployManifest()` — it never inspects sibling `pluginConfigs` (a plugin sees
+only `ctx.global` + its own `ctx.config`; `require` returns a plugin's api, not its config).
+
+## Quick Reference
+
+### Create an app
+```typescript
+import { createApp, endpoint, kvPlugin } from "@moku-labs/worker";
+
+const app = createApp({
+  config: { name: "my-api", stage: "production", compatibilityDate: "2026-06-17" },
+  plugins: [kvPlugin],
+  pluginConfigs: {
+    kv: { binding: "MY_KV" },
+    server: {
+      endpoints: [
+        endpoint("/health").get(() => new Response("ok")),
+        endpoint("/cache/{key}").get(async ({ params, env, require }) =>
+          new Response((await require(kvPlugin).get(env, params.key ?? "")) ?? "miss")
+        )
+      ]
+    }
+  }
+});
+```
+`bindings` + `server` are FRAMEWORK DEFAULTS — the exported `createApp` already includes
+`[log, env, stage, bindings, server]`, so `plugins` lists ONLY consumer-added resource plugins
+(here `kvPlugin`); re-listing `bindingsPlugin`/`serverPlugin` would throw
+`TypeError: [moku-worker] Duplicate plugin name: "bindings"`. Their configs are still set via
+`pluginConfigs.bindings` / `pluginConfigs.server`. Every `depends` target must already be present
+(the defaults cover `bindings`), or `createApp` throws a TypeError.
+
+### Hand-assemble the Worker entry (no plugin produces it)
+```typescript
+import { app } from "./app";
+export default {
+  fetch: (request, env, ctx) => app.server.handle(request, env, ctx),
+  scheduled: (controller, env, ctx) => app.server.scheduled(controller, env, ctx),
+  queue: (batch, env, ctx) => app.queues.consume(batch, env, ctx)
+} satisfies ExportedHandler;
+```
+
+### Framework API + helpers (from @moku-labs/worker)
+```typescript
+createApp(opts): App                    // Layer-3 app factory (synchronous, frozen)
+createPlugin(name, def): Plugin          // author a custom plugin (generics inferred — do not pass)
+endpoint(path): EndpointBuilder          // pure route builder; .get/.post/.put/.patch/.delete/.head/.options/.all
+defineDurableObject(name): BaseClass     // pure factory → DO base class the consumer `extends`
+```
+
+### Plugin api access patterns
+```typescript
+app.server.handle(request, env, exec): Promise<Response>
+app.server.scheduled(controller, env, exec): Promise<void>
+app.kv.get(env, key): Promise<string | null>
+app.d1.query<T>(env, sql, ...params): Promise<D1Result<T>>
+app.queues.send(env, queue, body): Promise<void>
+app.storage.get(env, key): Promise<R2ObjectBody | null>
+app.durableObjects.get(env, logicalName, idName): DurableObjectStub   // synchronous
+app.deploy.run(opts?): Promise<void>     // node-only
+app.cli.deploy(opts?): Promise<void>     // node-only
+```
+
+### Core plugin apis (flat on ctx)
+```typescript
+ctx.stage.isDev(): boolean        // true iff stage === "development"
+ctx.stage.isProduction(): boolean // true iff stage === "production" (false in "test")
+ctx.stage.current(): "production" | "development" | "test"
+ctx.log.info(event, data?)        // common's sink-based logger
+ctx.env.get(name) / .require(name) / .has(name)   // env-VARIABLE access (from common)
+```
+
+### Errors
+Binding/deploy failures throw `Error`s prefixed `[moku-worker]`, e.g.
+`[moku-worker] binding "MY_KV" is not bound.` (unbound binding),
+`[moku-worker] wrangler exited with code <n>` (deploy subprocess failure).
+
+## File Structure
+
+```
+src/
+  config.ts            Layer 1 — createCoreConfig, WorkerConfig, WorkerEvents, WorkerEnv; core plugins
+  index.ts             Layer 2 — createCore; exports createApp/createPlugin + runtime plugins + helpers
+  cli.ts               ./cli entry — node-only deployPlugin + cliPlugin + manifest types
+  plugins/
+    index.ts           runtime plugin barrel (+ type namespaces D1, DurableObjects, Queues, Server, Storage)
+    bindings/          Micro   — binding resolver (root dependency)
+    server/            Standard— routing + dispatch; helpers/endpoint
+    kv/                Micro   — KV namespace wrapper
+    d1/                Standard— D1 SQL wrappers
+    queues/            Standard— Queues producer + consumer
+    storage/           Complex — R2 behind provider adapter (providers/{r2,memory}.ts)
+    durable-objects/   Standard— DO stub access; helpers/defineDurableObject
+    stage/             Nano    — core plugin, ctx.stage
+    deploy/            Complex — node-only deploy pipeline (providers/, wrangler-config, runner)
+    cli/               Standard— node-only dev/deploy verbs + TUI
+tests/                 framework-level cross-plugin tests only (unit/ + integration/)
+```
+Plugin-specific tests are colocated: `src/plugins/<name>/__tests__/{unit,integration}/`.
+
+## Plugins
+
+bindings — resolve Cloudflare bindings off per-request env; binding-family root | Tier: Micro |
+  Entry: @moku-labs/worker | API: require<T>(env, name), has(env, name) | Config: required: string[] = [] |
+  Events: none.
+
+server — HTTP routing + request/scheduled dispatch; the Worker-entry surface | Tier: Standard |
+  Entry: @moku-labs/worker | API: handle(request, env, exec), scheduled(controller, env, exec),
+  endpoint(path) helper | Config: endpoints: Endpoint[] = [] | Depends: [bindings] |
+  Events: emits request:start, request:end (global), server:matched (local).
+
+kv — thin env-first wrapper over one KV namespace | Tier: Micro | Entry: @moku-labs/worker |
+  API: get, put, delete, list, deployManifest | Config: binding: string = "KV" | Depends: [bindings] |
+  Events: none.
+
+d1 — typed wrappers over D1 prepare().bind() (not an ORM) | Tier: Standard | Entry: @moku-labs/worker |
+  API: query<T>, first<T>, run, batch, prepare, deployManifest |
+  Config: binding: string = "DB", migrations: string = "" | Depends: [bindings] | Events: none.
+
+queues — Cloudflare Queues producer + consumer | Tier: Standard | Entry: @moku-labs/worker |
+  API: send, sendBatch, consume(batch, env, exec), deployManifest |
+  Config: producers: string[] = [], onMessage: (message, env) => Promise<void> = no-op |
+  Depends: [bindings] | Events: emits queue:message (local).
+
+storage — R2 object storage behind a provider-adapter seam | Tier: Complex | Entry: @moku-labs/worker |
+  API: get, put, delete, list, deployManifest |
+  Config: bucket: string = "ASSETS", upload: string = "" | Depends: [bindings] | Events: none.
+
+durableObjects — resolve DO stubs off env; ship defineDurableObject base class | Tier: Standard |
+  Entry: @moku-labs/worker | API: get(env, logicalName, idName) → DurableObjectStub (sync),
+  deployManifest; helper defineDurableObject(name) | Config: bindings: Record<string,string> = {} |
+  Depends: [bindings] | Events: none.
+
+stage — deployment-stage / dev-mode detection (core plugin, flat ctx.stage) | Tier: Nano |
+  Entry: @moku-labs/worker | API: isDev(), isProduction(), current() |
+  Config: stage: "production"|"development"|"test" = "production" (fed from WorkerConfig.stage) |
+  Events: none. No state, no deps, no lifecycle.
+
+deploy — build-time deploy orchestrator (detect→provision→wrangler-config→upload→deploy) | Tier: Complex |
+  Entry: @moku-labs/worker/cli (NODE-ONLY) | API: run(opts?), dev(opts?), init(opts?) |
+  Config: configFile: string = "wrangler.jsonc", ci: boolean = false |
+  Depends: [storage, kv, d1, queues, durableObjects] |
+  Events: emits deploy:phase, provision:resource, deploy:complete (all global).
+
+cli — developer dev/deploy verbs + live progress TUI; thin passthroughs to deploy | Tier: Standard |
+  Entry: @moku-labs/worker/cli (NODE-ONLY) | API: dev(opts?), deploy(opts?) |
+  Config: port: number = 8787 | Depends: [deploy] |
+  Events: none of its own; hooks the global deploy:* events for the TUI.
+
+(Also re-exported from @moku-labs/worker for completeness: logPlugin, envPlugin — authored in
+@moku-labs/common, not here. `env` = env-variable access; distinct from `stage`.)
+
+## Event Catalog
+
+Global (WorkerEvents, src/config.ts) — visible to all plugins, hookable without a depends edge:
+- request:start        { method: string; path: string; requestId: string }            (server)
+- request:end          { method: string; path: string; status: number; ms: number }   (server)
+- deploy:phase         { phase: string; detail?: string }                              (deploy)
+- deploy:complete      { url: string }                                                 (deploy)
+- provision:resource   { kind: "kv"|"r2"|"d1"|"queue"|"do"; name: string }             (deploy)
+
+Plugin-local — declared on the producer, observed via depends:[<plugin>]:
+- server:matched       { path: string; method: string }      Server.ServerEvents      (server)
+- queue:message        { queue: string; messageId: string }   Queues.QueueEvents       (queues)
+
+All events are fire-and-forget observability; request/response and deploy WORK flows through api
+return values, never through emit.
+
+## Dependency Graph + Init Order
+
+```
+bindings (root)
+  ← server, kv, d1, queues, storage, durableObjects     (each depends: [bindings])
+deploy ← [storage, kv, d1, queues, durableObjects]       (node-only)
+cli    ← [deploy]                                          (node-only)
+```
+Init order is a topological sort; `bindings` initializes first. Every `depends` target must be
+registered earlier in the `plugins` array, or `createApp` throws a TypeError.
+
+## Types (from @moku-labs/worker)
+
+```typescript
+type WorkerConfig = { stage: "production" | "development" | "test"; name: string; compatibilityDate: string };
+//   defaults: stage "production", name "moku-worker", compatibilityDate ""
+type WorkerEnv = Record<string, unknown>;   // per-request Cloudflare bindings object
+type WorkerEvents = { ...the 5 global events above... };
+// Type namespaces: Server, D1, Queues, Storage, DurableObjects (e.g. Server.RequestContext,
+//   Server.Endpoint, D1.Config, Queues.QueueEvents, Storage.StorageApi, DurableObjects.Api).
+```
+
+From @moku-labs/worker/cli:
+```typescript
+type ResourceManifest =
+  | { kind: "r2"; bucket: string; upload?: string }
+  | { kind: "kv"; binding: string }
+  | { kind: "d1"; binding: string; migrations?: string }
+  | { kind: "queue"; producers: string[] }
+  | { kind: "do"; bindings: Record<string, string> };
+type ExternalManifest = { name: string; compatibilityDate: string; resources: ResourceManifest[] };
+```
+
+## Build / Test (bun only — never npm/yarn/pnpm)
+
+- bun run build              tsdown → dist/
+- bun run lint / lint:fix    biome + eslint
+- bun run format             biome format
+- bun run test               vitest run (unit + integration)
+- bun run test:unit          vitest run --project unit
+- bun run test:integration   vitest run --project integration
+- bun run test:coverage      coverage (90% threshold)
+- bun run validate           publint + attw (publish check)
+
+See README.md for full prose and llms-full.txt for verbatim per-plugin types, the complete config
+schema, and end-to-end usage examples.

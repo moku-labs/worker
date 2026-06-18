@@ -195,8 +195,10 @@ const makeR2Objects = (entries: MemEntry[], truncated: boolean): R2Objects =>
   }) as unknown as R2Objects;
 
 /**
- * Build an in-memory StorageProvider (a Map-backed test double). Used in tests
- * and as a missing-binding fallback in non-production stages.
+ * Build an in-memory StorageProvider (a Map-backed test double). Test-only — it
+ * is not wired into the runtime path; `api.ts` (`createStorageApi`) always
+ * resolves the real R2 provider via `resolveR2Provider`, with no stage-based or
+ * missing-binding fallback to this provider.
  *
  * Each call to `createMemoryProvider()` produces an independent store. Methods
  * satisfy the `StorageProvider` interface using helper functions with explicit

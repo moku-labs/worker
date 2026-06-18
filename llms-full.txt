@@ -1,0 +1,821 @@
+# @moku-labs/worker — Full LLM Reference
+
+> Server-side Cloudflare Workers app + deploy framework built on @moku-labs/core. Cloudflare
+> primitives (Durable Objects, Queues, R2, D1, KV) as composable Moku plugins, designed to compose
+> alongside Moku Web (@moku-labs/web).
+>
+> Package: @moku-labs/worker @ 0.1.0
+> Built on: @moku-labs/core @ 0.1.4
+> Depends on: @moku-labs/common @ 0.1.1 (supplies the log + env core plugins)
+> Engines: node >=24.0.0, bun >=1.3.14. Package manager: bun (never npm/yarn/pnpm).
+
+================================================================================
+1. ENTRY POINTS
+================================================================================
+
+The package exposes exactly TWO entry points (from package.json `exports`):
+
+  "."     → src/index.ts  — RUNTIME. Imported by the deployed Worker. Ships in the bundle.
+  "./cli" → src/cli.ts    — NODE-ONLY. Imported by scripts/*.ts at build/deploy time. Uses
+                            node:child_process + node:fs; NEVER bundled into the Worker (HC11).
+
+The specs reference a `@moku-labs/worker/worker` subpath. IT DOES NOT EXIST. Only `.` and `./cli`
+are real. Use `@moku-labs/worker` for runtime and `@moku-labs/worker/cli` for deploy/CLI.
+
+Exports from "@moku-labs/worker" (src/index.ts):
+  Values:  createApp, createPlugin, endpoint, defineDurableObject,
+           bindingsPlugin, serverPlugin, kvPlugin, d1Plugin, queuesPlugin, storagePlugin,
+           durableObjectsPlugin, stagePlugin, envPlugin, logPlugin
+  Types:   WorkerConfig, WorkerEvents, WorkerEnv, StageApi,
+           type namespaces: Server, D1, Queues, Storage, DurableObjects
+           (also flat: Endpoint, EndpointHandler, RequestContext from the server barrel)
+
+Exports from "@moku-labs/worker/cli" (src/cli.ts):
+  Values:  deployPlugin, cliPlugin
+  Types:   ExternalManifest, ResourceManifest
+
+(envPlugin / logPlugin are authored in @moku-labs/common and re-exported here for completeness.)
+
+================================================================================
+2. THREE-LAYER MOKU MODEL
+================================================================================
+
+Layer 1 — src/config.ts  (createCoreConfig)
+  Declares the global Config + Events types and registers the core plugins. Verbatim:
+
+    export type WorkerEnv = Record<string, unknown>;
+
+    export type WorkerConfig = {
+      stage: "production" | "development" | "test";
+      name: string;
+      compatibilityDate: string;
+    };
+
+    export type WorkerEvents = {
+      "request:start": { method: string; path: string; requestId: string };
+      "request:end": { method: string; path: string; status: number; ms: number };
+      "deploy:phase": { phase: string; detail?: string };
+      "deploy:complete": { url: string };
+      "provision:resource": { kind: "kv" | "r2" | "d1" | "queue" | "do"; name: string };
+    };
+
+    const defaultConfig: WorkerConfig = {
+      stage: "production",
+      name: "moku-worker",
+      compatibilityDate: ""
+    };
+
+    export const coreConfig = createCoreConfig<
+      WorkerConfig, WorkerEvents, [typeof logPlugin, typeof envPlugin, typeof stagePlugin]
+    >("moku-worker", { config: defaultConfig, plugins: [logPlugin, envPlugin, stagePlugin] });
+
+    export const { createPlugin, createCore } = coreConfig;
+
+Layer 2 — src/index.ts  (createCore)
+  Builds the framework and wires `bindings` + `server` as defaults, then exposes the Layer-3 API:
+
+    const framework = createCore(coreConfig, { plugins: [bindingsPlugin, serverPlugin] });
+    export const { createApp, createPlugin } = framework;
+
+  NOTE: the two blocks above are the FRAMEWORK's OWN config.ts / index.ts (framework-author
+  internals). The resulting exported `createApp` therefore already carries the defaults
+  [logPlugin, envPlugin, stagePlugin, bindingsPlugin, serverPlugin]. Consumers (Layer 3) do NOT
+  repeat these — see §8 for consumer createApp usage.
+
+Layer 3 — consumer app  (createApp)
+  createApp({ config?, plugins?, pluginConfigs? }) → frozen app. Synchronous, built once per isolate
+  at module load. Stateless Workers never call app.start()/app.stop(). `plugins` lists ONLY
+  consumer-added plugins (resource plugins, deploy/cli, custom plugins) — never the five defaults;
+  a duplicate plugin name throws `TypeError: [moku-worker] Duplicate plugin name: "X"`.
+
+================================================================================
+3. CONFIG SCHEMA (every field, type, default)
+================================================================================
+
+WorkerConfig (createApp({ config })) — flat, complete defaults:
+  stage              "production" | "development" | "test"   default "production"
+                       Forwarded into the stage plugin (pluginConfigs.stage.stage).
+  name               string                                   default "moku-worker"
+                       Used by deploy as wrangler `name` (ctx.global.name).
+  compatibilityDate  string                                   default ""
+                       Used by deploy as wrangler `compatibility_date`.
+
+pluginConfigs.<name> — each flat with complete defaults; frozen after createApp:
+
+  bindings:
+    required           string[]                 default []     Binding names downstream plugins assert.
+
+  server:
+    endpoints          Endpoint[]               default []     Compiled into the matcher table.
+
+  kv:
+    binding            string                   default "KV"   CF KV binding name.
+
+  d1:
+    binding            string                   default "DB"   D1 binding name.
+    migrations         string                   default ""     Migrations dir (deploy metadata only).
+
+  queues:
+    producers          string[]                 default []     Queue names produced to (deploy metadata).
+    onMessage          (message: Message, env: WorkerEnv) => Promise<void>   default async () => {}
+                         Declarative consumer handler; awaited per message in consume(). Return = ack,
+                         throw = retry.
+
+  storage:
+    bucket             string                   default "ASSETS"   R2 bucket binding name.
+    upload             string                   default ""         Dir uploaded at deploy time (deploy
+                                                                   metadata only).
+
+  durableObjects:
+    bindings           Record<string, string>   default {}     logical name → CF DO binding name.
+
+  stage:
+    stage              "production"|"development"|"test"   default "production"   (fed from WorkerConfig.stage)
+
+  deploy:  (node-only)
+    configFile         string                   default "wrangler.jsonc"   Wrangler config file.
+    ci                 boolean                  default false              CI / non-interactive mode.
+
+  cli:  (node-only)
+    port               number                   default 8787   Default local dev port.
+
+================================================================================
+4. FRAMEWORK API + HELPERS
+================================================================================
+
+createApp(opts): App
+  opts = { config?: Partial<WorkerConfig>; plugins?: Plugin[]; pluginConfigs?: { <name>: <config> } }
+  Returns a frozen app whose regular plugins are mounted on app.<name>. The final plugin list is
+  [...framework defaults, ...your plugins] = [log, env, stage, bindings, server, ...opts.plugins], so
+  `plugins` should list ONLY consumer-added plugins. Throws a TypeError when a declared `depends`
+  target is missing from the resolved list or appears after the dependent, AND throws
+  `TypeError: [moku-worker] Duplicate plugin name: "X"` if you re-list a default (e.g. bindings/server).
+
+createPlugin(name, def): Plugin
+  Authors a regular plugin. Generics are INFERRED from the definition — never pass explicit type
+  arguments to createPlugin. See §9 for the extension pattern.
+
+endpoint(path: string): EndpointBuilder    — pure, no ctx, safe before createApp.
+  Builder verbs each produce a typed Endpoint:
+    .get(h) → GET     .post(h) → POST   .put(h) → PUT     .patch(h) → PATCH
+    .delete(h) → DELETE   .head(h) → HEAD   .options(h) → OPTIONS   .all(h) → ALL (any verb / cron)
+  h: EndpointHandler = (ctx: RequestContext) => Response | Promise<Response>
+  Path params: {name} required, {name?} optional; both surface on params as
+  Record<string, string | undefined>; an absent optional param resolves to undefined.
+
+defineDurableObject(name: string): DurableObjectBaseConstructor & { readonly doName: string }
+  Pure factory → a base class the consumer `extends` and exports from worker.ts. The base ctor has
+  Cloudflare's signature (ctx: DurableObjectState, env: WorkerEnv), stored as readonly this.ctx /
+  this.env; a static doName captures `name`. A Moku plugin cannot export a top-level class, so the
+  consumer owns the exported DO class; the plugin manages config/bindings/stubs.
+
+================================================================================
+5. PLUGIN REFERENCE (Config / Events / State / API per plugin)
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────
+bindings  — Micro · @moku-labs/worker · depends: none (binding-family root)
+────────────────────────────────────────────────────────────────────────────
+Stateless resolver over a request-supplied Cloudflare env object. Regular plugin (so downstream
+binding plugins can depends:[bindingsPlugin] and reach it via ctx.require). env is NEVER stored.
+
+Config:  { required: string[] }                 default { required: [] }
+State:   none
+Events:  none
+
+API (app.bindings):
+  require<T>(env: WorkerEnv, name: string): T
+    Resolves binding `name` off env, narrowed to T. Throws a [moku-worker] Error when the binding is
+    null/undefined. Falsy-but-bound values ("", 0, false) return as-is and never throw.
+  has(env: WorkerEnv, name: string): boolean
+    true when `name` resolves to a non-nullish value. Never throws.
+
+────────────────────────────────────────────────────────────────────────────
+server  — Standard · @moku-labs/worker · depends: [bindingsPlugin]
+────────────────────────────────────────────────────────────────────────────
+Owns the request lifecycle: compiles Endpoints into a specificity-sorted matcher, dispatches fetch
+and scheduled (cron) through it. Allocates a fresh RequestContext per call on the stack carrying env.
+env is never stored. Response flows through the api RETURN VALUE, never through emit. Compilation
+happens once at onInit.
+
+Config:  { endpoints: Endpoint[] }              default { endpoints: [] }
+State:   the compiled matcher table (mutable surface; built from a copy of config.endpoints)
+Events (verbatim types):
+  Server.ServerEvents = { "server:matched": { path: string; method: string } }   // plugin-local
+  also emits global request:start / request:end (WorkerEvents)
+
+API (app.server):
+  handle(request: Request, env: WorkerEnv, exec: ExecutionContext): Promise<Response>
+    Matches method + pathname; runs the matched EndpointHandler; returns its Response, or
+    new Response("Not Found", { status: 404 }) on no match. Emits request:start → server:matched
+    → request:end (observability; server:matched skipped on 404).
+  scheduled(controller: ScheduledController, env: WorkerEnv, exec: ExecutionContext): Promise<void>
+    Cron entry. Matches controller.cron against the table using method "ALL", builds a RequestContext
+    (request/url synthesized as https://cron/<cron>), and AWAITS the matched handler. Resolves
+    immediately if no endpoint matches. The Worker default export must await it.
+
+Helper: endpoint(path) — see §4. Also reachable as serverPlugin.endpoint(...) (on serverPlugin.helpers).
+
+RequestContext (threaded to every handler):
+  request   Request                              incoming request (synthesized for cron)
+  env       WorkerEnv                            per-request bindings — on the stack, never stored
+  exec      ExecutionContext                     waitUntil / passThroughOnException
+  params    Record<string, string | undefined>  path params from the matched endpoint
+  url       URL                                  parsed request URL
+  require   RequireFn                            cross-plugin reach: require(plugin) → that plugin's api
+  has       (name: string) => boolean            presence check for an optional plugin by name
+
+Matching: (1) specificity — literal seg = 2, required {name} = 1, optional {name?} = 0, summed;
+(2) method-specific beats ALL on same path; (3) required outscores optional; (4) optional lets the
+trailing segment be absent. Trailing slashes don't change matching; method compare is exact/case-sensitive.
+
+Type namespace: Server.RequestContext, Server.Endpoint, Server.EndpointHandler, Server.ServerConfig,
+Server.ServerEvents. Endpoint/EndpointHandler/RequestContext also re-exported flat from the barrel.
+
+────────────────────────────────────────────────────────────────────────────
+kv  — Micro · @moku-labs/worker · depends: [bindingsPlugin]
+────────────────────────────────────────────────────────────────────────────
+Thin env-first wrapper over one KV namespace, resolved per request via bindings. No state, no events,
+no lifecycle.
+
+Config:  { binding: string }                    default { binding: "KV" }
+State:   none
+Events:  none
+
+API (app.kv) — env-first; namespace resolved fresh each call via
+  ctx.require(bindingsPlugin).require<KVNamespace>(env, ctx.config.binding):
+  get(env, key): Promise<string | null>                          KVNamespace.get; null if absent.
+  put(env, key, value, opts?: KVNamespacePutOptions): Promise<void>   expiration/expirationTtl/metadata.
+  delete(env, key): Promise<void>                                no-op if absent.
+  list(env, opts?: KVNamespaceListOptions): Promise<KVNamespaceListResult<unknown, string>>
+  deployManifest(): { kind: "kv"; binding: string }              build-time, takes NO env.
+
+────────────────────────────────────────────────────────────────────────────
+d1  — Standard · @moku-labs/worker · depends: [bindingsPlugin]
+────────────────────────────────────────────────────────────────────────────
+Thin typed wrappers over D1's prepare().bind(). Not an ORM. No state, no events, no lifecycle.
+D1Database / D1PreparedStatement / D1Result are ambient @cloudflare/workers-types globals.
+
+Config (D1.Config):  { binding: string; migrations: string }    defaults { binding: "DB", migrations: "" }
+State:   none
+Events:  none. Ctx typed PluginCtx<Config, Record<string, never>, WorkerEvents>.
+
+API (app.d1) — env-first:
+  query<T>(env, sql, ...params): Promise<D1Result<T>>     all<T>() — .results is T[].
+  first<T>(env, sql, ...params): Promise<T | null>        first row or null.
+  run(env, sql, ...params): Promise<D1Result>             write/DDL; .meta (rows_written, last_row_id).
+  batch(env, stmts: D1PreparedStatement[]): Promise<D1Result[]>   atomic, one round-trip; order preserved.
+                                                          Build stmts via prepare(env). NOT raw SQL.
+  prepare(env): D1Database                                resolve the D1Database to build statements.
+  deployManifest(): { kind: "d1"; binding: string; migrations: string }   build-time, NO env.
+
+Type namespace: D1.Config, D1.DeployManifest, D1.Api, D1.D1Ctx.
+
+────────────────────────────────────────────────────────────────────────────
+queues  — Standard · @moku-labs/worker · depends: [bindingsPlugin]
+────────────────────────────────────────────────────────────────────────────
+Producer + consumer for Cloudflare Queues. env never stored. Consumer is declarative config
+(config.onMessage), not a post-createApp mutator. Message/MessageBatch/Queue/ExecutionContext are
+ambient @cloudflare/workers-types globals.
+
+Config (Queues.Config):
+  { producers: string[]; onMessage: (message: Message, env: WorkerEnv) => Promise<void> }
+  defaults: producers [], onMessage async () => {} (no-op)
+State:   none
+Events (verbatim):  Queues.QueueEvents = { "queue:message": { queue: string; messageId: string } }
+
+API (app.queues):
+  send(env, queue: string, body: unknown): Promise<void>          Queue.send; throws [moku-worker] if
+                                                                   queue binding missing.
+  sendBatch(env, queue: string, bodies: unknown[]): Promise<void> maps each body → { body }; Queue.sendBatch.
+  consume(batch: MessageBatch, env, exec: ExecutionContext): Promise<void>
+    Iterates batch.messages: AWAITS config.onMessage(message, env) (return=ack, throw=retry), then
+    fire-and-forget emits queue:message { queue: batch.queue, messageId: m.id }. The Worker's queue()
+    export must await it. `exec` is accepted to match CF's signature; currently reserved/unused.
+  deployManifest(): { kind: "queue"; producers: string[] }        build-time; reads ctx.config.producers.
+
+Type namespace: Queues.Config, Queues.Api, Queues.DeployManifest, Queues.QueueEvents, Queues.Ctx.
+
+────────────────────────────────────────────────────────────────────────────
+storage  — Complex · @moku-labs/worker · depends: [bindingsPlugin]
+────────────────────────────────────────────────────────────────────────────
+R2 object storage behind a provider-adapter seam (StorageProvider). Two impls behind one interface:
+the real R2-backed provider (providers/r2.ts) and an in-memory test double (providers/memory.ts). The
+public API is identical regardless. No state, no events, no lifecycle. R2 types are ambient globals.
+
+Config (StorageConfig):  { upload: string; bucket: string }       defaults { upload: "", bucket: "ASSETS" }
+State:   none
+Events:  none
+
+API (app.storage) — env-first; bucket resolved per call via the provider:
+  get(env, key): Promise<R2ObjectBody | null>     .body is a ReadableStream; null if absent.
+  put(env, key, value): Promise<R2Object>          value: ReadableStream | ArrayBuffer | ArrayBufferView
+                                                   | string | Blob | null.
+  delete(env, key): Promise<void>                  key may be string or string[]; absent keys no-op.
+  list(env, opts?: R2ListOptions): Promise<R2Objects>   prefix/limit/cursor/delimiter; .objects/.truncated/.cursor.
+  deployManifest(): { readonly kind: "r2"; readonly bucket: string; readonly upload: string }   build-time, NO env.
+
+Types (Storage namespace): StorageApi, StorageConfig, StorageManifest, StorageProvider.
+NOTE the seam is KEY-first (provider.get(key)) while the public API is ENV-first (api.get(env, key)).
+
+────────────────────────────────────────────────────────────────────────────
+durableObjects  — Standard · @moku-labs/worker · depends: [bindingsPlugin]
+────────────────────────────────────────────────────────────────────────────
+Resolves DO stubs off env + ships defineDurableObject. env never stored. DO types are ambient globals.
+
+Config (DurableObjects.Config):  { bindings: Record<string, string> }   default { bindings: {} }
+  Maps a logical name (code, e.g. "counter") → CF DO binding name (wrangler/env, e.g. "COUNTER").
+  An unmapped logical name falls back to itself.
+State:   none
+Events:  none. (A DO alarm() runs in its own isolate with no Moku ctx/emit; DO observability is the
+         consumer's concern via external telemetry, not the Moku bus.)
+
+API (app.durableObjects):
+  get(env, logicalName: string, idName: string): DurableObjectStub
+    SYNCHRONOUS (not a Promise). Resolves the namespace via
+    ctx.require(bindingsPlugin).require<DurableObjectNamespace>(env, binding), derives a stable id
+    with namespace.idFromName(idName), returns the addressed stub. Throws [moku-worker] if unbound.
+  deployManifest(): { kind: "do"; bindings: Record<string, string> }   build-time, NO env.
+
+Helper: defineDurableObject(name) — see §4. On durableObjectsPlugin.helpers + top-level re-export.
+Type namespace: DurableObjects.Config, DurableObjects.DeployManifest, DurableObjects.Api, DurableObjects.Ctx.
+Structural helper types DurableObjectBase / DurableObjectBaseConstructor live in helpers.ts; you
+rarely name them — `extends defineDurableObject("Name")` infers everything.
+
+────────────────────────────────────────────────────────────────────────────
+stage  — Nano · @moku-labs/worker · CORE plugin (flat-injected as ctx.stage)
+────────────────────────────────────────────────────────────────────────────
+Deployment-stage / dev-mode detection. No state, no events, no deps, no lifecycle. (Worker-local
+because common's `env` is env-VARIABLE access, not stage detection.)
+
+Config:  { stage: "production" | "development" | "test" }   default "production"
+         (the framework forwards WorkerConfig.stage → pluginConfigs.stage.stage)
+Events:  none
+
+API (StageApi, ctx.stage):
+  isDev(): boolean         true iff stage === "development".
+  isProduction(): boolean  true iff stage === "production". (FALSE in "test".)
+  current(): "production" | "development" | "test"   the raw stage as the literal union.
+  NOTE: isDev() and isProduction() are BOTH false in "test" — not boolean inverses.
+
+────────────────────────────────────────────────────────────────────────────
+deploy  — Complex · @moku-labs/worker/cli · NODE-ONLY · depends: [storage, kv, d1, queues, durableObjects]
+────────────────────────────────────────────────────────────────────────────
+Build-time deploy orchestrator. Pipeline: detect → provision → wrangler-config → upload → deploy.
+Uses node:child_process (spawn wrangler) + node:fs (read/write wrangler config, walk upload dir).
+EXCLUDED from the runtime barrel (HC11). Import from @moku-labs/worker/cli. No state, no hooks, no
+lifecycle. Reads each resource plugin's deployManifest() via ctx.require, gated by ctx.has(name).
+
+Config:  { configFile: string; ci: boolean }    defaults { configFile: "wrangler.jsonc", ci: false }
+         (CI credentials read from Node env CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID, never config)
+Events:  none of its own; emits the global deploy:phase, provision:resource, deploy:complete.
+
+API (app.deploy):
+  run(opts?: { guided?: boolean; yes?: boolean; manifest?: ExternalManifest }): Promise<void>
+    Full pipeline; emits, in order:
+      deploy:phase {detect} → deploy:phase {provision} → (per resource) provision:resource {kind, name}
+      → deploy:phase {wrangler-config} → deploy:phase {upload, detail:"<n> files"} (only if R2 upload dir)
+      → deploy:phase {deploy} → deploy:complete {url}.
+    Manifest source: omit opts.manifest → assembled from each PRESENT resource plugin's
+    deployManifest() (gated by ctx.has); supply opts.manifest → used verbatim (universal/non-moku path).
+    Throws the [moku-worker] wrangler subprocess Error on failure.
+  dev(opts?: { port?: number }): Promise<void>     wrangler dev --port <port> --config <configFile>
+                                                   (default port 8787).
+  init(opts?: { ci?: boolean }): Promise<void>     Scaffolds a starter wrangler config at configFile
+                                                   (and CI files when ci). IDEMPOTENT — an existing
+                                                   config file is left untouched.
+
+Provisioning + wrangler config per resource:
+  storage {r2}     r2 bucket create <bucket>; if upload: r2 object put per file       → r2_buckets
+  kv {kv}          kv namespace create <binding>                                       → kv_namespaces
+  d1 {d1}          d1 create <binding>; if migrations: d1 migrations apply --local     → d1_databases
+  queues {queue}   queues create <producer> per producer                              → queues.producers
+  durableObjects {do}  none — config-only (no wrangler do create exists)              → durable_objects
+  (R2/D1 names lower-case the binding; queue bindings upper-case the producer; id/database_id written "".)
+
+────────────────────────────────────────────────────────────────────────────
+cli  — Standard · @moku-labs/worker/cli · NODE-ONLY · depends: [deployPlugin]
+────────────────────────────────────────────────────────────────────────────
+Developer-facing dev/deploy verbs + a live progress TUI. Thin passthroughs to deploy; does no work
+itself. No state, no events of its own, no lifecycle. The "TUI" is plain ctx.log lines (no argv
+parser, no bin, no TUI library) — the consumer's script owns argument handling.
+
+Config:  { port: number }                       default { port: 8787 }
+Events:  none of its own. Hooks the three global deploy events for the TUI:
+  deploy:phase        → "> <phase>"  (or "> <phase> - <detail>")
+  provision:resource  → "  + <kind> <name>"
+  deploy:complete     → "done -> <url>"
+
+API (app.cli):
+  dev(opts?: { port?: number }): Promise<void>
+    → ctx.require(deployPlugin).dev(opts ?? { port: ctx.config.port })   (forwards configured port if none)
+  deploy(opts?: { guided?: boolean; yes?: boolean }): Promise<void>
+    → ctx.require(deployPlugin).run(opts)   (forwards opts verbatim; no opts → passes undefined)
+    Surfaces only { guided?, yes? }; for the universal/manifest path call app.deploy.run({ manifest })
+    directly.
+
+================================================================================
+6. COMPLETE EVENT CATALOG
+================================================================================
+
+GLOBAL events — type WorkerEvents (src/config.ts). Visible to every plugin; hookable without depends.
+  request:start        { method: string; path: string; requestId: string }
+                         emitted by server at the start of handle(), before matching. requestId is a
+                         fresh crypto.randomUUID().
+  request:end          { method: string; path: string; status: number; ms: number }
+                         emitted by server after the handler returns (final status + elapsed ms).
+  deploy:phase         { phase: string; detail?: string }
+                         emitted by deploy at each stage: "detect", "provision", "wrangler-config",
+                         "upload" (detail "<n> files"), "deploy".
+  provision:resource   { kind: "kv" | "r2" | "d1" | "queue" | "do"; name: string }
+                         emitted by deploy once per provisioned resource.
+  deploy:complete      { url: string }
+                         emitted by deploy after wrangler deploy succeeds.
+
+PLUGIN-LOCAL events — declared on the producer; observers reach them via depends:[<plugin>].
+  server:matched       { path: string; method: string }                 (Server.ServerEvents)
+                         emitted by server after a request matches an endpoint, before the handler
+                         runs. NOT emitted on 404.
+  queue:message        { queue: string; messageId: string }             (Queues.QueueEvents)
+                         emitted by queues after config.onMessage settles for a message inside consume.
+
+Discipline: all emits are FIRE-AND-FORGET observability. Request/response and deploy WORK flow through
+api return values, never through emit (the kernel cannot carry a value through an event). No plugin
+emits another plugin's event via a cast.
+
+================================================================================
+7. DEPENDENCY GRAPH + INIT ORDER
+================================================================================
+
+  bindings (root — depends on nothing)
+     ├── server
+     ├── kv
+     ├── d1
+     ├── queues
+     ├── storage
+     └── durableObjects
+  deploy → depends [storage, kv, d1, queues, durableObjects]      (node-only)
+  cli    → depends [deploy]                                        (node-only)
+
+Init order is a topological sort of this graph; bindings initializes first. Every `depends` target
+MUST be present in the resolved plugin list AND registered earlier than the dependent, or createApp
+throws a TypeError. bindings + server are FRAMEWORK DEFAULTS — the exported createApp already resolves
+to [log, env, stage, bindings, server, ...your plugins], so a resource plugin's depends:[bindingsPlugin]
+is already satisfied. Do NOT re-list bindingsPlugin/serverPlugin in createApp({ plugins }); a duplicate
+name throws `TypeError: [moku-worker] Duplicate plugin name: "bindings"`. (Configure the defaults via
+pluginConfigs.bindings / pluginConfigs.server.) Node deploy scripts still list the resource plugins +
+deployPlugin/cliPlugin themselves — those are not defaults — but never bindings/server.
+
+Why bindings is REGULAR (not core): core plugins cannot be require/depends targets, so the binding
+family chains off a regular `bindings`. The CORE plugins (log, env, stage) are flat-injected on every
+plugin's ctx (ctx.log, ctx.env, ctx.stage) instead of mounting on app.
+
+================================================================================
+8. END-TO-END USAGE EXAMPLES
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────
+8.1  fetch handler using server + kv + d1
+────────────────────────────────────────────────────────────────────────────
+```typescript
+// app.ts
+import { createApp, d1Plugin, endpoint, kvPlugin } from "@moku-labs/worker";
+
+type Product = { id: number; name: string; active: number };
+
+// bindings + server are framework defaults — list ONLY the resource plugins you add.
+export const app = createApp({
+  config: { name: "shop-api", stage: "production", compatibilityDate: "2026-06-17" },
+  plugins: [kvPlugin, d1Plugin],
+  pluginConfigs: {
+    kv: { binding: "CACHE" },
+    d1: { binding: "DB", migrations: "./migrations" },
+    server: {
+      endpoints: [
+        endpoint("/health").get(() => new Response("ok", { status: 200 })),
+
+        // KV-cached read; fall through to D1 on a miss.
+        endpoint("/products/{id}").get(async ({ params, env, require }) => {
+          const id = params.id ?? "";
+          const cached = await require(kvPlugin).get(env, `product:${id}`);
+          if (cached !== null) return new Response(cached, { headers: { "x-cache": "hit" } });
+
+          const row = await require(d1Plugin).first<Product>(
+            env, "SELECT * FROM products WHERE id = ?", id
+          );
+          if (!row) return new Response(null, { status: 404 });
+
+          const body = JSON.stringify(row);
+          await require(kvPlugin).put(env, `product:${id}`, body, { expirationTtl: 300 });
+          return new Response(body, { headers: { "x-cache": "miss" } });
+        }),
+
+        // Write path: D1 insert + cache invalidation.
+        endpoint("/products").post(async ({ request, env, require }) => {
+          const { name } = (await request.json()) as { name: string };
+          const res = await require(d1Plugin).run(
+            env, "INSERT INTO products (name, active) VALUES (?, 1)", name
+          );
+          return Response.json({ id: res.meta.last_row_id }, { status: 201 });
+        })
+      ]
+    }
+  }
+});
+```
+```typescript
+// worker.ts — hand-assembled default export.
+import { app } from "./app";
+export default {
+  fetch: (request: Request, env: Record<string, unknown>, ctx: ExecutionContext) =>
+    app.server.handle(request, env, ctx)
+} satisfies ExportedHandler;
+```
+
+────────────────────────────────────────────────────────────────────────────
+8.2  Queue producer + consumer
+────────────────────────────────────────────────────────────────────────────
+```typescript
+// app.ts
+import { createApp, endpoint, queuesPlugin } from "@moku-labs/worker";
+import type { Message } from "@cloudflare/workers-types";
+
+type Order = { orderId: string; total: number };
+
+// bindings + server are framework defaults; pluginConfigs.bindings still configures the default.
+export const app = createApp({
+  plugins: [queuesPlugin],
+  pluginConfigs: {
+    bindings: { required: ["orders"] },
+    queues: {
+      producers: ["orders"],
+      // Awaited once per message inside consume(); throw → Cloudflare retries.
+      onMessage: async (message: Message, env) => {
+        const order = message.body as Order;
+        await fulfill(order, env);
+      }
+    },
+    server: {
+      endpoints: [
+        // Producer side: enqueue from a request.
+        endpoint("/api/orders").post(async ({ request, env, require }) => {
+          await require(queuesPlugin).send(env, "orders", await request.json());
+          return new Response(null, { status: 202 });
+        })
+      ]
+    }
+  }
+});
+
+declare function fulfill(order: Order, env: Record<string, unknown>): Promise<void>;
+```
+```typescript
+// worker.ts — fetch (producer) + queue (consumer) both hand-assembled.
+import type { ExecutionContext, ExportedHandler, MessageBatch } from "@cloudflare/workers-types";
+import { app } from "./app";
+
+export default {
+  fetch: (request: Request, env: Record<string, unknown>, ctx: ExecutionContext) =>
+    app.server.handle(request, env, ctx),
+  // MUST await so the isolate survives the batch.
+  queue: (batch: MessageBatch, env: Record<string, unknown>, ctx: ExecutionContext) =>
+    app.queues.consume(batch, env, ctx)
+} satisfies ExportedHandler;
+```
+
+────────────────────────────────────────────────────────────────────────────
+8.3  Durable Object class + stub access
+────────────────────────────────────────────────────────────────────────────
+```typescript
+// counter.ts — the DO class is an ordinary EXPORTED class on the helper base.
+import { defineDurableObject } from "@moku-labs/worker";
+
+export class Counter extends defineDurableObject("Counter") {
+  async fetch(): Promise<Response> {
+    const n = ((await this.ctx.storage.get<number>("n")) ?? 0) + 1;
+    await this.ctx.storage.put("n", n);
+    return Response.json({ n });
+  }
+}
+```
+```typescript
+// app.ts
+import { createApp, durableObjectsPlugin, endpoint } from "@moku-labs/worker";
+
+// bindings + server are framework defaults — only durableObjects is consumer-added.
+export const app = createApp({
+  plugins: [durableObjectsPlugin],
+  pluginConfigs: {
+    durableObjects: { bindings: { counter: "COUNTER" } },
+    server: {
+      endpoints: [
+        endpoint("/count/{room}").get(({ params, env, require }) =>
+          require(durableObjectsPlugin)
+            .get(env, "counter", params.room ?? "")   // synchronous → returns the stub
+            .fetch("https://do/increment")
+        )
+      ]
+    }
+  }
+});
+```
+```typescript
+// worker.ts — export the DO class ALONGSIDE the default export so CF can instantiate it.
+import { app } from "./app";
+export { Counter } from "./counter";
+export default {
+  fetch: (request: Request, env: Record<string, unknown>, ctx: ExecutionContext) =>
+    app.server.handle(request, env, ctx)
+} satisfies ExportedHandler;
+```
+
+────────────────────────────────────────────────────────────────────────────
+8.4  Node deploy script using @moku-labs/worker/cli
+────────────────────────────────────────────────────────────────────────────
+```typescript
+// scripts/deploy.ts — node-only; run with `bun scripts/deploy.ts` (or `node scripts/deploy.ts`).
+import { createApp } from "@moku-labs/worker";
+import {
+  d1Plugin, durableObjectsPlugin, kvPlugin, queuesPlugin, storagePlugin
+} from "@moku-labs/worker";
+import { deployPlugin } from "@moku-labs/worker/cli";
+
+// bindings + server are framework defaults; add the resource plugins + deployPlugin (NOT defaults).
+// deploy depends on all five resource plugins, so each must appear before deployPlugin here.
+const app = createApp({
+  config: { name: "my-worker", compatibilityDate: "2026-06-17", stage: "production" },
+  plugins: [
+    storagePlugin, kvPlugin, d1Plugin, queuesPlugin, durableObjectsPlugin, deployPlugin
+  ],
+  pluginConfigs: {
+    storage: { bucket: "ASSETS", upload: "./public" },
+    kv: { binding: "CACHE" },
+    d1: { binding: "DB", migrations: "./migrations" },
+    queues: { producers: ["orders"] },
+    durableObjects: { bindings: { Counter: "COUNTER" } },
+    deploy: { configFile: "wrangler.jsonc", ci: false }
+  }
+});
+
+await app.deploy.init();                                      // idempotent starter config
+await app.deploy.run({ guided: !process.argv.includes("--ci") });
+```
+```typescript
+// scripts/cli.ts — the cli plugin sits above deploy; same plugin order + cliPlugin last.
+import { createApp } from "@moku-labs/worker";
+import {
+  d1Plugin, durableObjectsPlugin, kvPlugin, queuesPlugin, storagePlugin
+} from "@moku-labs/worker";
+import { cliPlugin, deployPlugin } from "@moku-labs/worker/cli";
+
+// bindings + server are framework defaults; cli depends on deploy, so cliPlugin comes last.
+const app = createApp({
+  plugins: [
+    storagePlugin, kvPlugin, d1Plugin, queuesPlugin, durableObjectsPlugin,
+    deployPlugin, cliPlugin
+  ],
+  pluginConfigs: { cli: { port: 8787 } }
+});
+
+const command = process.argv[2];
+if (command === "dev") {
+  const portArg = process.argv[3];
+  await app.cli.dev(portArg ? { port: Number(portArg) } : undefined);
+} else if (command === "deploy") {
+  await app.cli.deploy(process.argv.includes("--ci") ? { yes: true } : { guided: true });
+} else {
+  throw new Error(`unknown command: ${String(command)} (expected "dev" or "deploy")`);
+}
+```
+Universal / non-moku path — deploy arbitrary Worker code from a supplied manifest (no resource plugins):
+```typescript
+await app.deploy.run({
+  manifest: {
+    name: "legacy-worker",
+    compatibilityDate: "2026-06-17",
+    resources: [{ kind: "kv", binding: "CACHE" }]
+  }
+});
+```
+
+────────────────────────────────────────────────────────────────────────────
+8.5  Observing events from a plugin's hooks
+────────────────────────────────────────────────────────────────────────────
+```typescript
+hooks: (register) => {
+  register("deploy:phase", ({ phase, detail }) =>
+    console.log(`> ${phase}${detail ? ` - ${detail}` : ""}`)
+  );
+  register("provision:resource", ({ kind, name }) => console.log(`  + ${kind} ${name}`));
+  register("deploy:complete", ({ url }) => console.log(`done -> ${url}`));
+}
+```
+
+================================================================================
+9. ERROR-HANDLING PATTERNS ([moku-worker]-prefixed errors)
+================================================================================
+
+All framework-thrown errors carry a `[moku-worker]` prefix. Known cases:
+
+- Unbound binding (from bindings.require, propagated by every resource plugin):
+    `[moku-worker] binding "MY_KV" is not bound.`
+  Thrown when config.binding is null/undefined on the request env. Falsy-but-bound values
+  ("", 0, false) are returned as-is and do NOT throw. Use bindings.has(env, name) or the handler's
+  has("kv") to branch on optional bindings instead of catching.
+
+- Duplicate path param at server compile time (onInit):
+    a [moku-worker]-prefixed Error when an endpoint path contains duplicate {param} names.
+
+- Deploy subprocess failure (node-only):
+    `[moku-worker] wrangler exited with code <n>`  or  `[moku-worker] Failed to spawn wrangler`
+  run() / dev() propagate these from the wrangler subprocess on a non-zero exit / spawn failure.
+
+- Dependency wiring (createApp): a TypeError when a declared `depends` target is missing from the
+  resolved plugin list or appears after the dependent. (Not [moku-worker]-prefixed — it is a
+  kernel-level TypeError surfaced at createApp.)
+
+- Duplicate plugin name (createApp): `TypeError: [moku-worker] Duplicate plugin name: "X"` when
+  `opts.plugins` re-lists a name already present — most often a framework default (bindings/server)
+  or the same plugin added twice. Fix: list ONLY consumer-added plugins; configure defaults via
+  pluginConfigs.
+
+Handler errors are NOT swallowed: a handler that throws propagates out of app.server.handle to the
+caller (server "does not throw on its own"). Wrap handler bodies in try/catch if you want to map
+thrown errors to a Response.
+
+================================================================================
+10. EXTENSION PATTERN — authoring a custom plugin with createPlugin
+================================================================================
+
+createPlugin infers all generics from the definition — do NOT pass explicit type arguments.
+A binding-family plugin declares depends:[bindingsPlugin] and resolves its binding per call:
+
+```typescript
+import { bindingsPlugin, createPlugin } from "@moku-labs/worker";
+import type { WorkerEnv } from "@moku-labs/worker";
+
+export const cachePlugin = createPlugin("cache", {
+  depends: [bindingsPlugin] as const,
+  config: { binding: "CACHE" },           // flat, complete defaults
+  api: (ctx) => {
+    // resolve the namespace fresh on each call — never capture env or the handle
+    const ns = (env: WorkerEnv) =>
+      ctx.require(bindingsPlugin).require<KVNamespace>(env, ctx.config.binding);
+    return {
+      read: (env: WorkerEnv, key: string) => ns(env).get(key),
+      write: (env: WorkerEnv, key: string, value: string) => ns(env).put(key, value)
+    };
+  }
+});
+```
+
+Owning a PLUGIN-LOCAL event — declare it via the events register-callback BEFORE the api factory so
+the event map is inferred into ctx (then ctx.emit("metric:hit", …) is type-checked):
+
+```typescript
+export const metricsPlugin = createPlugin("metrics", {
+  events: (register) => register.map<{ "metric:hit": { name: string } }>({
+    "metric:hit": "a metric was recorded"
+  }),
+  api: (ctx) => ({
+    hit: (name: string) => ctx.emit("metric:hit", { name })   // fire-and-forget
+  })
+});
+```
+
+Observing events (global or another plugin's local) — via hooks; for a plugin-local event you also
+declare depends:[<producer>]:
+
+```typescript
+import { createPlugin, queuesPlugin } from "@moku-labs/worker";
+
+export const queueMetricsPlugin = createPlugin("queueMetrics", {
+  depends: [queuesPlugin] as const,
+  hooks: {
+    "queue:message": ({ queue, messageId }) => { /* record a metric, log, etc. */ }
+  }
+});
+```
+
+Register the instance: add `export { cachePlugin } from "./cache";` to src/plugins/index.ts (runtime)
+or src/cli.ts (node-only). Mount point: regular plugins appear on app.<name> (here app.cache).
+Conventions: no explicit generics on createPlugin; omit onInit/onStart/onStop unless a plugin truly
+has work to do at those phases (Workers are request-scoped — most plugins need none); thread env as
+the first argument and never store it; emit only your OWN events; do request/response WORK through
+api return values, not emit.
+
+================================================================================
+11. DESIGN INVARIANTS (quick recall)
+================================================================================
+
+- env-per-request: first argument to every binding method; on the stack only; never in state.
+- Response/work via return value, never via emit (events are observability only).
+- bindings is the regular-plugin root of the binding family (core plugins can't be depends targets).
+- deploy/cli are node-only; @moku-labs/worker/cli only; never in the Worker bundle (HC11).
+- deploy reads deployManifest() apis, never sibling pluginConfigs (a plugin sees ctx.global + its own
+  ctx.config; require returns api, not config).
+- createApp is synchronous + frozen; stateless Workers never call start()/stop().
+- The Worker default export ({ fetch, scheduled, queue }) is hand-assembled by the consumer; no plugin
+  produces it.
+- Cloudflare types (KVNamespace, D1Database, R2Bucket, Queue, DurableObject*, ExecutionContext, …) are
+  ambient @cloudflare/workers-types globals — used unqualified, never imported, never bundled.

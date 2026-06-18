@@ -5,8 +5,9 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import type { WorkerEnv } from "../../../../config";
+import { createBindingsApi } from "../../api";
 import type { BindingsApi } from "../../index";
-import { bindingsPlugin, createBindingsApi } from "../../index";
+import { bindingsPlugin } from "../../index";
 
 // ---------------------------------------------------------------------------
 // Helpers: build the api without a full createApp lifecycle. The factory

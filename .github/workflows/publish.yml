@@ -172,4 +172,6 @@ jobs:
           # Prereleases (a '-' in the version) go to dist-tag 'next' so they never clobber 'latest'.
           case "$pkg" in *-*) tag=next ;; *) tag=latest ;; esac
           # Trusted Publishing: tokenless, provenance auto-attached. No NODE_AUTH_TOKEN needed.
-          npm publish "dist-pack"/*.tgz --tag "$tag" --access public
+          # Leading "./" is REQUIRED: a bare "dist-pack/foo.tgz" is parsed by npm as a
+          # GitHub "owner/repo" spec (it tries `git ls-remote` and fails), not a local file.
+          npm publish ./dist-pack/*.tgz --tag "$tag" --access public

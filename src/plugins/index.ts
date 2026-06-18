@@ -13,6 +13,7 @@ export { serverPlugin } from "./server";
 export { storagePlugin } from "./storage";
 
 // ─── Plugin Types (namespace re-exports; Standard+ only) ─────
+export * as Bindings from "./bindings/types";
 export * as D1 from "./d1/types";
 export * as DurableObjects from "./durable-objects/types";
 export * as Queues from "./queues/types";

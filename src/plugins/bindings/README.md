@@ -1,6 +1,6 @@
 # bindings
 
-> Micro plugin — stateless resolver over a request-supplied Cloudflare `env` object; the binding-family dependency root.
+> Standard plugin — stateless resolver over a request-supplied Cloudflare `env` object; the binding-family dependency root.
 
 ## Overview
 

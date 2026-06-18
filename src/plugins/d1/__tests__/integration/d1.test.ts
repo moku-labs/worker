@@ -62,11 +62,11 @@ const makeFakeD1 = () => {
 import { coreConfig } from "../../../../config";
 import { bindingsPlugin } from "../../../bindings";
 
-const { createApp } = coreConfig.createCore(coreConfig, {
-  plugins: [bindingsPlugin, d1Plugin]
-});
-
 const createTestApp = (bindingName = "DB") => {
+  const { createApp } = coreConfig.createCore(coreConfig, {
+    plugins: [bindingsPlugin, d1Plugin]
+  });
+
   const fakeD1 = makeFakeD1();
   const env: Record<string, unknown> = { [bindingName]: fakeD1 };
 

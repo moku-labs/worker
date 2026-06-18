@@ -204,18 +204,21 @@ export const writeWranglerConfig = async (
     }
   }
 
+  // Build each wrangler resource section from the manifest (empty when that kind is absent).
   const kvNamespaces = buildKvNamespaces(manifest.resources);
   const r2Buckets = buildR2Buckets(manifest.resources);
   const d1Databases = buildD1Databases(manifest.resources);
   const queues = buildQueues(manifest.resources);
   const durableObjects = buildDurableObjects(manifest.resources);
 
+  // Start from the existing config so unmanaged top-level keys survive; overwrite name + date.
   const updated: Record<string, unknown> = {
     ...existing,
     name: manifest.name,
     compatibility_date: manifest.compatibilityDate
   };
 
+  // Merge only non-empty sections so we never emit empty resource arrays/objects.
   if (kvNamespaces.length > 0) {
     updated.kv_namespaces = kvNamespaces;
   }
@@ -236,6 +239,7 @@ export const writeWranglerConfig = async (
     updated.durable_objects = durableObjects;
   }
 
+  // Persist as 2-space-indented JSON (valid JSONC the wrangler CLI reads).
   await writeFile(configFile, JSON.stringify(updated, undefined, 2));
 };
 

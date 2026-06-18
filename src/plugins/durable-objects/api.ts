@@ -5,51 +5,9 @@
  * (spec/08 §7). Resolves the DO namespace off the REQUEST-SUPPLIED env on every call —
  * env is threaded as an argument, never stored (design §1a / SB4).
  */
-import type { PluginCtx } from "@moku-labs/core";
-import type { WorkerEnv, WorkerEvents } from "../../config";
+import type { WorkerEnv } from "../../config";
 import { bindingsPlugin } from "../bindings";
-import type { Config, DeployManifest } from "./types";
-
-/**
- * Minimal bindings API shape needed by `createDoApi`.
- * Structural type — avoids a circular import with the bindings plugin.
- */
-type BindingsApi = {
-  /**
-   * Resolve a binding off the request env, narrowed to T.
-   *
-   * @param env - The per-request Cloudflare bindings object.
-   * @param name - The binding name to resolve.
-   * @returns The binding value narrowed to T.
-   */
-  require: <T>(env: WorkerEnv, name: string) => T;
-  /**
-   * True when the binding is non-nullish on the request env.
-   *
-   * @param env - The per-request Cloudflare bindings object.
-   * @param name - The binding name to check.
-   * @returns Whether the binding is present and non-nullish.
-   */
-  has: (env: WorkerEnv, name: string) => boolean;
-};
-
-/**
- * Context type for `createDoApi`. Extends `PluginCtx` with `require` — injected at
- * runtime because this is a regular plugin with `depends: [bindingsPlugin]`.
- * Structural intersection avoids importing unexported core internals.
- */
-type ApiCtx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
-  /**
-   * Cross-plugin API accessor (spec/08 §7). durableObjects only resolves
-   * `bindingsPlugin`, so `require` is typed to that one dependency — core does
-   * not export `RequireFunction`, and a `{ name: string }` constraint is not
-   * assignable from core's real `PluginLike`-constrained `require`.
-   *
-   * @param plugin - The bindings plugin instance.
-   * @returns The bindings api.
-   */
-  require(plugin: typeof bindingsPlugin): BindingsApi;
-};
+import type { Ctx, DeployManifest } from "./types";
 
 /**
  * Builds the `app.durableObjects` API surface — `get` and `deployManifest`.
@@ -67,7 +25,7 @@ type ApiCtx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
  * const manifest = api.deployManifest(); // { kind: "do", bindings: { counter: "COUNTER" } }
  * ```
  */
-export const createDoApi = (ctx: ApiCtx) => ({
+export const createDoApi = (ctx: Ctx) => ({
   /**
    * Resolves a `DurableObjectStub` off the per-request env.
    *

@@ -12,10 +12,10 @@ export { queuesPlugin } from "./queues";
 export { serverPlugin } from "./server";
 export { storagePlugin } from "./storage";
 
-// ─── Plugin Types (namespace re-exports; Standard+ only) ─────
-export * as Bindings from "./bindings/types";
-export * as D1 from "./d1/types";
-export * as DurableObjects from "./durable-objects/types";
-export * as Queues from "./queues/types";
-export * as Server from "./server/types";
-export * as Storage from "./storage/types";
+// ─── Plugin Types (type-only namespace re-exports; Standard+ only) ─────
+export type * as Bindings from "./bindings/types";
+export type * as D1 from "./d1/types";
+export type * as DurableObjects from "./durable-objects/types";
+export type * as Queues from "./queues/types";
+export type * as Server from "./server/types";
+export type * as Storage from "./storage/types";

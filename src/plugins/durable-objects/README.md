@@ -139,7 +139,7 @@ The plugin's types are re-exported from the package barrel as the `DurableObject
 | `DurableObjects.Config` | `{ bindings: Record<string, string> }` | The plugin config. Also re-exported flat as `Config` from the plugin module. |
 | `DurableObjects.DeployManifest` | `{ kind: "do"; bindings: Record<string, string> }` | Return type of `deployManifest()`. `kind` is the literal `"do"`. |
 | `DurableObjects.Api` | `{ get(...): DurableObjectStub; deployManifest(): DeployManifest }` | The full `app.durableObjects` surface. |
-| `DurableObjects.Ctx` | `PluginCtx<Config, Record<string, never>, WorkerEvents>` | Internal plugin context — own config first, no state, global events. |
+| `DurableObjects.Ctx` | `PluginCtx<Config, Record<string, never>, WorkerEvents>` intersected with a narrow `require(bindingsPlugin)` | Internal API-factory context — own config first, no state, global events; not needed by consumers. |
 
 The `defineDurableObject` helper's structural types — `DurableObjectBase` (`{ readonly ctx: DurableObjectState; readonly env: WorkerEnv }`) and `DurableObjectBaseConstructor` — live in the plugin's `helpers.ts`. Only the `defineDurableObject` value is re-exported at the package top level; you typically never name these types directly, since `extends defineDurableObject(...)` infers them.
 

@@ -3,6 +3,7 @@
  */
 import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEnv, WorkerEvents } from "../../config";
+import type { BindingsApi, bindingsPlugin } from "../bindings";
 
 /**
  * durableObjects plugin configuration. Flat; complete default so omission never yields undefined.
@@ -51,5 +52,16 @@ export type Api = {
   deployManifest(): DeployManifest;
 };
 
-/** Internal context type — own config first, no state, no DO events. */
-export type Ctx = PluginCtx<Config, Record<string, never>, WorkerEvents>;
+/**
+ * Internal context type — own config first, no state, no DO events.
+ * Intersected with a narrow `require` typed to the one dependency durableObjects resolves.
+ */
+export type Ctx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
+  /**
+   * Resolve a dependency plugin's api. durableObjects only ever resolves `bindingsPlugin`.
+   *
+   * @param plugin - The bindingsPlugin instance.
+   * @returns The resolved bindings api.
+   */
+  require(plugin: typeof bindingsPlugin): BindingsApi;
+};

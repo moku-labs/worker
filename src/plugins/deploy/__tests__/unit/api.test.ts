@@ -503,7 +503,7 @@ describe("createDeployApi", () => {
       ctx.emit("deploy:complete", { url: "https://x.workers.dev" });
       ctx.emit("provision:resource", { kind: "kv", name: "KV" });
 
-      expect(true).toBe(true);
+      expect(ctx.emit).toBeDefined();
     });
 
     it("ctx.emit rejects unknown event names", () => {
@@ -512,7 +512,7 @@ describe("createDeployApi", () => {
       // @ts-expect-error -- "unknown:event" is not declared in WorkerEvents
       ctx.emit("unknown:event", {});
 
-      expect(true).toBe(true);
+      expect(ctx.emit).toBeDefined();
     });
 
     it("ctx.emit rejects wrong payload for deploy:phase", () => {
@@ -521,7 +521,7 @@ describe("createDeployApi", () => {
       // @ts-expect-error -- deploy:phase expects { phase: string }, not { wrong: true }
       ctx.emit("deploy:phase", { wrong: true });
 
-      expect(true).toBe(true);
+      expect(ctx.emit).toBeDefined();
     });
 
     it("ResourceManifest is exhaustively narrowable by kind", () => {
@@ -554,8 +554,7 @@ describe("createDeployApi", () => {
         }
       };
 
-      narrow({ kind: "kv", binding: "KV" });
-      expect(true).toBe(true);
+      expect(() => narrow({ kind: "kv", binding: "KV" })).not.toThrow();
     });
 
     it("ctx.require(storagePlugin) exposes deployManifest returning { kind:'r2' }", () => {

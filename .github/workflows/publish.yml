@@ -52,7 +52,12 @@ jobs:
         run: |
           set -euo pipefail
           # package.json on a protected branch goes stale; the latest tag is the truth.
-          prev="$(git tag --list 'v*' --sort=-v:refname | head -1)" # previous release tag, or "" on the first release
+          # versionsort.suffix='-' ranks prerelease tags (e.g. v1.2.3-rc.0) BELOW their release.
+          # Without it, a stray prerelease tag sorts highest and becomes the base — and a prerelease
+          # base makes `npm version patch|minor|major` FINALIZE (e.g. 0.1.2-rc.0 -> 0.1.2) instead of
+          # incrementing, so the job then tries to re-create an existing tag and dies. A higher-base
+          # prerelease still outranks a lower stable, so rc-to-rc chaining (prerelease bumps) still works.
+          prev="$(git -c versionsort.suffix='-' tag --list 'v*' --sort=-v:refname | head -1)" # latest release tag, or "" on the first release
           base="${prev#v}"
           base="${base:-0.0.0}"
           # Set package.json to the base, then bump — no git tag, no push from npm.

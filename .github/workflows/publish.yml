@@ -107,7 +107,11 @@ jobs:
       - run: bun run build
       - run: bun run validate
       - name: Pack the publishable tarball
-        run: npm pack --pack-destination dist-pack
+        # `npm pack --pack-destination` does NOT create the target dir (errors ENOENT on
+        # write), so create it first.
+        run: |
+          mkdir -p dist-pack
+          npm pack --pack-destination dist-pack
       - uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: npm-package

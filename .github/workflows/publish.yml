@@ -10,10 +10,15 @@ on:
   release:
     types: [published]
 
-# Scope concurrency by workflow name (see ci.yml note) so a release's reused CI run
-# is in the "Release" group and a concurrent push to main can't cancel its checks.
+# Distinct literal group ("publish-…") — NOT github.workflow. The reused ci.yml (the `check`
+# job below) computes its concurrency from the CALLER's github.workflow = "Release", i.e.
+# "Release-<ref>". If this parent run also used "Release-<ref>" it would hold that slot for its
+# whole duration while the child `check` waits for the same slot → deadlock, and the reusable
+# workflow fails to start (no jobs, run fails). A distinct "publish-<ref>" group avoids the
+# collision; the child stays in "Release-<ref>", still separate from standalone CI's "CI-<ref>",
+# so a concurrent push to main can't cancel a release's checks.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:

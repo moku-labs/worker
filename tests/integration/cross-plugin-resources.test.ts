@@ -29,7 +29,7 @@ import {
   queuesPlugin,
   storagePlugin
 } from "../../src/index";
-import { createMemoryProvider } from "../../src/plugins/storage/providers/memory";
+import { createMemoryProvider } from "../../src/plugins/storage/__tests__/helpers/memory-provider";
 
 // ---------------------------------------------------------------------------
 // Shared test scaffolding

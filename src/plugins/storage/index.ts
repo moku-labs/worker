@@ -2,7 +2,7 @@
  * storage — Complex tier plugin.
  *
  * Cloudflare R2 object storage behind a provider adapter seam (real R2Bucket
- * via `providers/r2.ts` + in-memory test double via `providers/memory.ts`).
+ * via `providers/r2.ts`; in-memory test double in `__tests__/helpers/memory-provider.ts`).
  * Env-first runtime API — every method resolves the R2 binding from the
  * per-request `env` argument, never from stored state (SB4; spec/08 §6).
  * Build-time `deployManifest()` hands the deploy plugin this plugin's R2 metadata.

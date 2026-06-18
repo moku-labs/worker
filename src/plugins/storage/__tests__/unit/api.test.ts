@@ -2,8 +2,8 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import { bindingsPlugin } from "../../../bindings";
 import { createStorageApi } from "../../api";
-import { createMemoryProvider } from "../../providers/memory";
 import type { StorageApi, StorageCtx } from "../../types";
+import { createMemoryProvider } from "../helpers/memory-provider";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Unit test: createStorageApi (mock ctx, memory-backed fake bindings)

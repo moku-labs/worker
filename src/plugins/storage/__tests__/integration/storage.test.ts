@@ -4,8 +4,8 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import type { WorkerConfig, WorkerEvents } from "../../../../config";
 import { bindingsPlugin } from "../../../bindings";
 import { storagePlugin } from "../../index";
-import { createMemoryProvider } from "../../providers/memory";
 import type { StorageApi } from "../../types";
+import { createMemoryProvider } from "../helpers/memory-provider";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Integration test: storage plugin with createApp (full kernel wiring)

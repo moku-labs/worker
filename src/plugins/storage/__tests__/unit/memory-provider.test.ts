@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createMemoryProvider } from "../../providers/memory";
+import { createMemoryProvider } from "../helpers/memory-provider";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Unit test: createMemoryProvider (in-memory test double, no kernel)

@@ -14,7 +14,7 @@
  * copied verbatim from the proven plugin-level integration suites:
  *   - kv  → src/plugins/kv/__tests__/integration/kv.test.ts (makeFakeKv)
  *   - d1  → src/plugins/d1/__tests__/integration/d1.test.ts (makeFakeD1, seeded rows)
- *   - R2  → src/plugins/storage/providers/memory.ts (createMemoryProvider as env.ASSETS)
+ *   - R2  → src/plugins/storage/__tests__/helpers/memory-provider.ts (createMemoryProvider as env.ASSETS)
  *   - queue → src/plugins/queues/__tests__/integration/queues.test.ts (makeFakeQueue/makeMessage/makeBatch)
  *   - DO  → src/plugins/durable-objects/__tests__/integration/durable-objects.test.ts (makeFakeNamespace)
  *
@@ -32,7 +32,7 @@ import {
   queuesPlugin,
   storagePlugin
 } from "../../src/index";
-import { createMemoryProvider } from "../../src/plugins/storage/providers/memory";
+import { createMemoryProvider } from "../../src/plugins/storage/__tests__/helpers/memory-provider";
 
 // ---------------------------------------------------------------------------
 // Shared test scaffolding

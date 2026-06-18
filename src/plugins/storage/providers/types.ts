@@ -11,8 +11,9 @@
  *
  * @example
  * ```ts
- * const provider = createMemoryProvider();
+ * // every StorageProvider (the real R2 adapter or an in-memory test double) exposes:
  * await provider.put("k", "v");
+ * const obj = await provider.get("k");
  * ```
  */
 export type StorageProvider = {

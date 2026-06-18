@@ -11,7 +11,7 @@
  * casts via `as unknown as R2Xxx`. The casts are intentional and localised to
  * this provider — they do not violate R6 (which applies to createState/config).
  */
-import type { StorageProvider } from "./types";
+import type { StorageProvider } from "../../providers/types";
 
 /** Stored entry shape — value kept as the raw input for later introspection. */
 type MemEntry = {

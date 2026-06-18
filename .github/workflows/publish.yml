@@ -83,7 +83,12 @@ jobs:
           # attacker-influenceable commit text). --verify-tag fails closed if the tag is missing.
           # A release created with the default GITHUB_TOKEN does NOT re-fire release:published,
           # so the publish job below runs inline in this same run for the dispatch path.
-          gh release create "$TAG" --generate-notes --verify-tag --title "$TAG"
+          # A prerelease tag (contains '-', e.g. v1.2.3-rc.0) must be flagged --prerelease so
+          # GitHub does not surface an rc as the repo's "Latest release"; stable tags get --latest.
+          case "$TAG" in
+            *-*) gh release create "$TAG" --generate-notes --verify-tag --title "$TAG" --prerelease --latest=false ;;
+            *)   gh release create "$TAG" --generate-notes --verify-tag --title "$TAG" --latest ;;
+          esac
 
   # 3. Build + package the tarball WITHOUT the publish token in scope (optional hardening).
   package:

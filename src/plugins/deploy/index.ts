@@ -27,6 +27,9 @@ const defaultConfig: Config = { configFile: "wrangler.jsonc", ci: false };
  * generates/updates wrangler config, uploads the R2 upload dir, and runs wrangler deploy.
  * Also supports a universal path: run({ manifest }) uses a caller-supplied manifest verbatim.
  *
+ * Emits only the global events `deploy:phase`, `deploy:complete`, and `provision:resource`
+ * (declared in WorkerEvents — no per-plugin events block).
+ *
  * @see README.md
  */
 export const deployPlugin = createPlugin("deploy", {

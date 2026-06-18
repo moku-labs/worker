@@ -19,6 +19,8 @@ const defaultConfig: Config = {
  * `events` is declared first and via `register.map<QueueEvents>` so the plugin's own events infer
  * into the factory context; the api wiring is therefore arrow-wrapped (contextually typed).
  *
+ * Emits the plugin-local `queue:message` event after each consumed message.
+ *
  * @see README.md
  */
 export const queuesPlugin = createPlugin("queues", {

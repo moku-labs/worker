@@ -96,15 +96,18 @@ export const createDeployApi = (ctx: Ctx) => ({
       ].filter((resource): resource is NonNullable<typeof resource> => resource !== undefined)
     };
 
+    // Provision each resource (idempotent create) and announce it as it lands.
     ctx.emit("deploy:phase", { phase: "provision" });
     for (const resource of manifest.resources) {
       await provisionResource(resource, ctx.config.ci);
       ctx.emit("provision:resource", { kind: resource.kind, name: resourceName(resource) });
     }
 
+    // Generate/update the wrangler config from the assembled manifest.
     ctx.emit("deploy:phase", { phase: "wrangler-config" });
     await writeWranglerConfig(ctx.config.configFile, manifest);
 
+    // Upload the R2 directory when a bucket declares an upload source.
     const r2Resource = manifest.resources.find(
       (resource): resource is Extract<ResourceManifest, { kind: "r2" }> => resource.kind === "r2"
     );
@@ -113,6 +116,7 @@ export const createDeployApi = (ctx: Ctx) => ({
       ctx.emit("deploy:phase", { phase: "upload", detail: `${String(count)} files` });
     }
 
+    // Hand off to `wrangler deploy` and report the deployed URL.
     ctx.emit("deploy:phase", { phase: "deploy" });
     const url = await runWrangler(["deploy", "--config", ctx.config.configFile]);
     ctx.emit("deploy:complete", { url });

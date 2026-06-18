@@ -42,9 +42,11 @@ const extractDeployedUrl = (output: string): string => {
  */
 export const runWrangler = (args: string[]): Promise<string> =>
   new Promise<string>((resolve, reject) => {
+    // Accumulate stdout/stderr as raw Buffer chunks — decoded once on close.
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
 
+    // Spawn the wrangler CLI with piped stdio so its output can be captured.
     // wrangler is a trusted dev/peer dependency resolved from the local node_modules/.bin.
     // eslint-disable-next-line sonarjs/no-os-command-from-path -- wrangler is a pinned peer dep resolved from node_modules/.bin
     const child = spawn("wrangler", args, {
@@ -52,18 +54,21 @@ export const runWrangler = (args: string[]): Promise<string> =>
       stdio: ["ignore", "pipe", "pipe"]
     });
 
+    // Stream stdout/stderr chunks into their buffers as they arrive.
     child.stdout.on("data", (chunk: Buffer) => {
       chunks.push(chunk);
     });
-
     child.stderr.on("data", (chunk: Buffer) => {
       errChunks.push(chunk);
     });
 
+    // Reject if wrangler can't be spawned at all (missing binary, EACCES, …).
     child.on("error", err => {
       reject(new Error(`[moku-worker] Failed to spawn wrangler.\n  ${err.message}`));
     });
 
+    // On close: decode the buffers, then reject on a non-zero exit or resolve
+    // (deploy verb → parsed URL, any other verb → full stdout).
     child.on("close", code => {
       const stdout = Buffer.concat(chunks).toString("utf8");
       const stderr = Buffer.concat(errChunks).toString("utf8");

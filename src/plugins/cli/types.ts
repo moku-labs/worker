@@ -11,6 +11,16 @@ export type Config = {
    * @default 8787
    */
   readonly port: number;
+
+  /**
+   * Render the deploy progress TUI through the branded console sink from
+   * `@moku-labs/common/cli` — at init the cli plugin clears the default object-dump
+   * log sink and installs the branded one (`›`/`⚠`/`✗`). Set `false` to keep the
+   * default trace-only behavior (e.g. in tests).
+   *
+   * @default true
+   */
+  readonly branded: boolean;
 };
 
 /** Public api surface of the cli plugin, mounted at app.cli.*. */

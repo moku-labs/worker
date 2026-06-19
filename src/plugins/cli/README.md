@@ -77,25 +77,25 @@ await app.cli.deploy();              // opts === undefined forwarded to deploy.r
 
 ## Events
 
-`cli` **emits no events of its own.** It is a pure consumer of the three **global** deploy events — declared once in `src/config.ts` (`WorkerEvents`) and emitted by the `deploy` plugin during `deploy.run(...)`. Because they are global, `cli`'s hooks see them regardless of the `depends` edge. Each handler reads only its typed payload and the injected core logger `ctx.log` (common's sink-based logger: `info(event, data?)`), printing the formatted line as `event` with no `data`. Handlers are pure fire-and-forget observers: they print and return; they never mutate state and never block the deploy pipeline.
+`cli` **emits no events of its own.** It is a pure consumer of the three **global** deploy events — declared once in `src/config.ts` (`WorkerEvents`) and emitted by the `deploy` plugin during `deploy.run(...)`. Because they are global, `cli`'s hooks see them regardless of the `depends` edge. Each handler reads only its typed payload and logs a clean, prefix-free message via the injected core logger `ctx.log`. The cli plugin installs the **branded** log sink from `@moku-labs/common/cli` at `onInit` (replacing the default object-dump sink; opt out with `branded: false`), so every line renders with the family `›` marker and brand color — `⚠`/`✗` to stderr — matching `@moku-labs/web`. Handlers are pure fire-and-forget observers: they print and return; they never mutate state and never block the deploy pipeline.
 
-| Event (listened) | Payload (from `WorkerEvents`) | Printed line |
-|------------------|-------------------------------|--------------|
-| `deploy:phase` | `{ phase: string; detail?: string }` | `> <phase>` — or `> <phase> - <detail>` when `detail` is present. One line per pipeline phase (`detect`, `provision`, `wrangler-config`, `upload`, `deploy`). |
-| `provision:resource` | `{ kind: "kv" \| "r2" \| "d1" \| "queue" \| "do"; name: string }` | `  + <kind> <name>` — indented line per provisioned resource. |
-| `deploy:complete` | `{ url: string }` | `done -> <url>` — terminal success line with the deployed URL. |
+| Event (listened) | Payload (from `WorkerEvents`) | Rendered line (branded) |
+|------------------|-------------------------------|-------------------------|
+| `deploy:phase` | `{ phase: string; detail?: string }` | `  › <phase>` — or `  › <phase> · <detail>` when `detail` is present. One line per pipeline phase (`detect`, `provision`, `wrangler-config`, `upload`, `deploy`). |
+| `provision:resource` | `{ kind: "kv" \| "r2" \| "d1" \| "queue" \| "do"; name: string }` | `  › <kind> <name>` — one line per provisioned resource. |
+| `deploy:complete` | `{ url: string }` | `  › deployed → <url>` — terminal success line with the deployed URL. |
 
 A full guided deploy therefore streams something like:
 
 ```text
-> detect
-> provision
-  + kv CACHE
-  + d1 DB
-> wrangler-config
-> upload - 3 files
-> deploy
-done -> https://my-worker.workers.dev
+  › detect
+  › provision
+  › kv CACHE
+  › d1 DB
+  › wrangler-config
+  › upload · 3 files
+  › deploy
+  › deployed → https://my-worker.workers.dev
 ```
 
 ## Usage

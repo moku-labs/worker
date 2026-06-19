@@ -8,6 +8,7 @@
  *
  * @see README.md
  */
+import { brandedSink } from "@moku-labs/common/cli";
 import { createPlugin } from "../../config";
 import { deployPlugin } from "../deploy";
 import { createCliApi } from "./api";
@@ -15,7 +16,7 @@ import { createCliHooks } from "./handlers";
 import type { Config } from "./types";
 
 // Typed const ABOVE the factory — no inline `as` in config (R6; spec/11 §Part 2).
-const defaultConfig: Config = { port: 8787 };
+const defaultConfig: Config = { port: 8787, branded: true };
 
 /**
  * Standard tier (node-only) — developer-facing CLI surface.
@@ -32,6 +33,12 @@ const defaultConfig: Config = { port: 8787 };
 export const cliPlugin = createPlugin("cli", {
   depends: [deployPlugin] as const,
   config: defaultConfig,
+  // eslint-disable-next-line jsdoc/require-jsdoc -- structural lifecycle wiring: brand the TUI by swapping the default object log sink for the branded one (node-only; excluded from the runtime bundle).
+  onInit: ctx => {
+    if (!ctx.config.branded) return;
+    ctx.log.clearSinks();
+    ctx.log.addSink(brandedSink("info"));
+  },
   // eslint-disable-next-line jsdoc/require-jsdoc -- structural api wiring (contextual typing)
   api: ctx => createCliApi(ctx),
   // eslint-disable-next-line jsdoc/require-jsdoc -- structural hooks wiring (contextual typing)

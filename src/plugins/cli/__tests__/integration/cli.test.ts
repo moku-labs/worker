@@ -87,7 +87,7 @@ const createTestApp = () => {
       d1: { binding: "DB", migrations: "./migrations" },
       queues: { producers: ["orders"], onMessage: async () => undefined },
       durableObjects: { bindings: { counter: "COUNTER" } },
-      cli: { port: 8787 }
+      cli: { port: 8787, branded: false }
     }
   });
 };
@@ -133,7 +133,7 @@ describe("cli plugin (integration)", () => {
   // ─── hook integration: emit → cli logs ─────────────────────────────────────
 
   describe("hook integration — deploy events drive cli log output", () => {
-    it("cli hooks log > detect when deploy:phase(detect) is emitted", async () => {
+    it("cli hooks log detect when deploy:phase(detect) is emitted", async () => {
       const app = createTestApp();
 
       // Spy on log entries — log is a core plugin, entries accumulated in trace
@@ -145,10 +145,10 @@ describe("cli plugin (integration)", () => {
       const newEntries = entries.slice(traceBeforeLen);
       const events = newEntries.map(e => e.event);
 
-      expect(events).toContain("> detect");
+      expect(events).toContain("detect");
     });
 
-    it("cli hooks log > provision when deploy:phase(provision) is emitted", async () => {
+    it("cli hooks log provision when deploy:phase(provision) is emitted", async () => {
       const app = createTestApp();
 
       const traceBeforeLen = app.log.trace().length;
@@ -159,10 +159,10 @@ describe("cli plugin (integration)", () => {
         .trace()
         .slice(traceBeforeLen)
         .map(e => e.event);
-      expect(events).toContain("> provision");
+      expect(events).toContain("provision");
     });
 
-    it("cli hooks log done -> <url> when deploy:complete is emitted", async () => {
+    it("cli hooks log deployed → <url> when deploy:complete is emitted", async () => {
       const app = createTestApp();
 
       const traceBeforeLen = app.log.trace().length;
@@ -173,10 +173,10 @@ describe("cli plugin (integration)", () => {
         .trace()
         .slice(traceBeforeLen)
         .map(e => e.event);
-      expect(events).toContain("done -> https://cli-test.workers.dev");
+      expect(events).toContain("deployed → https://cli-test.workers.dev");
     });
 
-    it("cli hooks log  + kv KV when provision:resource(kv, KV) is emitted", async () => {
+    it("cli hooks log kv KV when provision:resource(kv, KV) is emitted", async () => {
       const app = createTestApp();
 
       const traceBeforeLen = app.log.trace().length;
@@ -187,10 +187,10 @@ describe("cli plugin (integration)", () => {
         .trace()
         .slice(traceBeforeLen)
         .map(e => e.event);
-      expect(events).toContain("  + kv KV");
+      expect(events).toContain("kv KV");
     });
 
-    it("cli hooks log  + r2 ASSETS when provision:resource(r2, ASSETS) is emitted", async () => {
+    it("cli hooks log r2 ASSETS when provision:resource(r2, ASSETS) is emitted", async () => {
       const app = createTestApp();
 
       const traceBeforeLen = app.log.trace().length;
@@ -201,7 +201,7 @@ describe("cli plugin (integration)", () => {
         .trace()
         .slice(traceBeforeLen)
         .map(e => e.event);
-      expect(events).toContain("  + r2 ASSETS");
+      expect(events).toContain("r2 ASSETS");
     });
   });
 

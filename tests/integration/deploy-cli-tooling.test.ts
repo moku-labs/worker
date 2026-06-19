@@ -157,7 +157,7 @@ const createToolingApp = () =>
       d1: { binding: "DB", migrations: "./migrations" },
       queues: { producers: ["JOBS"], onMessage: async () => undefined },
       durableObjects: { bindings: { counter: "COUNTER" } },
-      cli: { port: 8787 },
+      cli: { port: 8787, branded: false },
       deploy: { configFile: "wrangler.jsonc", ci: false }
     }
   });
@@ -337,7 +337,7 @@ describe("deploy + cli tooling (root integration)", () => {
       expect(complete?.payload.url).toBe("https://deploy-test.workers.dev");
     });
 
-    it("cli's deploy hooks format deploy events into the log trace (> detect, done -> <url>)", async () => {
+    it("cli's deploy hooks format deploy events into the log trace (detect, deployed → <url>)", async () => {
       const app = createToolingApp();
 
       await app.cli.deploy({ yes: true });
@@ -347,10 +347,10 @@ describe("deploy + cli tooling (root integration)", () => {
       // The in-memory trace sink is always installed, so the formatted lines appear there.
       const events = app.log.trace().map(entry => entry.event);
 
-      expect(events).toContain("> detect");
-      expect(events).toContain("> provision");
-      expect(events).toContain("  + kv KV");
-      expect(events).toContain("done -> https://deploy-test.workers.dev");
+      expect(events).toContain("detect");
+      expect(events).toContain("provision");
+      expect(events).toContain("kv KV");
+      expect(events).toContain("deployed → https://deploy-test.workers.dev");
     });
 
     it("app.cli.dev() delegates to deploy.dev → wrangler dev on the configured port", async () => {

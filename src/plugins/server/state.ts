@@ -7,8 +7,8 @@
  * Matching rules (highest priority first):
  *   1. More literal segments beat fewer (specificity score).
  *   2. Method-specific endpoint beats an `ALL` endpoint on the same path.
- *   3. Required `{id}` beats optional `{id?}` (score difference).
- *   4. Optional `{id?}` allows the segment to be absent.
+ *   3. Required `{id}` beats optional `{id:?}` (score difference).
+ *   4. Optional `{id:?}` allows the segment to be absent.
  */
 import type { CompiledEndpoint, Endpoint, MatchResult, PathSegment, ServerState } from "./types";
 
@@ -16,28 +16,29 @@ import type { CompiledEndpoint, Endpoint, MatchResult, PathSegment, ServerState 
 const LITERAL_WEIGHT = 2;
 /** Specificity weight for a required param segment `{name}`. */
 const REQUIRED_PARAM_WEIGHT = 1;
-/** Specificity weight for an optional param segment `{name?}`. */
+/** Specificity weight for an optional param segment `{name:?}`. */
 const OPTIONAL_PARAM_WEIGHT = 0;
 
 /**
  * Parse one path segment string into a typed `PathSegment`.
  *
- * `{name}` → required param; `{name?}` → optional param; anything else → literal.
+ * `{name}` → required param; `{name:?}` → optional param; anything else → literal.
+ * The `:?` optional suffix matches the `@moku-labs/web` router pattern.
  *
  * @param raw - A single path segment token (no leading slash).
  * @returns The parsed `PathSegment`.
  * @example
  * ```typescript
- * parseSegment("{id}")  // → { value: "id", param: true, optional: false }
- * parseSegment("{id?}") // → { value: "id", param: true, optional: true }
- * parseSegment("api")   // → { value: "api", param: false, optional: false }
+ * parseSegment("{id}")   // → { value: "id", param: true, optional: false }
+ * parseSegment("{id:?}") // → { value: "id", param: true, optional: true }
+ * parseSegment("api")    // → { value: "api", param: false, optional: false }
  * ```
  */
 const parseSegment = (raw: string): PathSegment => {
   if (raw.startsWith("{") && raw.endsWith("}")) {
     const inner = raw.slice(1, -1);
-    if (inner.endsWith("?")) {
-      return { value: inner.slice(0, -1), param: true, optional: true };
+    if (inner.endsWith(":?")) {
+      return { value: inner.slice(0, -2), param: true, optional: true };
     }
     return { value: inner, param: true, optional: false };
   }
@@ -143,7 +144,7 @@ const tryMatchEndpoint = (
  * @example
  * ```typescript
  * const a = compileEndpoint(endpoint("/api/{id}").get(handler));   // specificity 3
- * const b = compileEndpoint(endpoint("/api/{id?}").get(handler));  // specificity 2
+ * const b = compileEndpoint(endpoint("/api/{id:?}").get(handler));  // specificity 2
  * [b, a].sort(bySpecificityDesc); // → [a, b] — higher specificity first
  * ```
  */
@@ -194,10 +195,12 @@ const findBestMatch = (
  *
  * Called by `onInit` — the one-time per-isolate setup. Sorts `state.table` by
  * specificity (descending), validates that no endpoint path contains duplicate
- * `{param}` names, and sets `state.compiled = true` to guard re-entry.
+ * `{param}` names or the retired `{name?}` optional syntax, and sets
+ * `state.compiled = true` to guard re-entry.
  *
  * @param state - The mutable server state whose `table` should be compiled.
- * @throws {Error} With `[moku-worker]` prefix when a path has duplicate param names.
+ * @throws {Error} With `[moku-worker]` prefix when a path has duplicate param
+ *   names, or uses the old `{name?}` optional syntax (now `{name:?}`).
  * @example
  * ```typescript
  * // Called inside serverPlugin.onInit:
@@ -213,6 +216,16 @@ export const compileServerState = (state: ServerState): void => {
     const seen = new Set<string>();
     for (const segment of compiled.segments) {
       if (!segment.param) continue;
+      // The new parser strips only `:?`; a trailing `?` means the old `{name?}`
+      // optional syntax leaked through — flag it loudly instead of registering a
+      // param literally named "name?".
+      if (segment.value.endsWith("?")) {
+        const name = segment.value.slice(0, -1);
+        throw new Error(
+          `[moku-worker] endpoint path "${compiled.endpoint.path}" uses the old optional-param syntax "{${segment.value}}".\n` +
+            `  Optional params now use the colon form (matching @moku-labs/web): write "{${name}:?}" instead of "{${name}?}".`
+        );
+      }
       if (seen.has(segment.value)) {
         throw new Error(
           `[moku-worker] endpoint path "${compiled.endpoint.path}" has duplicate param "{${segment.value}}".\n` +

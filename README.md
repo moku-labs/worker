@@ -33,7 +33,7 @@ export const app = createApp({
     server: {
       endpoints: [
         endpoint("/health").get(() => new Response("ok", { status: 200 })),
-        endpoint("/api/data/{lang?}").get(({ params }) =>
+        endpoint("/api/data/{lang:?}").get(({ params }) =>
           Response.json({ lang: params.lang ?? "en" })
         ),
         endpoint("/users/{userId}").get(

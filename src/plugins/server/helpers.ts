@@ -3,17 +3,19 @@
  *
  * No ctx, no lifecycle, no side effects. Runs before `createApp`.
  */
-import type { Endpoint, EndpointHandler } from "./types";
+import type { Endpoint, EndpointHandler, PathParams } from "./types";
 
 /**
  * Fluent builder whose verb methods each return a typed `Endpoint`.
  *
+ * @template Path - The path template literal, used to infer each handler's
+ *   typed `ctx.params` ({@link PathParams}).
  * @example
  * ```typescript
- * const e = endpoint("/api/{id}").get(handler);
+ * const e = endpoint("/api/{id}").get(({ params }) => Response.json({ id: params.id }));
  * ```
  */
-export type EndpointBuilder = {
+export type EndpointBuilder<Path extends string> = {
   /**
    * Build a GET endpoint bound to this path.
    *
@@ -24,7 +26,7 @@ export type EndpointBuilder = {
    * endpoint("/health").get(() => new Response("ok"));
    * ```
    */
-  get(handler: EndpointHandler): Endpoint;
+  get(handler: EndpointHandler<PathParams<Path>>): Endpoint;
   /**
    * Build a POST endpoint bound to this path.
    *
@@ -35,7 +37,7 @@ export type EndpointBuilder = {
    * endpoint("/users").post(({ request }) => Response.json({ created: true }, { status: 201 }));
    * ```
    */
-  post(handler: EndpointHandler): Endpoint;
+  post(handler: EndpointHandler<PathParams<Path>>): Endpoint;
   /**
    * Build a PUT endpoint bound to this path.
    *
@@ -46,7 +48,7 @@ export type EndpointBuilder = {
    * endpoint("/users/{id}").put(({ params }) => Response.json({ updated: params.id }));
    * ```
    */
-  put(handler: EndpointHandler): Endpoint;
+  put(handler: EndpointHandler<PathParams<Path>>): Endpoint;
   /**
    * Build a PATCH endpoint bound to this path.
    *
@@ -57,7 +59,7 @@ export type EndpointBuilder = {
    * endpoint("/users/{id}").patch(({ params }) => Response.json({ patched: params.id }));
    * ```
    */
-  patch(handler: EndpointHandler): Endpoint;
+  patch(handler: EndpointHandler<PathParams<Path>>): Endpoint;
   /**
    * Build a DELETE endpoint bound to this path.
    *
@@ -68,7 +70,7 @@ export type EndpointBuilder = {
    * endpoint("/users/{id}").delete(() => new Response(null, { status: 204 }));
    * ```
    */
-  delete(handler: EndpointHandler): Endpoint;
+  delete(handler: EndpointHandler<PathParams<Path>>): Endpoint;
   /**
    * Build a HEAD endpoint bound to this path.
    *
@@ -79,7 +81,7 @@ export type EndpointBuilder = {
    * endpoint("/health").head(() => new Response(null, { status: 200 }));
    * ```
    */
-  head(handler: EndpointHandler): Endpoint;
+  head(handler: EndpointHandler<PathParams<Path>>): Endpoint;
   /**
    * Build an OPTIONS endpoint bound to this path.
    *
@@ -90,7 +92,7 @@ export type EndpointBuilder = {
    * endpoint("/api").options(() => new Response(null, { headers: { Allow: "GET, POST" } }));
    * ```
    */
-  options(handler: EndpointHandler): Endpoint;
+  options(handler: EndpointHandler<PathParams<Path>>): Endpoint;
   /**
    * Build an ALL-method endpoint bound to this path (`method: "ALL"` — matches any verb).
    *
@@ -101,7 +103,7 @@ export type EndpointBuilder = {
    * endpoint("0 * * * *").all(async () => new Response("cron done"));
    * ```
    */
-  all(handler: EndpointHandler): Endpoint;
+  all(handler: EndpointHandler<PathParams<Path>>): Endpoint;
 };
 
 /**
@@ -116,29 +118,36 @@ export type EndpointBuilder = {
  * makeEndpoint("/api", "GET", handler); // { path: "/api", method: "GET", handler }
  * ```
  */
-const makeEndpoint = (
-  path: string,
+const makeEndpoint = <Path extends string>(
+  path: Path,
   method: Endpoint["method"],
-  handler: EndpointHandler
-): Endpoint => ({ path, method, handler });
+  handler: EndpointHandler<PathParams<Path>>
+): Endpoint =>
+  // The matcher fills `params` with exactly the names declared in `path`, so the
+  // path-typed handler is sound to store under the type-erased `Endpoint.handler`.
+  ({ path, method, handler: handler as EndpointHandler });
 
 /**
- * Build a typed `Endpoint`. `{name}` → required param; `{name?}` → optional param.
+ * Build a typed `Endpoint`. `{name}` → required param (`string`); `{name:?}` →
+ * optional param (`string | undefined`). The path template flows into each
+ * handler's `ctx.params` ({@link PathParams}), so a required `{id}` is typed
+ * `string` — no `?? ""` fallback needed.
  *
  * PURE factory (spec/03 §1): no ctx, no lifecycle, no side effects; safe to run
  * before `createApp`. Each verb method (`get`, `post`, …, `all`) returns the
  * truthful Endpoint value — `method: "ALL"` is never used as a `"get"` sentinel.
  *
- * @param path - Endpoint path, optionally with `{name}` / `{name?}` params.
+ * @template Path - The path template literal, inferred from `path`.
+ * @param path - Endpoint path, optionally with `{name}` / `{name:?}` params.
  * @returns A builder whose verb methods each return a typed `Endpoint`.
  * @example
  * ```typescript
- * endpoint("/api/data/{lang?}").get(({ params }) =>
+ * endpoint("/api/data/{lang:?}").get(({ params }) =>
  *   Response.json({ lang: params.lang ?? "en" })
  * );
  * ```
  */
-export const endpoint = (path: string): EndpointBuilder => ({
+export const endpoint = <Path extends string>(path: Path): EndpointBuilder<Path> => ({
   /**
    * Build a GET endpoint bound to this path.
    *

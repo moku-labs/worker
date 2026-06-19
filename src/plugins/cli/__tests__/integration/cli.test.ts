@@ -7,7 +7,7 @@
 
 import { envPlugin, logPlugin } from "@moku-labs/common";
 import { createCoreConfig } from "@moku-labs/core";
-import { afterAll, beforeAll, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import type { WorkerConfig, WorkerEvents } from "../../../../config";
 import { bindingsPlugin } from "../../../bindings";
@@ -96,15 +96,21 @@ const createTestApp = () => {
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
-// The deploy TUI is always branded; silence its console output for the whole file (the
-// branded log sink writes to stdout/stderr, while assertions read the in-memory trace).
-beforeAll(() => {
-  vi.spyOn(console, "log").mockImplementation(() => undefined);
-  vi.spyOn(console, "warn").mockImplementation(() => undefined);
-  vi.spyOn(console, "error").mockImplementation(() => undefined);
+// The deploy TUI is ALWAYS branded. Capture its console output so a test can assert the
+// branded lines end-to-end — and the rest of the suite stays quiet (captured, not printed).
+// The brand rendering itself (›/⚠/✗) is unit-tested in @moku-labs/common (brandedSink).
+let consoleOut: string[] = [];
+let consoleSpies: { mockRestore: () => void }[] = [];
+beforeEach(() => {
+  consoleOut = [];
+  consoleSpies = (["log", "warn", "error"] as const).map(level =>
+    vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
+      consoleOut.push(args.map(String).join(" "));
+    })
+  );
 });
-afterAll(() => {
-  vi.restoreAllMocks();
+afterEach(() => {
+  for (const spy of consoleSpies) spy.mockRestore();
 });
 
 describe("cli plugin (integration)", () => {
@@ -144,6 +150,19 @@ describe("cli plugin (integration)", () => {
   // ─── hook integration: emit → cli logs ─────────────────────────────────────
 
   describe("hook integration — deploy events drive cli log output", () => {
+    it("renders the deploy TUI as branded › lines on the console (always branded)", async () => {
+      const app = createTestApp();
+
+      await app.cli.deploy();
+
+      // onInit installed brandedSink (always) — events render through the brand vocabulary,
+      // not the default object-dump sink. (Plain mode off a TTY: the › glyph, no ANSI.)
+      const out = consoleOut.join("\n");
+      expect(out).toContain("› detect");
+      expect(out).toContain("› kv KV");
+      expect(out).toContain("› deployed → https://cli-test.workers.dev");
+    });
+
     it("cli hooks log detect when deploy:phase(detect) is emitted", async () => {
       const app = createTestApp();
 

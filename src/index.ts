@@ -67,4 +67,9 @@ export { endpoint } from "./plugins/server/helpers";
 export { defineDurableObject } from "./plugins/durable-objects/helpers";
 
 // ─── Types ───────────────────────────────────────────────────
-export type { WorkerConfig, WorkerEvents, WorkerEnv } from "./config";
+// `PluginCtx` is re-exported raw so Layer-3 consumer plugins type their context
+// without importing from `@moku-labs/core` (a Layer-1 boundary the spec validator
+// flags for consumers). `WorkerPluginCtx` is the ergonomic worker-bound alias that
+// pre-merges `WorkerEvents`. core is already a dependency, so this adds no new one.
+export type { PluginCtx } from "@moku-labs/core";
+export type { WorkerConfig, WorkerEvents, WorkerEnv, WorkerPluginCtx } from "./config";

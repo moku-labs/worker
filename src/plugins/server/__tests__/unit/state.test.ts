@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import { endpoint } from "../../helpers";
-import { createServerState } from "../../state";
+import { compileServerState, createServerState } from "../../state";
 import type { MatchResult, ServerState } from "../../types";
 
 // ─── Unit tests: createServerState + match() ──────────────────────────────────
@@ -55,7 +55,7 @@ describe("createServerState", () => {
 
   it("required param scores higher than optional param", () => {
     const req = endpoint("/api/{id}").get(noop);
-    const opt = endpoint("/api/{id?}").get(noop);
+    const opt = endpoint("/api/{id:?}").get(noop);
     const s = createServerState([req, opt]);
     const reqEntry = s.table.find(e => e.endpoint === req);
     const optEntry = s.table.find(e => e.endpoint === opt);
@@ -104,14 +104,14 @@ describe("createServerState", () => {
     });
 
     it("extracts optional param when present", () => {
-      const s = createServerState([endpoint("/api/data/{lang?}").get(noop)]);
+      const s = createServerState([endpoint("/api/data/{lang:?}").get(noop)]);
       const result = s.match("GET", "/api/data/en");
       expect(result).not.toBeNull();
       expect(result?.params.lang).toBe("en");
     });
 
     it("optional param absent — params.x === undefined", () => {
-      const s = createServerState([endpoint("/api/data/{lang?}").get(noop)]);
+      const s = createServerState([endpoint("/api/data/{lang:?}").get(noop)]);
       const result = s.match("GET", "/api/data");
       expect(result).not.toBeNull();
       expect(result?.params.lang).toBeUndefined();
@@ -195,5 +195,39 @@ describe("createServerState", () => {
   it("returns a value satisfying the ServerState interface", () => {
     const s = createServerState([]);
     expectTypeOf(s).toMatchTypeOf<ServerState>();
+  });
+});
+
+// ─── compileServerState — path validation ────────────────────────────────────
+
+describe("compileServerState", () => {
+  it("compiles a valid table and sets compiled = true", () => {
+    const s = createServerState([endpoint("/api/{id}").get(noop)]);
+    expect(() => compileServerState(s)).not.toThrow();
+    expect(s.compiled).toBe(true);
+  });
+
+  it("accepts the {name:?} optional syntax", () => {
+    const s = createServerState([endpoint("/api/data/{lang:?}").get(noop)]);
+    expect(() => compileServerState(s)).not.toThrow();
+  });
+
+  it("rejects the retired {name?} optional syntax with a {name:?} migration hint", () => {
+    // `{id?}` no longer parses as optional — flag it loudly instead of registering
+    // a param literally named "id?".
+    const s = createServerState([endpoint("/api/{id?}").get(noop)]);
+    expect(() => compileServerState(s)).toThrowError(/old optional-param syntax[\s\S]*\{id:\?\}/);
+  });
+
+  it("rejects duplicate {param} names in a path", () => {
+    const s = createServerState([endpoint("/a/{id}/b/{id}").get(noop)]);
+    expect(() => compileServerState(s)).toThrowError(/duplicate param/);
+  });
+
+  it("is idempotent — a second call is a no-op once compiled", () => {
+    const s = createServerState([endpoint("/api/{id}").get(noop)]);
+    compileServerState(s);
+    expect(() => compileServerState(s)).not.toThrow();
+    expect(s.compiled).toBe(true);
   });
 });

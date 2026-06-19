@@ -7,19 +7,19 @@ import type { WorkerEnv, WorkerEvents } from "../../config";
 /** HTTP method an endpoint matches; "ALL" matches any verb. */
 export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS" | "ALL";
 
-/** One parsed path segment: a literal, a required `{name}`, or an optional `{name?}`. */
+/** One parsed path segment: a literal, a required `{name}`, or an optional `{name:?}`. */
 export type PathSegment = {
   /** The literal text, or the param name when a param. */
   readonly value: string;
-  /** Whether this segment is a `{name}` / `{name?}` parameter. */
+  /** Whether this segment is a `{name}` / `{name:?}` parameter. */
   readonly param: boolean;
-  /** Whether the param is optional (`{name?}`). */
+  /** Whether the param is optional (`{name:?}`). */
   readonly optional: boolean;
 };
 
 /** A declarative endpoint produced by the pure endpoint() builder. */
 export type Endpoint = {
-  /** Endpoint path, optionally with `{name}` / `{name?}` params. */
+  /** Endpoint path, optionally with `{name}` / `{name:?}` params. */
   readonly path: string;
   /** HTTP method or "ALL". */
   readonly method: Method;
@@ -84,19 +84,82 @@ type ApiOf<P> = P extends { readonly _phantom: { readonly api: infer A } } ? A :
 /** Cross-plugin reach used inside handlers: require(plugin) returns that plugin's API. Mirrors ctx.require. */
 export type RequireFn = <P extends AnyPlugin>(plugin: P) => ApiOf<P>;
 
-/** A request handler: receives the per-request context, returns a Response. */
-export type EndpointHandler = (ctx: RequestContext) => Response | Promise<Response>;
+/**
+ * Prettify an intersection into a single flat object type for readable hovers.
+ * Homomorphic mapped type — preserves each property's `?` optionality modifier.
+ */
+type Prettify<T> = { [K in keyof T]: T[K] } & {};
 
-/** Fresh per-request object threaded to each EndpointHandler. */
-export type RequestContext = {
+/**
+ * Required param names in a path template, as a string union (`never` if none).
+ * Walks each `{...}` segment: collects a bare `{name}`, skips an optional `{name:?}`.
+ */
+type RequiredParamNames<Path extends string> = Path extends `${string}{${infer Rest}`
+  ? Rest extends `${infer Body}}${infer Tail}`
+    ? Body extends `${string}:?`
+      ? RequiredParamNames<Tail>
+      : Body | RequiredParamNames<Tail>
+    : never
+  : never;
+
+/**
+ * Optional param names in a path template with the `:?` suffix stripped, as a
+ * string union (`never` if none). Collects `{name:?}`, skips a bare `{name}`.
+ */
+type OptionalParamNames<Path extends string> = Path extends `${string}{${infer Rest}`
+  ? Rest extends `${infer Body}}${infer Tail}`
+    ? Body extends `${infer Name}:?`
+      ? Name | OptionalParamNames<Tail>
+      : OptionalParamNames<Tail>
+    : never
+  : never;
+
+/**
+ * Map a path template to its typed `params` object: a required `{name}` becomes
+ * `name: string`; an optional `{name:?}` becomes `name?: string`. A non-literal
+ * `string` path (e.g. one assembled at runtime) widens to the permissive
+ * `Record<string, string | undefined>`.
+ *
+ * @example
+ * ```typescript
+ * type P = PathParams<"/boards/{id}/data/{lang:?}">;
+ * // { id: string; lang?: string }
+ * ```
+ */
+export type PathParams<Path extends string> = string extends Path
+  ? Record<string, string | undefined>
+  : Prettify<
+      { [K in RequiredParamNames<Path>]: string } & { [K in OptionalParamNames<Path>]?: string }
+    >;
+
+/**
+ * A request handler: receives the per-request context, returns a Response.
+ *
+ * @template Params - Path-params shape, inferred by the `endpoint()` builder
+ *   from the path template ({@link PathParams}) — a required `{name}` is
+ *   `string`, an optional `{name:?}` is `string | undefined`. Defaults to the
+ *   permissive `Record<string, string | undefined>` for hand-written handler types.
+ */
+export type EndpointHandler<Params = Record<string, string | undefined>> = (
+  ctx: RequestContext<Params>
+) => Response | Promise<Response>;
+
+/**
+ * Fresh per-request object threaded to each EndpointHandler.
+ *
+ * @template Params - Path-params shape for `params`, inferred from the path
+ *   template by the `endpoint()` builder ({@link PathParams}). Defaults to the
+ *   permissive `Record<string, string | undefined>`.
+ */
+export type RequestContext<Params = Record<string, string | undefined>> = {
   /** The incoming request. */
   readonly request: Request;
   /** Per-request Cloudflare bindings — threaded on the stack, NEVER stored in state. */
   readonly env: WorkerEnv;
   /** waitUntil / passThroughOnException. */
   readonly exec: ExecutionContext;
-  /** Path params extracted from the matched endpoint. */
-  readonly params: Record<string, string | undefined>;
+  /** Path params extracted from the matched endpoint, typed from the path template. */
+  readonly params: Params;
   /** Parsed request URL. */
   readonly url: URL;
   /** Cross-plugin reach for handlers (e.g. require(bindingsPlugin)). */

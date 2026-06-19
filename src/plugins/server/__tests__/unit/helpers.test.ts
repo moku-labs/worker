@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import { endpoint } from "../../helpers";
-import type { Endpoint, EndpointHandler } from "../../types";
+import type { Endpoint, EndpointHandler, PathParams } from "../../types";
 
 // ─── Unit tests: endpoint() pure builder ─────────────────────────────────────
 
@@ -104,5 +104,62 @@ describe("endpoint() pure builder", () => {
   it("EndpointHandler returns Response | Promise<Response>", () => {
     expectTypeOf(syncHandler).toMatchTypeOf<EndpointHandler>();
     expectTypeOf(asyncHandler).toMatchTypeOf<EndpointHandler>();
+  });
+});
+
+// ─── Typed path params (PathParams<Path>) ────────────────────────────────────
+//
+// The reported bug: a required `{id}` surfaced on `ctx.params` as
+// `string | undefined`, forcing handlers to write `ctx.params.id ?? ""`. The
+// path template now flows into `params`: required `{name}` → `string`, optional
+// `{name:?}` → `string | undefined`.
+
+describe("PathParams<Path> — path-template → params shape", () => {
+  it("required {id} resolves to { id: string } — never string | undefined", () => {
+    expectTypeOf<PathParams<"/api/boards/{id}/cards">>().toEqualTypeOf<{ id: string }>();
+  });
+
+  it("optional {lang:?} resolves to an optional { lang?: string }", () => {
+    expectTypeOf<PathParams<"/api/data/{lang:?}">>().toEqualTypeOf<{ lang?: string }>();
+  });
+
+  it("multiple required params each resolve to string", () => {
+    expectTypeOf<PathParams<"/users/{userId}/posts/{postId}">>().toEqualTypeOf<{
+      userId: string;
+      postId: string;
+    }>();
+  });
+
+  it("mixed optional + required params resolve together", () => {
+    expectTypeOf<PathParams<"/{lang:?}/{slug}">>().toEqualTypeOf<{ slug: string; lang?: string }>();
+  });
+
+  it("a param-less path exposes no param keys", () => {
+    expectTypeOf<keyof PathParams<"/health">>().toEqualTypeOf<never>();
+  });
+
+  it("a non-literal string path widens to Record<string, string | undefined>", () => {
+    expectTypeOf<PathParams<string>>().toEqualTypeOf<Record<string, string | undefined>>();
+  });
+});
+
+describe("endpoint() threads the path type into the handler", () => {
+  it("required {id} — builder hands the handler ctx.params.id: string (the fix)", () => {
+    expectTypeOf(endpoint("/api/boards/{id}/cards").post)
+      .parameter(0)
+      .toEqualTypeOf<EndpointHandler<{ id: string }>>();
+  });
+
+  it("optional {lang:?} — builder hands the handler ctx.params.lang?: string", () => {
+    expectTypeOf(endpoint("/api/data/{lang:?}").get)
+      .parameter(0)
+      .toEqualTypeOf<EndpointHandler<{ lang?: string }>>();
+  });
+
+  it("a runtime-built (non-literal) path keeps the permissive handler type", () => {
+    const dynamicPath: string = "/api/dynamic";
+    expectTypeOf(endpoint(dynamicPath).get)
+      .parameter(0)
+      .toEqualTypeOf<EndpointHandler<Record<string, string | undefined>>>();
   });
 });

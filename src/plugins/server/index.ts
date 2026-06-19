@@ -4,7 +4,7 @@
  * HTTP routing + request/scheduled dispatch + the Worker-entry surface for
  * `@moku-labs/worker`. Compiles a declarative `Endpoint` list into a
  * specificity-sorted matcher table (`state.match`) with method `ALL` support
- * and `{name}`/`{name?}` path params. Emits global `request:start`/`request:end`
+ * and `{name}`/`{name:?}` path params. Emits global `request:start`/`request:end`
  * and per-plugin `server:matched`. Re-exports the pure `endpoint()` builder.
  *
  * `depends: [bindingsPlugin]` ensures bindings is resolved first; endpoint

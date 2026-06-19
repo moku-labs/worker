@@ -32,7 +32,7 @@ export const app = createApp({
     server: {
       endpoints: [
         endpoint("/health").get(() => new Response("ok")),
-        endpoint("/api/data/{lang?}").get(({ params }) =>
+        endpoint("/api/data/{lang:?}").get(({ params }) =>
           Response.json({ lang: params.lang ?? "en" })
         )
       ]
@@ -92,7 +92,7 @@ endpoint("0 * * * *").all(async ({ env }) => {
 ```typescript
 import { endpoint } from "@moku-labs/worker";
 
-endpoint(path: string): EndpointBuilder;
+endpoint<Path extends string>(path: Path): EndpointBuilder<Path>;
 ```
 
 A **pure static factory** — no `ctx`, no lifecycle, no side effects; safe to call before `createApp`. Returns a builder whose verb methods each produce a typed `Endpoint`:
@@ -108,13 +108,13 @@ A **pure static factory** — no `ctx`, no lifecycle, no side effects; safe to c
 | `options(handler)` | `"OPTIONS"` |
 | `all(handler)` | `"ALL"` (matches any verb / used for cron) |
 
-`handler` is an `EndpointHandler` — `(ctx: RequestContext) => Response | Promise<Response>`. `method: "ALL"` is a truthful value handled by the matcher, never a `"get"` sentinel.
+`handler` is an `EndpointHandler<Params>` — `(ctx: RequestContext<Params>) => Response | Promise<Response>`, where `Params` is inferred from the path template (see **Path params** below). `method: "ALL"` is a truthful value handled by the matcher, never a `"get"` sentinel.
 
-**Path params:** `{name}` is a required param, `{name?}` is optional. Both surface on `params` as `Record<string, string | undefined>`. An absent optional param resolves to `undefined`.
+**Path params:** `{name}` is a required param, `{name:?}` is optional — the `:?` form matches the `@moku-labs/web` router. The path template is parsed at the type level into `ctx.params`: a required `{name}` is typed `string` (no `?? ""` fallback needed), an optional `{name:?}` is typed `string | undefined`. A path assembled from a non-literal `string` widens to `Record<string, string | undefined>`. An absent optional param resolves to `undefined` at runtime.
 
 ```typescript
 endpoint("/users/{id}").get(({ params }) => Response.json({ id: params.id }));
-endpoint("/api/data/{lang?}").get(({ params }) =>
+endpoint("/api/data/{lang:?}").get(({ params }) =>
   Response.json({ lang: params.lang ?? "en" })
 );
 ```
@@ -130,7 +130,7 @@ The fresh per-request object threaded to every `EndpointHandler`:
 | `request` | `Request` | The incoming Cloudflare `Request`. For cron, a synthesized `https://cron/<cron>` request. |
 | `env` | `WorkerEnv` | Per-request Cloudflare bindings. Threaded on the stack, **never** stored in state. |
 | `exec` | `ExecutionContext` | `waitUntil` / `passThroughOnException`. |
-| `params` | `Record<string, string \| undefined>` | Path params extracted from the matched endpoint. |
+| `params` | `Params` (typed from the path) | Path params from the matched endpoint: required `{name}` → `string`, optional `{name:?}` → `string \| undefined`. Defaults to `Record<string, string \| undefined>`. |
 | `url` | `URL` | Parsed request URL. |
 | `require` | `RequireFn` | Cross-plugin reach: `require(plugin)` returns that plugin's api. Mirrors `ctx.require`. |
 | `has` | `(name: string) => boolean` | Presence check for an optional plugin by name. |
@@ -176,7 +176,7 @@ export const app = createApp({
         ),
 
         // Optional param: /api/data and /api/data/fr both match
-        endpoint("/api/data/{lang?}").get(({ params }) =>
+        endpoint("/api/data/{lang:?}").get(({ params }) =>
           Response.json({ lang: params.lang ?? "en" })
         ),
 
@@ -212,10 +212,10 @@ export default {
 
 The matcher resolves each request to its best endpoint, highest priority first:
 
-1. **Specificity** — more literal segments win (literal `= 2`, required `{name}` `= 1`, optional `{name?}` `= 0`; summed per path).
+1. **Specificity** — more literal segments win (literal `= 2`, required `{name}` `= 1`, optional `{name:?}` `= 0`; summed per path).
 2. **Method-specific beats `ALL`** on the same path, as a tie-break.
-3. A required `{name}` outscores an optional `{name?}`.
-4. An optional `{name?}` lets the trailing segment be absent.
+3. A required `{name}` outscores an optional `{name:?}`.
+4. An optional `{name:?}` lets the trailing segment be absent.
 
 Paths are split on `/` and empty segments dropped, so trailing slashes do not change matching. Method comparison is exact and case-sensitive against `request.method`.
 

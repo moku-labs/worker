@@ -50,6 +50,7 @@ export const runWrangler = (args: string[]): Promise<string> =>
     // wrangler is a trusted dev/peer dependency resolved from the local node_modules/.bin.
     // eslint-disable-next-line sonarjs/no-os-command-from-path -- wrangler is a pinned peer dep resolved from node_modules/.bin
     const child = spawn("wrangler", args, {
+      // @env-allow — pass the parent environment through to the wrangler subprocess (not app config).
       env: { ...process.env },
       stdio: ["ignore", "pipe", "pipe"]
     });

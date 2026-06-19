@@ -7,7 +7,7 @@
 
 import { envPlugin, logPlugin } from "@moku-labs/common";
 import { createCoreConfig } from "@moku-labs/core";
-import { describe, expect, expectTypeOf, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import type { WorkerConfig, WorkerEvents } from "../../../../config";
 import { bindingsPlugin } from "../../../bindings";
@@ -96,6 +96,23 @@ const createTestApp = () => {
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
+// The deploy TUI is ALWAYS branded. Capture its console output so a test can assert the
+// branded lines end-to-end — and the rest of the suite stays quiet (captured, not printed).
+// The brand rendering itself (›/⚠/✗) is unit-tested in @moku-labs/common (brandedSink).
+let consoleOut: string[] = [];
+let consoleSpies: { mockRestore: () => void }[] = [];
+beforeEach(() => {
+  consoleOut = [];
+  consoleSpies = (["log", "warn", "error"] as const).map(level =>
+    vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
+      consoleOut.push(args.map(String).join(" "));
+    })
+  );
+});
+afterEach(() => {
+  for (const spy of consoleSpies) spy.mockRestore();
+});
+
 describe("cli plugin (integration)", () => {
   // ─── wiring ────────────────────────────────────────────────────────────────
 
@@ -133,7 +150,20 @@ describe("cli plugin (integration)", () => {
   // ─── hook integration: emit → cli logs ─────────────────────────────────────
 
   describe("hook integration — deploy events drive cli log output", () => {
-    it("cli hooks log > detect when deploy:phase(detect) is emitted", async () => {
+    it("renders the deploy TUI as branded › lines on the console (always branded)", async () => {
+      const app = createTestApp();
+
+      await app.cli.deploy();
+
+      // onInit installed brandedSink (always) — events render through the brand vocabulary,
+      // not the default object-dump sink. (Plain mode off a TTY: the › glyph, no ANSI.)
+      const out = consoleOut.join("\n");
+      expect(out).toContain("› detect");
+      expect(out).toContain("› kv KV");
+      expect(out).toContain("› deployed → https://cli-test.workers.dev");
+    });
+
+    it("cli hooks log detect when deploy:phase(detect) is emitted", async () => {
       const app = createTestApp();
 
       // Spy on log entries — log is a core plugin, entries accumulated in trace
@@ -145,10 +175,10 @@ describe("cli plugin (integration)", () => {
       const newEntries = entries.slice(traceBeforeLen);
       const events = newEntries.map(e => e.event);
 
-      expect(events).toContain("> detect");
+      expect(events).toContain("detect");
     });
 
-    it("cli hooks log > provision when deploy:phase(provision) is emitted", async () => {
+    it("cli hooks log provision when deploy:phase(provision) is emitted", async () => {
       const app = createTestApp();
 
       const traceBeforeLen = app.log.trace().length;
@@ -159,10 +189,10 @@ describe("cli plugin (integration)", () => {
         .trace()
         .slice(traceBeforeLen)
         .map(e => e.event);
-      expect(events).toContain("> provision");
+      expect(events).toContain("provision");
     });
 
-    it("cli hooks log done -> <url> when deploy:complete is emitted", async () => {
+    it("cli hooks log deployed → <url> when deploy:complete is emitted", async () => {
       const app = createTestApp();
 
       const traceBeforeLen = app.log.trace().length;
@@ -173,10 +203,10 @@ describe("cli plugin (integration)", () => {
         .trace()
         .slice(traceBeforeLen)
         .map(e => e.event);
-      expect(events).toContain("done -> https://cli-test.workers.dev");
+      expect(events).toContain("deployed → https://cli-test.workers.dev");
     });
 
-    it("cli hooks log  + kv KV when provision:resource(kv, KV) is emitted", async () => {
+    it("cli hooks log kv KV when provision:resource(kv, KV) is emitted", async () => {
       const app = createTestApp();
 
       const traceBeforeLen = app.log.trace().length;
@@ -187,10 +217,10 @@ describe("cli plugin (integration)", () => {
         .trace()
         .slice(traceBeforeLen)
         .map(e => e.event);
-      expect(events).toContain("  + kv KV");
+      expect(events).toContain("kv KV");
     });
 
-    it("cli hooks log  + r2 ASSETS when provision:resource(r2, ASSETS) is emitted", async () => {
+    it("cli hooks log r2 ASSETS when provision:resource(r2, ASSETS) is emitted", async () => {
       const app = createTestApp();
 
       const traceBeforeLen = app.log.trace().length;
@@ -201,7 +231,7 @@ describe("cli plugin (integration)", () => {
         .trace()
         .slice(traceBeforeLen)
         .map(e => e.event);
-      expect(events).toContain("  + r2 ASSETS");
+      expect(events).toContain("r2 ASSETS");
     });
   });
 

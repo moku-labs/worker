@@ -43,7 +43,7 @@ vi.mock("../../src/plugins/deploy/providers/r2", () => ({
 }));
 
 // Imported AFTER the vi.mock calls above (which are hoisted) so these resolve to the mocks.
-import { beforeEach } from "vitest";
+import { afterAll, beforeAll, beforeEach } from "vitest";
 import { cliPlugin, deployPlugin } from "../../src/cli";
 import {
   createApp,
@@ -61,6 +61,17 @@ import { writeWranglerConfig } from "../../src/plugins/deploy/wrangler-config";
 // Clear mocks between tests so call counts/args don't bleed across assertions.
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+// The deploy TUI is always branded; silence its console output for the whole file (the
+// branded log sink writes to stdout/stderr, while assertions read the in-memory trace).
+beforeAll(() => {
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+});
+afterAll(() => {
+  vi.restoreAllMocks();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -337,7 +348,7 @@ describe("deploy + cli tooling (root integration)", () => {
       expect(complete?.payload.url).toBe("https://deploy-test.workers.dev");
     });
 
-    it("cli's deploy hooks format deploy events into the log trace (> detect, done -> <url>)", async () => {
+    it("cli's deploy hooks format deploy events into the log trace (detect, deployed → <url>)", async () => {
       const app = createToolingApp();
 
       await app.cli.deploy({ yes: true });
@@ -347,10 +358,10 @@ describe("deploy + cli tooling (root integration)", () => {
       // The in-memory trace sink is always installed, so the formatted lines appear there.
       const events = app.log.trace().map(entry => entry.event);
 
-      expect(events).toContain("> detect");
-      expect(events).toContain("> provision");
-      expect(events).toContain("  + kv KV");
-      expect(events).toContain("done -> https://deploy-test.workers.dev");
+      expect(events).toContain("detect");
+      expect(events).toContain("provision");
+      expect(events).toContain("kv KV");
+      expect(events).toContain("deployed → https://deploy-test.workers.dev");
     });
 
     it("app.cli.dev() delegates to deploy.dev → wrangler dev on the configured port", async () => {

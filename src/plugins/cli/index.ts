@@ -8,6 +8,7 @@
  *
  * @see README.md
  */
+import { brandedSink } from "@moku-labs/common/cli";
 import { createPlugin } from "../../config";
 import { deployPlugin } from "../deploy";
 import { createCliApi } from "./api";
@@ -32,6 +33,11 @@ const defaultConfig: Config = { port: 8787 };
 export const cliPlugin = createPlugin("cli", {
   depends: [deployPlugin] as const,
   config: defaultConfig,
+  // eslint-disable-next-line jsdoc/require-jsdoc -- structural lifecycle wiring: the deploy TUI is ALWAYS branded — swap the default object log sink for the branded one (node-only; excluded from the runtime bundle).
+  onInit: ctx => {
+    ctx.log.clearSinks();
+    ctx.log.addSink(brandedSink("info"));
+  },
   // eslint-disable-next-line jsdoc/require-jsdoc -- structural api wiring (contextual typing)
   api: ctx => createCliApi(ctx),
   // eslint-disable-next-line jsdoc/require-jsdoc -- structural hooks wiring (contextual typing)

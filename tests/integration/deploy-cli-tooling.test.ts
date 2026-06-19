@@ -43,7 +43,7 @@ vi.mock("../../src/plugins/deploy/providers/r2", () => ({
 }));
 
 // Imported AFTER the vi.mock calls above (which are hoisted) so these resolve to the mocks.
-import { beforeEach } from "vitest";
+import { afterAll, beforeAll, beforeEach } from "vitest";
 import { cliPlugin, deployPlugin } from "../../src/cli";
 import {
   createApp,
@@ -61,6 +61,17 @@ import { writeWranglerConfig } from "../../src/plugins/deploy/wrangler-config";
 // Clear mocks between tests so call counts/args don't bleed across assertions.
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+// The deploy TUI is always branded; silence its console output for the whole file (the
+// branded log sink writes to stdout/stderr, while assertions read the in-memory trace).
+beforeAll(() => {
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+});
+afterAll(() => {
+  vi.restoreAllMocks();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -157,7 +168,7 @@ const createToolingApp = () =>
       d1: { binding: "DB", migrations: "./migrations" },
       queues: { producers: ["JOBS"], onMessage: async () => undefined },
       durableObjects: { bindings: { counter: "COUNTER" } },
-      cli: { port: 8787, branded: false },
+      cli: { port: 8787 },
       deploy: { configFile: "wrangler.jsonc", ci: false }
     }
   });

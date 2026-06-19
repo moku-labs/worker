@@ -35,7 +35,7 @@ const makeMockCtx = (
 ): { ctx: CliCtx; deployStub: ReturnType<typeof makeDeployStub> } => {
   const deployStub = makeDeployStub();
   const ctx: CliCtx = {
-    config: { port, branded: true },
+    config: { port },
     state: {} as Record<string, never>,
     emit: vi.fn() as CliCtx["emit"],
     require: (_plugin: typeof deployPlugin) => deployStub

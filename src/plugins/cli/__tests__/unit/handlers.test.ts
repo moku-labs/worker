@@ -20,7 +20,7 @@ import { createCliHooks } from "../../handlers";
 const makeMockCtx = (): { ctx: CliCtx; logInfo: ReturnType<typeof vi.fn> } => {
   const logInfo = vi.fn<(event: string, data?: unknown) => void>();
   const ctx: CliCtx = {
-    config: { port: 8787, branded: true },
+    config: { port: 8787 },
     state: {} as Record<string, never>,
     emit: vi.fn() as CliCtx["emit"],
     log: {

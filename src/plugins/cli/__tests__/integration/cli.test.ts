@@ -7,7 +7,7 @@
 
 import { envPlugin, logPlugin } from "@moku-labs/common";
 import { createCoreConfig } from "@moku-labs/core";
-import { describe, expect, expectTypeOf, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import type { WorkerConfig, WorkerEvents } from "../../../../config";
 import { bindingsPlugin } from "../../../bindings";
@@ -87,7 +87,7 @@ const createTestApp = () => {
       d1: { binding: "DB", migrations: "./migrations" },
       queues: { producers: ["orders"], onMessage: async () => undefined },
       durableObjects: { bindings: { counter: "COUNTER" } },
-      cli: { port: 8787, branded: false }
+      cli: { port: 8787 }
     }
   });
 };
@@ -95,6 +95,17 @@ const createTestApp = () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
+
+// The deploy TUI is always branded; silence its console output for the whole file (the
+// branded log sink writes to stdout/stderr, while assertions read the in-memory trace).
+beforeAll(() => {
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+});
+afterAll(() => {
+  vi.restoreAllMocks();
+});
 
 describe("cli plugin (integration)", () => {
   // ─── wiring ────────────────────────────────────────────────────────────────

@@ -16,7 +16,7 @@ import { cliPlugin } from "@moku-labs/worker/cli";
 import { createApp } from "@moku-labs/worker";
 ```
 
-`cli` is a **single-dependency** plugin: it depends only on `deploy` (`depends: [deployPlugin] as const`). The edge exists purely so `ctx.require(deployPlugin)` is legal and type-safe — it is not required for event visibility, because the deploy events are global. `cli` holds **no state**, emits **no events of its own**, and defines **no lifecycle hooks**.
+`cli` is a **single-dependency** plugin: it depends only on `deploy` (`depends: [deployPlugin] as const`). The edge exists purely so `ctx.require(deployPlugin)` is legal and type-safe — it is not required for event visibility, because the deploy events are global. `cli` holds **no state** and emits **no events of its own**; its one lifecycle hook is an `onInit` that installs the branded log sink (see [Configuration](#configuration)).
 
 ## Configuration
 
@@ -25,6 +25,7 @@ Configured through `pluginConfigs.cli`. The config is flat with a complete defau
 | Field  | Type     | Default | Description |
 |--------|----------|---------|-------------|
 | `port` | `number` | `8787`  | Default local dev port. Used **only** when `dev()` is called with no `port` override; passed through to `deploy.dev({ port })` → `wrangler dev --port <n>`. |
+| `branded` | `boolean` | `true` | Render the deploy TUI through the branded log sink from [`@moku-labs/common/cli`](https://github.com/moku-labs/common). At `onInit` the plugin clears the default object-dump log sink and installs `brandedSink()` (node-only — the Worker runtime bundle excludes `cli`, so its logging is untouched). Set `false` to keep the default trace-only behavior, e.g. in tests. |
 
 ```typescript
 import { createApp } from "@moku-labs/worker";
@@ -172,5 +173,5 @@ The `@moku-labs/worker/cli` entry (`src/cli.ts`) re-exports `cliPlugin`, `deploy
 - **Node-only exclusion from the Worker bundle (HC11).** `cli` is exported only from the package `./cli` entry (`src/cli.ts`) and is deliberately **not** re-exported from `src/index.ts` (the bare `.` barrel that `createApp` ships in). The deployed Worker bundle must never import deploy tooling. `cli`'s own dependency, `deploy`, is node-only too (it reaches for `node:child_process` and `node:fs`), so keeping both behind `./cli` keeps Node built-ins out of the isolate bundle.
 - **Standard tier rationale.** A domain function — the `deploy:phase` formatter — exceeds the trivial-inline bar, so the verbs live in `api.ts` and the three TUI formatters in `handlers.ts`, leaving `index.ts` as a wiring harness under 50 lines. The `api` and `hooks` fields are passed as inline lambdas `(ctx) => ...` to preserve event-name inference, so the hook-map keys are constrained to `WorkerEvents` keys.
 - **Single-dependency `require`.** `cli` depends on exactly one plugin, so its context types `require` as a single typed method — `require(plugin: typeof deployPlugin): DeployApi` — rather than the general multi-plugin `RequireFn` that `deploy` itself uses. This mirrors the `kv` single-dep overload pattern and gives `ctx.require(deployPlugin)` a precise `dev` / `run` / `init` return type.
-- **No state, no lifecycle.** Nothing to retain (Workers are request-scoped; the CLI runs synchronously in a Node script and returns), so `createState` is omitted. No `onInit` / `onStart` / `onStop`: there is no endpoint table to compile and no long-lived connection, socket, or pool to open or close.
-- **No external runtime packages.** The "TUI" is plain `ctx.log` lines — no argv parser, no `bin`, no TUI library inside the plugin. All Wrangler/Cloudflare interaction lives in `deploy`, not here.
+- **No state; one lifecycle hook.** Nothing to retain (`createState` is omitted). The sole lifecycle hook is `onInit`, which — when `branded` is on — swaps the default object-dump log sink for `brandedSink()` from `@moku-labs/common/cli` (node-only, so the Worker runtime bundle is unaffected). No `onStart` / `onStop`: there is no long-lived connection, socket, or pool to open or close.
+- **No external runtime packages.** The TUI is `ctx.log` lines rendered by the branded sink from `@moku-labs/common/cli` (zero-dependency ANSI) — no argv parser, no `bin`, no third-party TUI library inside the plugin. All Wrangler/Cloudflare interaction lives in `deploy`, not here.

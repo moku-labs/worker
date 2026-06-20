@@ -61,6 +61,14 @@
     "@moku-labs/common": "0.2.0",
     "@moku-labs/core": "0.1.4"
   },
+  "peerDependencies": {
+    "wrangler": ">=3"
+  },
+  "peerDependenciesMeta": {
+    "wrangler": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.3",
     "@arethetypeswrong/core": "0.18.3",

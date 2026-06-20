@@ -1,6 +1,6 @@
 {
   "name": "@moku-labs/worker",
-  "version": "0.1.0",
+  "version": "0.5.1",
   "description": "Cloudflare Worker framework for Moku — Durable Objects, Queues, R2, D1, and KV plugins that compose with Moku Web.",
   "repository": {
     "type": "git",
@@ -36,7 +36,11 @@
       }
     }
   },
-  "files": ["dist", "LICENSE", "README.md"],
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "sideEffects": false,
   "publishConfig": {
     "access": "public"

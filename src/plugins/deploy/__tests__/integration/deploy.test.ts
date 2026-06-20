@@ -21,7 +21,8 @@ import type { Api, ExternalManifest } from "../../types";
 // ─────────────────────────────────────────────────────────────────────────────
 
 vi.mock("../../runner", () => ({
-  runWrangler: vi.fn().mockResolvedValue("https://deploy-test.workers.dev")
+  runWrangler: vi.fn().mockResolvedValue("https://deploy-test.workers.dev"),
+  runWranglerInherit: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock("../../wrangler-config", () => ({
@@ -55,8 +56,10 @@ vi.mock("../../auth/verify", () => ({
     .mockResolvedValue({ ok: true, account: "test", accountId: "acct-test", scopes: [] })
 }));
 
-vi.mock("../../dev/runner", () => ({
-  // dev() spawns a long-lived watch loop; mock it so the integration test never blocks.
+vi.mock("../../dev/runner", async importActual => ({
+  // Keep the real d1MigrationBindings (run()'s remote-migrate step uses it); only mock the
+  // long-lived dev watch loop so the integration test never blocks.
+  ...(await importActual<typeof import("../../dev/runner")>()),
   runDev: vi.fn().mockResolvedValue(undefined),
   realDevDeps: vi.fn(() => ({}))
 }));

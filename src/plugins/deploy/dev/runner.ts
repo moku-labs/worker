@@ -152,7 +152,7 @@ export const realDevDeps = (): DevDeps => ({
  * const bindings = d1MigrationBindings(ctx); // ["DB"]
  * ```
  */
-const d1MigrationBindings = (ctx: Ctx): string[] =>
+export const d1MigrationBindings = (ctx: Ctx): string[] =>
   ctx.has("d1")
     ? ctx
         .require(d1Plugin)

@@ -11,6 +11,15 @@ import type { Config } from "./types";
 /** Divider drawn before the native `wrangler dev` TUI so the moku preamble reads as one section. */
 const WRANGLER_DIVIDER = `  ── wrangler ${"─".repeat(48)}`;
 
+/** Deploy phases that are a slow, opaque wait (captured output) — worth a live spinner on a TTY. */
+const SPINNER_PHASES = new Set(["upload", "deploy"]);
+/** Braille spinner glyphs; advance one per tick. */
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+/** Spinner tick interval (ms). */
+const SPINNER_TICK_MS = 80;
+/** Carriage-return + blanks + carriage-return that wipes the transient spinner line before settling. */
+const SPINNER_CLEAR = `\r${" ".repeat(72)}\r`;
+
 /**
  * CLI plugin context type for hooks — own config, no state, global events.
  *
@@ -65,20 +74,61 @@ export const createCliHooks = (ctx: CliCtx): CliHooks => {
   // (the branded sink), while the divider that brackets the native wrangler TUI is drawn to stdout
   // — the same split the auth/doctor verbs use.
   const ui = createBrandConsole();
+  const { palette } = ui;
+
+  // ── Live deploy spinner (TTY only) ───────────────────────────────────────────────────────────
+  // A slow, opaque deploy wait — the R2 upload, the captured `wrangler deploy` — shows a branded
+  // braille spinner so it never looks frozen. Off a TTY (CI / pipes) the spinner stays silent and
+  // the phase prints as a plain `ctx.log` line (the prior behavior), so piped logs stay clean.
+  let spinnerTimer: ReturnType<typeof setInterval> | undefined;
+  let spinnerLabel: string | undefined;
+
+  // eslint-disable-next-line jsdoc/require-jsdoc -- internal closure
+  const stopSpinner = (): void => {
+    if (spinnerTimer !== undefined) {
+      clearInterval(spinnerTimer);
+      spinnerTimer = undefined;
+    }
+    if (spinnerLabel !== undefined) {
+      process.stdout.write(SPINNER_CLEAR);
+      ctx.log.info(spinnerLabel); // settle the finished phase as a permanent line
+      spinnerLabel = undefined;
+    }
+  };
+
+  // eslint-disable-next-line jsdoc/require-jsdoc -- internal closure
+  const startSpinner = (label: string): void => {
+    spinnerLabel = label;
+    let frame = 0;
+    const text = `${label} …`;
+    spinnerTimer = setInterval(() => {
+      const glyph = SPINNER_FRAMES[frame % SPINNER_FRAMES.length] ?? SPINNER_FRAMES[0];
+      frame += 1;
+      process.stdout.write(`\r  ${palette.pink(glyph)} ${palette.dim(text)}`);
+    }, SPINNER_TICK_MS);
+  };
 
   return {
     /**
-     * Log one clean line per pipeline phase: "phase" or "phase · detail".
+     * Render one pipeline phase. Quick phases print a clean line ("phase" / "phase · detail"); the
+     * slow opaque waits (upload / deploy) animate a branded spinner on a TTY, settling to a line when
+     * the next phase or completion arrives. Off a TTY every phase is a plain line (unchanged).
      *
      * @param p - The deploy:phase event payload.
      * @example
      * ```ts
      * handler({ phase: "detect" }); // "detect"
-     * handler({ phase: "upload", detail: "3 files" }); // "upload · 3 files"
+     * handler({ phase: "deploy" }); // spins on a TTY, else "deploy"
      * ```
      */
     "deploy:phase"(p: WorkerEvents["deploy:phase"]): void {
-      ctx.log.info(p.detail ? `${p.phase} · ${p.detail}` : p.phase);
+      stopSpinner(); // settle any prior slow-phase spinner first
+      const label = p.detail ? `${p.phase} · ${p.detail}` : p.phase;
+      if (process.stdout.isTTY === true && SPINNER_PHASES.has(p.phase)) {
+        startSpinner(label);
+      } else {
+        ctx.log.info(label);
+      }
     },
 
     /**
@@ -138,6 +188,7 @@ export const createCliHooks = (ctx: CliCtx): CliHooks => {
      * ```
      */
     "deploy:complete"(p: WorkerEvents["deploy:complete"]): void {
+      stopSpinner(); // settle the final deploy spinner
       ctx.log.info(`deployed → ${p.url}`);
     }
   };

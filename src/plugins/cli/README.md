@@ -1,18 +1,18 @@
 # cli
 
-> Standard tier, **node-only** — the developer-facing command-line front door (`dev` / `deploy`) for a `@moku-labs/worker` project. Thin passthroughs to the `deploy` plugin, plus a live progress TUI. Imported from `@moku-labs/worker/cli`, **never** from `@moku-labs/worker`.
+> Standard tier, **node-only** — the developer-facing command-line front door (`dev` / `deploy`) for a `@moku-labs/worker` project. Thin passthroughs to the `deploy` plugin, plus a live progress TUI. Exported from `@moku-labs/worker` (the `@moku-labs/worker/cli` subpath remains as a back-compat alias).
 
 ## Overview
 
 The `cli` plugin is the small surface a server project drives from a Node script: two build-time verbs — `app.cli.dev()` (run the Worker locally) and `app.cli.deploy()` (one-command Cloudflare deploy). It does **no work itself**. Both verbs are thin passthroughs that forward to the `deploy` plugin via `ctx.require(deployPlugin)`. The single piece of value `cli` adds on top of `deploy` is a **live progress TUI**: it subscribes (via `hooks`) to the three **global** deploy events and prints them through the injected core logger `ctx.log`.
 
-**Node-only.** `cli` runs in Node — inside a `scripts/*.ts` file or a `bin`, at build/deploy time — never inside the Cloudflare isolate at request time. Accordingly it is excluded from the deployed Worker bundle and lives behind a separate package entry:
+**Node-only.** `cli` runs in Node — inside a `scripts/*.ts` file or a `bin`, at build/deploy time — never inside the Cloudflare isolate at request time. It ships from the package root, but its `node:*` graph reaches a bundle only when a consumer adds it to `createApp({ plugins })`; `"sideEffects": false` tree-shakes it out of a request-time Worker that never does:
 
 ```typescript
-// Node tooling (scripts/*.ts) — the ONLY place cli is imported from:
-import { cliPlugin } from "@moku-labs/worker/cli";
+// Node tooling (scripts/*.ts) — add cliPlugin to the app you compose:
+import { cliPlugin, createApp } from "@moku-labs/worker";
 
-// The request-time Worker bundle imports from the bare entry, which does NOT include cli:
+// A request-time Worker that imports only createApp tree-shakes cli away:
 import { createApp } from "@moku-labs/worker";
 ```
 
@@ -30,8 +30,7 @@ Configured through `pluginConfigs.cli`. The config is flat with a complete defau
 > The deploy progress TUI is **always** branded — there is no config flag and no opt-out. At `onInit` the plugin clears the default object-dump log sink and installs `brandedSink()` from [`@moku-labs/common/cli`](https://github.com/moku-labs/common) (node-only; the Worker runtime bundle excludes `cli`, so its logging is untouched). A consistent branded CLI across the family is an invariant, not an option.
 
 ```typescript
-import { createApp } from "@moku-labs/worker";
-import { cliPlugin } from "@moku-labs/worker/cli";
+import { cliPlugin, createApp } from "@moku-labs/worker";
 
 const app = createApp({
   // deploy + its resource deps (kv, d1, storage, queues, durableObjects) — NOT bindings/server (defaults).
@@ -52,31 +51,30 @@ Two public methods, both mounted on `app.cli.*` (regular plugins mount on `app.<
 dev(opts?: { port?: number }): Promise<void>
 ```
 
-Run the Worker locally via Wrangler. Delegates to `ctx.require(deployPlugin).dev(...)`. When called with **no opts**, it forwards the configured default port as `{ port: ctx.config.port }` (8787 by default); when given a port, it forwards that override verbatim.
+Run the Worker locally via Wrangler. Prints a branded dev-session banner, then delegates to `ctx.require(deployPlugin).dev(...)`. The port is resolved from `opts.port`, else a `--port <n>` CLI flag, else `ctx.config.port` (8787). A failure renders a branded `✗` line and sets a non-zero exit code rather than throwing.
 
 ```typescript
-await app.cli.dev();              // → deploy.dev({ port: 8787 })
-await app.cli.dev({ port: 3000 }); // → deploy.dev({ port: 3000 })
+await app.cli.dev();               // port from --port, else 8787 → deploy.dev({ port })
+await app.cli.dev({ port: 3000 }); // explicit override → deploy.dev({ port: 3000 })
 ```
 
 ### `deploy`
 
 ```typescript
-deploy(opts?: { guided?: boolean; yes?: boolean }): Promise<void>
+deploy(opts?: { ci?: boolean; webBuild?: WebBuild }): Promise<void>
 ```
 
-Run the one-command Cloudflare deploy. Delegates to `ctx.require(deployPlugin).run(opts)`, forwarding `opts` **verbatim** — when called with no opts it passes `undefined` (not a default empty object). While `deploy.run` executes its `detect → provision → wrangler-config → upload → deploy` pipeline, it emits the global `deploy:*` / `provision:resource` events that this plugin's hooks turn into the live progress TUI (see [Events](#events)).
+Run the one-command Cloudflare deploy. Delegates to `ctx.require(deployPlugin).run(opts)`, forwarding `opts` **verbatim** — when called with no opts it passes `undefined`. While `deploy.run` executes its `detect → provision → wrangler-config → upload → deploy` pipeline, it emits the global `deploy:*` / `provision:resource` events that this plugin's hooks turn into the live progress TUI (see [Events](#events)). A failure is caught into a branded `✗` line + non-zero exit code (matching `auth`/`doctor`), never a raw stack trace.
 
-- `guided` — walk through each step interactively.
-- `yes` — skip confirmation prompts (non-interactive / CI / non-TTY).
+- `ci` — automated/non-interactive: never prompts, auto-confirms. Omit or `false` → guided (interactive) on a TTY.
+- `webBuild` — build the web site first (e.g. `() => webApp.cli.build()`), before `wrangler deploy`.
 
 ```typescript
-await app.cli.deploy({ guided: true });
-await app.cli.deploy({ yes: true }); // CI
-await app.cli.deploy();              // opts === undefined forwarded to deploy.run
+await app.cli.deploy();             // guided on a TTY
+await app.cli.deploy({ ci: true }); // automated (CI)
 ```
 
-> `cli.deploy` exposes only `{ guided?, yes? }`. The underlying `deploy.run` also accepts a `manifest` (the universal/non-Moku path); to use it, call `app.deploy.run({ manifest })` directly — `cli` deliberately does not surface it.
+> `cli.deploy` exposes `{ ci?, webBuild? }`. The underlying `deploy.run` also accepts a `manifest` (the universal/non-Moku path); to use it, call `app.deploy.run({ manifest })` directly — `cli` deliberately does not surface it.
 
 ## Events
 
@@ -115,7 +113,7 @@ import {
   queuesPlugin,
   storagePlugin
 } from "@moku-labs/worker";
-import { cliPlugin, deployPlugin } from "@moku-labs/worker/cli";
+import { cliPlugin, deployPlugin } from "@moku-labs/worker";
 import { web } from "./web"; // your @moku-labs/web app — web.cli.build() rebuilds the site
 
 // bindings + server are framework defaults baked into the exported createApp
@@ -145,21 +143,21 @@ const webBuild = () => web.cli.build();
 const command = process.argv[2];
 
 if (command === "dev") {
-  const portArg = process.argv[3];
-  await server.cli.dev(portArg ? { port: Number(portArg), webBuild } : { webBuild });
+  // Port is framework-resolved from a `--port <n>` flag, else 8787 — no manual parsing.
+  await server.cli.dev({ webBuild });
 } else if (command === "deploy") {
-  const ci = process.argv.includes("--ci");
-  await server.cli.deploy(ci ? { yes: true, webBuild } : { guided: true, webBuild });
+  // Not CI → guided/interactive; `--ci` → automated, non-interactive.
+  await server.cli.deploy({ ci: process.argv.includes("--ci"), webBuild });
 } else {
   throw new Error(`unknown command: ${String(command)} (expected "dev" or "deploy")`);
 }
 ```
 
 ```bash
-bun scripts/cli.ts dev            # wrangler dev --port 8787, web recompiles on change
-bun scripts/cli.ts dev 3000       # wrangler dev --port 3000
-bun scripts/cli.ts deploy         # build web → guided deploy, live TUI
-bun scripts/cli.ts deploy --ci    # non-interactive deploy
+bun scripts/cli.ts dev              # wrangler dev --port 8787, web recompiles on change
+bun scripts/cli.ts dev --port 3000 # wrangler dev --port 3000
+bun scripts/cli.ts deploy          # build web → guided deploy, live TUI
+bun scripts/cli.ts deploy --ci     # non-interactive deploy
 ```
 
 A worker-only app omits the `webBuild` hook entirely (`server.cli.dev()` / `server.cli.deploy()`); dev then serves the worker without recompiling a site.
@@ -177,11 +175,11 @@ Both verbs accept an optional `webBuild` hook (`() => webApp.cli.build()`): `dev
 
 The resource plugins (`storage`/R2, `kv`, `d1`, `queues`, `durableObjects`) are reached only **transitively**, through `deploy`. `cli` never imports or requires them: `deploy` is the one that declares `depends: [storagePlugin, kvPlugin, d1Plugin, queuesPlugin, durableObjectsPlugin]`, assembles each resource's `deployManifest()`, provisions, writes the wrangler config, uploads, and runs `wrangler deploy` — emitting the global events `cli` renders. `cli` reads neither `deploy`'s config nor any sibling `pluginConfigs`; `ctx.require` returns a plugin's API, never its config.
 
-The `@moku-labs/worker/cli` entry (`src/cli.ts`) re-exports `cliPlugin`, `deployPlugin`, and the deploy manifest types `ExternalManifest` / `ResourceManifest`, so a Node script can compose the full deploy toolchain from one import path.
+The package root (`@moku-labs/worker`) exports `cliPlugin`, `deployPlugin`, and the deploy manifest types `ExternalManifest` / `ResourceManifest`, so a Node script composes the full deploy toolchain from one import path; the `@moku-labs/worker/cli` entry (`src/cli.ts`) re-exports the same names as a back-compat alias.
 
 ## Design notes
 
-- **Node-only exclusion from the Worker bundle (HC11).** `cli` is exported only from the package `./cli` entry (`src/cli.ts`) and is deliberately **not** re-exported from `src/index.ts` (the bare `.` barrel that `createApp` ships in). The deployed Worker bundle must never import deploy tooling. `cli`'s own dependency, `deploy`, is node-only too (it reaches for `node:child_process` and `node:fs`), so keeping both behind `./cli` keeps Node built-ins out of the isolate bundle.
+- **Node-only — tree-shaken from the Worker bundle, not walled off.** `cli` (and its dependency `deploy`, which reaches for `node:child_process` / `node:fs`) ship from `src/index.ts` (`@moku-labs/worker`) — the `./cli` entry is now a back-compat alias. Their Node built-ins reach a bundle only when a consumer adds them to `createApp({ plugins })`; because the package is `"sideEffects": false`, a request-time Worker that imports only `createApp` tree-shakes them away, keeping the isolate bundle clean without a separate entry point.
 - **Standard tier rationale.** A domain function — the `deploy:phase` formatter — exceeds the trivial-inline bar, so the verbs live in `api.ts` and the three TUI formatters in `handlers.ts`, leaving `index.ts` as a wiring harness under 50 lines. The `api` and `hooks` fields are passed as inline lambdas `(ctx) => ...` to preserve event-name inference, so the hook-map keys are constrained to `WorkerEvents` keys.
 - **Single-dependency `require`.** `cli` depends on exactly one plugin, so its context types `require` as a single typed method — `require(plugin: typeof deployPlugin): DeployApi` — rather than the general multi-plugin `RequireFn` that `deploy` itself uses. This mirrors the `kv` single-dep overload pattern and gives `ctx.require(deployPlugin)` a precise `dev` / `run` / `init` return type.
 - **No state; one lifecycle hook.** Nothing to retain (`createState` is omitted). The sole lifecycle hook is `onInit`, which **always** swaps the default object-dump log sink for `brandedSink()` from `@moku-labs/common/cli` (node-only, so the Worker runtime bundle is unaffected). No `onStart` / `onStop`: there is no long-lived connection, socket, or pool to open or close.

@@ -310,12 +310,12 @@ describe("cli plugin (integration)", () => {
       expect(typeof badCall).toBe("function");
     });
 
-    it("@ts-expect-error: deploy rejects guided as number", () => {
+    it("@ts-expect-error: deploy rejects ci as number", () => {
       const app = createTestApp();
 
       const badCall = (): Promise<void> =>
-        // @ts-expect-error -- guided must be boolean, not number
-        app.cli.deploy({ guided: 1 });
+        // @ts-expect-error -- ci must be boolean, not number
+        app.cli.deploy({ ci: 1 });
 
       expect(typeof badCall).toBe("function");
     });

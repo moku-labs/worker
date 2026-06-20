@@ -24,7 +24,7 @@ const makeDeployStub = () => ({
     .fn<(opts?: { port?: number; webBuild?: WebBuild }) => Promise<void>>()
     .mockResolvedValue(undefined),
   run: vi
-    .fn<(opts?: { guided?: boolean; yes?: boolean; webBuild?: WebBuild }) => Promise<void>>()
+    .fn<(opts?: { ci?: boolean; webBuild?: WebBuild }) => Promise<void>>()
     .mockResolvedValue(undefined),
   init: vi.fn<(opts?: { ci?: boolean }) => Promise<void>>().mockResolvedValue(undefined),
   checkInfra: vi
@@ -122,28 +122,39 @@ describe("createCliApi", () => {
       expect(deployStub.dev).toHaveBeenCalledWith({ port: 3000, webBuild });
     });
 
-    it("returns the exact Promise the deploy api returns (passthrough, not re-wrapped)", async () => {
+    it("resolves to undefined on the happy path", async () => {
       const { ctx } = makeMockCtx();
       const api = createCliApi(ctx);
 
-      // The stub returns Promise<void>; we verify the same promise resolves
       await expect(api.dev()).resolves.toBeUndefined();
+    });
+
+    it("renders a branded error + sets a non-zero exit code when deploy.dev throws", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      deployStub.dev.mockRejectedValueOnce(new Error("boom"));
+      const api = createCliApi(ctx);
+      const originalExit = process.exitCode;
+
+      await expect(api.dev()).resolves.toBeUndefined();
+      expect(process.exitCode).toBe(1);
+
+      process.exitCode = originalExit;
     });
   });
 
   // ─── deploy ───────────────────────────────────────────────────────────────
 
   describe("deploy", () => {
-    it("calls require(deployPlugin).run({ guided: true, yes: false }) verbatim", async () => {
+    it("calls require(deployPlugin).run({ ci: true }) verbatim", async () => {
       const { ctx, deployStub } = makeMockCtx();
       const api = createCliApi(ctx);
 
-      await api.deploy({ guided: true, yes: false });
+      await api.deploy({ ci: true });
 
-      expect(deployStub.run).toHaveBeenCalledWith({ guided: true, yes: false });
+      expect(deployStub.run).toHaveBeenCalledWith({ ci: true });
     });
 
-    it("calls run(undefined) when no opts are passed", async () => {
+    it("calls run(undefined) when no opts are passed (guided default)", async () => {
       const { ctx, deployStub } = makeMockCtx();
       const api = createCliApi(ctx);
 
@@ -152,13 +163,13 @@ describe("createCliApi", () => {
       expect(deployStub.run).toHaveBeenCalledWith(undefined);
     });
 
-    it("forwards { yes: true } only (guided omitted) to run", async () => {
+    it("forwards { ci: false } verbatim to run", async () => {
       const { ctx, deployStub } = makeMockCtx();
       const api = createCliApi(ctx);
 
-      await api.deploy({ yes: true });
+      await api.deploy({ ci: false });
 
-      expect(deployStub.run).toHaveBeenCalledWith({ yes: true });
+      expect(deployStub.run).toHaveBeenCalledWith({ ci: false });
     });
 
     it("forwards a webBuild hook verbatim to run", async () => {
@@ -166,16 +177,28 @@ describe("createCliApi", () => {
       const api = createCliApi(ctx);
       const webBuild = vi.fn<WebBuild>().mockResolvedValue({ files: 4 });
 
-      await api.deploy({ guided: true, webBuild });
+      await api.deploy({ ci: true, webBuild });
 
-      expect(deployStub.run).toHaveBeenCalledWith({ guided: true, webBuild });
+      expect(deployStub.run).toHaveBeenCalledWith({ ci: true, webBuild });
     });
 
-    it("returns the exact Promise the deploy api returns (passthrough, not re-wrapped)", async () => {
+    it("renders a branded error + sets a non-zero exit code when run() throws (no rethrow)", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      deployStub.run.mockRejectedValueOnce(new Error("CLOUDFLARE_API_TOKEN is not set"));
+      const api = createCliApi(ctx);
+      const originalExit = process.exitCode;
+
+      await expect(api.deploy({ ci: true })).resolves.toBeUndefined();
+      expect(process.exitCode).toBe(1);
+
+      process.exitCode = originalExit;
+    });
+
+    it("resolves to undefined on the happy path", async () => {
       const { ctx } = makeMockCtx();
       const api = createCliApi(ctx);
 
-      await expect(api.deploy({ guided: true })).resolves.toBeUndefined();
+      await expect(api.deploy({ ci: true })).resolves.toBeUndefined();
     });
   });
 
@@ -307,13 +330,13 @@ describe("createCliApi", () => {
       expect(typeof badCall).toBe("function");
     });
 
-    it("@ts-expect-error: deploy rejects guided: number", () => {
+    it("@ts-expect-error: deploy rejects ci: number", () => {
       const { ctx } = makeMockCtx();
       const api = createCliApi(ctx);
 
       const badCall = (): Promise<void> =>
-        // @ts-expect-error -- guided must be boolean, not number
-        api.deploy({ guided: 1 });
+        // @ts-expect-error -- ci must be boolean, not number
+        api.deploy({ ci: 1 });
 
       expect(typeof badCall).toBe("function");
     });

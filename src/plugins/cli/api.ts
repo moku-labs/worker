@@ -6,6 +6,7 @@ import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEvents } from "../../config";
 import { deployPlugin } from "../deploy";
 import type { Api as DeployApi, WebBuild } from "../deploy/types";
+import { parsePortArg } from "./args";
 import type { Api, Config } from "./types";
 
 /**
@@ -26,61 +27,74 @@ export type CliCtx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
 };
 
 /**
- * Builds app.cli.* — thin passthroughs to the deploy plugin via ctx.require(deployPlugin).
- * Both verbs forward their opts verbatim; `dev` defaults port to ctx.config.port when no
- * opts are supplied.
+ * Builds app.cli.* over the deploy plugin (via ctx.require(deployPlugin)). `dev`/`deploy` resolve
+ * their args (port from `--port`; guided unless `ci`) then delegate, catching any failure into a
+ * branded `✗` line + non-zero exit; the read-only verbs (auth/doctor/whoami) render in Moku style.
  *
  * @param ctx - CLI plugin context (own config + typed require to deployPlugin).
- * @returns The cli API object with `dev` and `deploy` methods.
+ * @returns The cli API object (dev, deploy, auth, doctor, whoami, wrangler).
  * @example
  * ```ts
  * const api = createCliApi(ctx);
- * await api.dev();            // → deploy.dev({ port: 8787 })
- * await api.deploy({ yes: true }); // → deploy.run({ yes: true })
+ * await api.dev({ webBuild: () => web.cli.build() }); // → deploy.dev({ port })
+ * await api.deploy({ ci: true });                     // → deploy.run({ ci: true })
  * ```
  */
 export const createCliApi = (ctx: CliCtx): Api => ({
   /**
-   * Run the Worker locally; defaults port to ctx.config.port (8787) when no opts supplied. A
+   * Run the Worker locally. Resolves the port from `opts.port`, else a `--port <n>` CLI flag, else
+   * `ctx.config.port` (8787). Prints a branded dev-session banner, then delegates to deploy.dev; a
    * `webBuild` hook (e.g. `() => webApp.cli.build()`) wires the web build into the dev loop so the
-   * site recompiles on change — this is how an app-side script composes web + worker.
+   * site recompiles on change. A failure renders a branded `✗` line + non-zero exit, not a stack.
    *
    * @param opts - Optional local dev options.
-   * @param opts.port - Local dev port to bind. Defaults to ctx.config.port (8787).
+   * @param opts.port - Local dev port to bind. Overrides the `--port` flag and the default.
    * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await api.dev();                                   // port 8787, worker only
-   * await api.dev({ webBuild: () => web.cli.build() }); // wire the web build in
+   * await api.dev({ webBuild: () => web.cli.build() }); // port from --port or 8787
    * ```
    */
-  dev(opts?: { port?: number; webBuild?: WebBuild }): Promise<void> {
-    const port = opts?.port ?? ctx.config.port;
-    return ctx
-      .require(deployPlugin)
-      .dev(opts?.webBuild ? { port, webBuild: opts.webBuild } : { port });
+  async dev(opts?: { port?: number; webBuild?: WebBuild }): Promise<void> {
+    const ui = createBrandConsole();
+    ui.lockup({ wordmark: "moku worker", label: "dev session" });
+
+    const port = opts?.port ?? parsePortArg(process.argv) ?? ctx.config.port;
+    try {
+      await ctx
+        .require(deployPlugin)
+        .dev(opts?.webBuild ? { port, webBuild: opts.webBuild } : { port });
+      ui.check(true, "dev session stopped cleanly");
+    } catch (error) {
+      ui.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
   },
 
   /**
-   * One-command guided Cloudflare deploy; forwards flags verbatim to deploy.run.
-   * Passes `undefined` when called with no opts (not a default empty object). A `webBuild` hook
-   * builds the web site first (before `wrangler deploy`) — how an app-side script ships web + worker.
+   * One-command Cloudflare deploy; forwards opts verbatim to deploy.run. Guided/interactive by
+   * default; `{ ci: true }` runs the automated path (CI). A `webBuild` hook builds the web site
+   * first (before `wrangler deploy`). A failure renders a branded `✗` line + non-zero exit code
+   * (matching cli.auth/doctor), never a raw stack trace.
    *
    * @param opts - Optional deploy options.
-   * @param opts.guided - Walk through each step interactively.
-   * @param opts.yes - Skip confirmation prompts (non-interactive / CI).
+   * @param opts.ci - Automated mode: never prompts, auto-confirms. Omit/false → guided on a TTY.
    * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
-   * @returns Resolves once the deploy completes.
+   * @returns Resolves once the deploy completes (or after a failure is rendered).
    * @example
    * ```ts
-   * await api.deploy({ guided: true, webBuild: () => web.cli.build() });
-   * await api.deploy({ yes: true }); // CI
-   * await api.deploy(); // opts === undefined
+   * await api.deploy({ webBuild: () => web.cli.build() });           // guided
+   * await api.deploy({ ci: true, webBuild: () => web.cli.build() }); // CI
    * ```
    */
-  deploy(opts?: { guided?: boolean; yes?: boolean; webBuild?: WebBuild }): Promise<void> {
-    return ctx.require(deployPlugin).run(opts);
+  async deploy(opts?: { ci?: boolean; webBuild?: WebBuild }): Promise<void> {
+    try {
+      await ctx.require(deployPlugin).run(opts);
+    } catch (error) {
+      createBrandConsole().error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
   },
 
   /**

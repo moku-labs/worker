@@ -16,14 +16,20 @@ import type { Ctx, WebBuild } from "../types";
 import { buildSite } from "./build";
 import { watchPaths } from "./watch";
 
+/** Grace period (ms) before escalating a hung `wrangler dev` shutdown from SIGINT to SIGKILL. */
+const STOP_GRACE_MS = 4000;
+
 /** Injectable side effects so runDev is testable without real processes/watchers/signals. */
 export type DevDeps = {
   /** Rebuild the Moku site via the resolved web build (call-time hook → config → command); returns the file count. */
   build: (ctx: Ctx, webBuild?: WebBuild) => Promise<{ files: number }>;
   /** Run a one-shot wrangler command (e.g. local d1 migrations). */
   runWrangler: (args: string[]) => Promise<string>;
-  /** Spawn the long-lived `wrangler dev` child (non-blocking). */
-  spawnDev: (args: string[]) => { kill: () => void };
+  /**
+   * Spawn the long-lived `wrangler dev` child (non-blocking). `whenExited` settles when it exits or
+   * fails to spawn; `stop()` shuts it down (and throws a branded spawn failure) once it is gone.
+   */
+  spawnDev: (args: string[]) => { stop: () => Promise<void>; whenExited: Promise<void> };
   /** Watch the globs, firing a debounced change callback. */
   watch: (
     globs: string[],
@@ -39,18 +45,54 @@ export type DevDeps = {
 /**
  * Spawn the long-lived `wrangler dev` child (inherits the parent env; non-blocking).
  *
+ * `whenExited` settles when the child exits OR fails to spawn — the `error` listener is essential:
+ * a missing/unexecutable wrangler emits `error` (not `exit`), which is otherwise unhandled (crashes
+ * the process) and would leave `whenExited` pending forever, hanging `stop()`. `stop()` shuts
+ * wrangler down the way its own Ctrl+C does — a graceful SIGINT, then a SIGKILL escalation if it has
+ * not exited within {@link STOP_GRACE_MS} — resolving only once it is gone; a spawn failure is
+ * surfaced as a thrown branded error so the caller can render it. Without the wait, the
+ * inherited-stdio child can keep the parent alive after the watcher closes ("stuck on stopping").
+ *
  * @param args - The `wrangler dev …` arguments.
- * @returns A handle exposing kill().
+ * @returns A handle: `whenExited` (settles on exit/spawn-failure) and `stop()` (resolves once gone).
  * @example
  * ```ts
  * const child = spawnWranglerDev(["dev", "--port", "8787"]);
+ * await Promise.race([untilSignal(), child.whenExited]);
+ * await child.stop();
  * ```
  */
-const spawnWranglerDev = (args: string[]): { kill: () => void } => {
+const spawnWranglerDev = (
+  args: string[]
+): { stop: () => Promise<void>; whenExited: Promise<void> } => {
   // eslint-disable-next-line sonarjs/no-os-command-from-path -- wrangler is a pinned peer dep resolved from node_modules/.bin
   const child = spawn("wrangler", args, { stdio: "inherit" });
+
+  // Settle on a normal exit OR a spawn failure (`error` fires instead of `exit` when wrangler is
+  // missing / not executable). The `error` listener both prevents an unhandled-event crash and
+  // guarantees `whenExited` resolves, so `stop()` can never hang.
+  let spawnError: Error | undefined;
+  const whenExited = new Promise<void>(resolve => {
+    child.once("exit", () => {
+      resolve();
+    });
+    child.once("error", error => {
+      spawnError = new Error(`[moku-worker] Failed to spawn wrangler.\n  ${error.message}`);
+      resolve();
+    });
+  });
+
   // eslint-disable-next-line jsdoc/require-jsdoc -- inner handle method bound to the spawned child
-  return { kill: () => child.kill() };
+  const stop = async (): Promise<void> => {
+    if (spawnError !== undefined) throw spawnError; // wrangler never started — surface it branded
+    if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return; // already gone
+    child.kill("SIGINT"); // graceful — let wrangler run its own shutdown
+    const forceKill = setTimeout(() => child.kill("SIGKILL"), STOP_GRACE_MS);
+    await whenExited;
+    clearTimeout(forceKill);
+  };
+
+  return { stop, whenExited };
 };
 
 /**
@@ -192,9 +234,12 @@ export const runDev = async (
     rebuild(ctx, deps, changedPath, webBuild)
   );
 
-  // Block until interrupted, then tear down cleanly.
-  await deps.untilSignal();
+  // Block until the user interrupts (SIGINT) OR wrangler exits on its own — a crash, a spawn
+  // failure, or pressing `x` in its TUI — then tear down cleanly: stop watching, ask wrangler to
+  // shut down, and WAIT for it to actually exit (escalating to SIGKILL if it hangs) so the process
+  // never gets stuck. `stop()` rethrows a spawn failure so the caller renders it branded.
+  await Promise.race([deps.untilSignal(), child.whenExited]);
+  ctx.emit("dev:phase", { phase: "stopping" });
   watcher.close();
-  child.kill();
-  ctx.emit("dev:phase", { phase: "stopped" });
+  await child.stop();
 };

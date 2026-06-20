@@ -125,4 +125,19 @@ describe("planInfra", () => {
 
     expect(plan).toMatchObject({ account: "Play Co", accountId: "acc-123" });
   });
+
+  it("lists only the kinds the manifest declares (DO excluded — it ships with the script)", async () => {
+    vi.mocked(listExisting).mockResolvedValue(emptyExisting());
+
+    await planInfra(
+      makeCtx("acc-123"),
+      manifest([
+        { kind: "kv", binding: "SESSIONS" },
+        { kind: "d1", binding: "DB" },
+        { kind: "do", bindings: { counter: "COUNTER" } }
+      ])
+    );
+
+    expect(listExisting).toHaveBeenCalledWith("test-token", "acc-123", new Set(["kv", "d1"]));
+  });
 });

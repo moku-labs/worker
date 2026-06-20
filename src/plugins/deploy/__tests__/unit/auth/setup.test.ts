@@ -3,7 +3,6 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { requiredToken } from "../../../auth/permissions";
 import { tokenInstructions } from "../../../auth/setup";
 import type { ExternalManifest } from "../../../types";
 
@@ -14,7 +13,7 @@ const manifest = (resources: ExternalManifest["resources"]): ExternalManifest =>
 });
 
 const render = (resources: ExternalManifest["resources"]): string =>
-  tokenInstructions(requiredToken(manifest(resources)));
+  tokenInstructions(manifest(resources));
 
 describe("tokenInstructions", () => {
   it("lists the required permissions and the create-token URL", () => {
@@ -48,5 +47,21 @@ describe("tokenInstructions", () => {
 
     expect(text).toContain("CLOUDFLARE_API_TOKEN=");
     expect(text).toContain("CLOUDFLARE_ACCOUNT_ID=");
+  });
+
+  it("renders both a LOCAL (first deploy) and a CI (automation) section", () => {
+    const text = render([{ kind: "kv", binding: "KV" }]);
+
+    expect(text).toContain("LOCAL — first deploy");
+    expect(text).toContain("CI — automation redeploy");
+    expect(text).toContain("Create Custom Token");
+  });
+
+  it("the CI section scopes data resources to Read (never Edit)", () => {
+    const text = render([{ kind: "d1", binding: "DB" }]);
+    const ciPart = text.slice(text.indexOf("CI — automation redeploy"));
+
+    expect(ciPart).toContain("Account · D1 : Read");
+    expect(ciPart).not.toContain("Account · Account Settings");
   });
 });

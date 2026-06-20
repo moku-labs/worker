@@ -3,7 +3,15 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { listExisting, resolveAccount, verifyToken } from "../../../infra/cloudflare";
+import {
+  type ListableKind,
+  listExisting,
+  resolveAccount,
+  verifyToken
+} from "../../../infra/cloudflare";
+
+/** All four listable kinds — the default scope for the "lists everything" cases. */
+const ALL_KINDS = new Set<ListableKind>(["kv", "d1", "r2", "queue"]);
 
 /** Build a minimal fake Response carrying a JSON body. */
 const jsonResponse = (body: unknown, ok = true, status = 200): Response =>
@@ -94,7 +102,7 @@ describe("listExisting", () => {
       vi.fn((url: string) => Promise.resolve(jsonResponse(listBodyFor(url))))
     );
 
-    const existing = await listExisting("token", "acc-123");
+    const existing = await listExisting("token", "acc-123", ALL_KINDS);
 
     expect(existing.kv.get("SESSIONS")).toBe("ns1");
     expect(existing.d1.get("DB")).toBe("db-uuid");
@@ -102,11 +110,25 @@ describe("listExisting", () => {
     expect(existing.queue.has("orders")).toBe(true);
   });
 
+  it("queries only the declared kinds — an absent kind is never fetched", async () => {
+    const fetchMock = vi.fn((url: string) => Promise.resolve(jsonResponse(listBodyFor(url))));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const existing = await listExisting("token", "acc-123", new Set<ListableKind>(["kv"]));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0] as string).toContain("/storage/kv/namespaces");
+    expect(existing.kv.get("SESSIONS")).toBe("ns1");
+    expect(existing.d1.size).toBe(0);
+    expect(existing.r2.size).toBe(0);
+    expect(existing.queue.size).toBe(0);
+  });
+
   it("sends the bearer token in the Authorization header", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, result: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await listExisting("my-token", "acc-123");
+    await listExisting("my-token", "acc-123", new Set<ListableKind>(["kv"]));
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const headers = init.headers as Record<string, string>;

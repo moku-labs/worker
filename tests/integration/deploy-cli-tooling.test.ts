@@ -34,12 +34,22 @@ vi.mock("../../src/plugins/deploy/wrangler-config", () => ({
 }));
 
 vi.mock("../../src/plugins/deploy/providers", () => ({
-  provisionResource: vi.fn().mockResolvedValue(undefined)
+  provisionResource: vi.fn().mockResolvedValue({})
 }));
 
 vi.mock("../../src/plugins/deploy/providers/r2", () => ({
   uploadDirToR2: vi.fn().mockResolvedValue(2),
   provisionR2: vi.fn().mockResolvedValue(undefined)
+}));
+
+vi.mock("../../src/plugins/deploy/infra/plan", () => ({
+  // Bypass the Cloudflare REST preflight: treat every manifest resource as missing.
+  planInfra: vi.fn(async (_ctx: unknown, manifest: { resources: unknown[] }) => ({
+    account: "test-account",
+    accountId: "acct-test",
+    exists: [],
+    missing: manifest.resources
+  }))
 }));
 
 // Imported AFTER the vi.mock calls above (which are hoisted) so these resolve to the mocks.

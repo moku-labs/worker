@@ -25,7 +25,7 @@ vi.mock("../../wrangler-config", () => ({
 }));
 
 vi.mock("../../providers", () => ({
-  provisionResource: vi.fn().mockResolvedValue(undefined)
+  provisionResource: vi.fn().mockResolvedValue({})
 }));
 
 vi.mock("../../providers/r2", () => ({
@@ -33,11 +33,22 @@ vi.mock("../../providers/r2", () => ({
   provisionR2: vi.fn().mockResolvedValue(undefined)
 }));
 
+vi.mock("../../infra/plan", () => ({
+  // Default: nothing exists yet → every manifest resource is "missing" (gets created).
+  planInfra: vi.fn(async (_ctx: unknown, manifest: { resources: unknown[] }) => ({
+    account: "test-account",
+    accountId: "acct-test",
+    exists: [],
+    missing: manifest.resources
+  }))
+}));
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Imports after mocking
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { beforeEach } from "vitest";
+import { planInfra } from "../../infra/plan";
 import { provisionResource } from "../../providers";
 import { uploadDirToR2 } from "../../providers/r2";
 import { runWrangler } from "../../runner";
@@ -137,6 +148,13 @@ const createMockCtx = (overrides?: {
       name: "test-worker",
       compatibilityDate: "2026-06-17",
       stage: "test"
+    },
+    env: {
+      get: () => undefined,
+      require: () => "test-token",
+      has: () => true,
+      getPublic: () => ({}),
+      getPublicMap: () => new Map<string, string>()
     },
     require: requireFn as Ctx["require"],
     has: overrides?.has ?? ((_name: string) => true)
@@ -380,7 +398,24 @@ describe("createDeployApi", () => {
 
       await api.run();
 
-      expect(writeWranglerConfig).toHaveBeenCalledWith("my-wrangler.jsonc", expect.any(Object));
+      expect(writeWranglerConfig).toHaveBeenCalledWith(
+        "my-wrangler.jsonc",
+        expect.any(Object),
+        expect.any(Object)
+      );
+    });
+
+    it("threads the captured provision id into writeWranglerConfig", async () => {
+      const ctx = createMockCtx({ has: name => name === "kv" });
+      vi.mocked(provisionResource).mockResolvedValueOnce({ id: "ns-abc123" });
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      const calls = (writeWranglerConfig as ReturnType<typeof vi.fn>).mock.calls as Array<
+        [string, ExternalManifest, Record<string, string>]
+      >;
+      expect(calls.at(-1)?.[2]).toEqual({ KV: "ns-abc123" });
     });
 
     it("calls runWrangler with deploy and configFile args", async () => {
@@ -390,6 +425,55 @@ describe("createDeployApi", () => {
       await api.run();
 
       expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+  });
+
+  // ───────── infra preflight (check-before-create) ────────────────────────────
+
+  describe("infra preflight", () => {
+    it("skips a resource that already exists and reuses its captured id", async () => {
+      const ctx = createMockCtx({ has: name => name === "kv" });
+      vi.mocked(planInfra).mockResolvedValueOnce({
+        account: "acct",
+        accountId: "acct",
+        exists: [{ resource: { kind: "kv", binding: "KV" }, id: "ns-existing" }],
+        missing: []
+      });
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(provisionResource).not.toHaveBeenCalled();
+      expect(ctx.emit).toHaveBeenCalledWith("provision:skip", { kind: "kv", name: "KV" });
+      const calls = (writeWranglerConfig as ReturnType<typeof vi.fn>).mock.calls as Array<
+        [string, ExternalManifest, Record<string, string>]
+      >;
+      expect(calls.at(-1)?.[2]).toEqual({ KV: "ns-existing" });
+    });
+
+    it("checkInfra returns the plan from planInfra without writing config", async () => {
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+
+      const plan = await api.checkInfra();
+
+      expect(plan).toMatchObject({ exists: [], missing: [] });
+      expect(writeWranglerConfig).not.toHaveBeenCalled();
+    });
+
+    it("provisionInfra creates the missing resources and returns the result", async () => {
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+
+      const result = await api.provisionInfra({
+        account: "acct",
+        accountId: "acct",
+        exists: [],
+        missing: [{ kind: "kv", binding: "KV" }]
+      });
+
+      expect(provisionResource).toHaveBeenCalledWith({ kind: "kv", binding: "KV" }, false);
+      expect(result.created).toEqual([{ resource: { kind: "kv", binding: "KV" } }]);
     });
   });
 

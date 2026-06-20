@@ -1,30 +1,39 @@
 /**
- * @file deploy plugin — API factory (run, dev, init).
+ * @file deploy plugin — API factory (run, dev, init, checkInfra, provisionInfra).
  *
  * Pure ctx-taking factory. Assembles the deploy manifest from each resource plugin's own
- * deployManifest() api (never sibling pluginConfigs — design F6), provisions resources,
- * generates/updates the wrangler config, uploads the R2 upload dir, and runs wrangler deploy.
- * Emits only global events: deploy:phase, deploy:complete, provision:resource.
+ * deployManifest() api (never sibling pluginConfigs — design F6), runs an infra preflight
+ * (check-before-create + capture real ids), generates/updates the wrangler config, uploads the
+ * R2 upload dir, and runs wrangler deploy. Emits only global events: deploy:phase,
+ * deploy:complete, provision:resource, provision:plan, provision:skip.
  *
- * Node-only: uses node:child_process (via runner.ts) and node:fs (via wrangler-config.ts).
- * Never called in the deployed Worker runtime.
+ * Node-only: uses node:child_process (via runner.ts), node:fs (via wrangler-config.ts), and the
+ * Cloudflare REST API (via infra/). Never called in the deployed Worker runtime.
  */
 import { d1Plugin } from "../d1";
 import { durableObjectsPlugin } from "../durable-objects";
 import { kvPlugin } from "../kv";
 import { queuesPlugin } from "../queues";
 import { storagePlugin } from "../storage";
+import { planInfra } from "./infra/plan";
 import { provisionResource } from "./providers";
 import { uploadDirToR2 } from "./providers/r2";
 import { runWrangler } from "./runner";
-import type { Ctx, ExternalManifest, ResourceManifest } from "./types";
+import type {
+  Ctx,
+  ExternalManifest,
+  InfraPlan,
+  ProvisionedRef,
+  ProvisionResult,
+  ResourceManifest
+} from "./types";
 import { scaffoldWranglerAndCi, writeWranglerConfig } from "./wrangler-config";
 
 /**
- * Derive a human-readable name string from a resource descriptor (used in provision:resource).
+ * Derive a human-readable name string from a resource descriptor (used in provision events).
  *
  * @param resource - The resource descriptor.
- * @returns A name suitable for the provision:resource event payload.
+ * @returns A name suitable for the provision:resource / provision:skip event payload.
  * @example
  * ```ts
  * resourceName({ kind: "kv", binding: "CACHE" }); // "CACHE"
@@ -48,12 +57,74 @@ const resourceName = (resource: ResourceManifest): string => {
 };
 
 /**
- * Create the deploy api. Assembles the manifest from each resource plugin's own
- * deployManifest() (never sibling config), provisions, generates config, uploads,
- * and runs `wrangler deploy`, emitting global deploy events along the way.
+ * Assemble the deploy manifest from each present resource plugin's OWN deployManifest() api,
+ * gated by ctx.has(name) so absent plugins are skipped — never sibling pluginConfigs (F6).
  *
- * @param ctx - Plugin context (own config + require + has + emit + global).
- * @returns The app.deploy api: run / dev / init.
+ * @param ctx - The deploy plugin context.
+ * @returns The assembled manifest (name, compatibilityDate, resources).
+ * @example
+ * ```ts
+ * const manifest = assembleManifest(ctx);
+ * ```
+ */
+const assembleManifest = (ctx: Ctx): ExternalManifest => ({
+  name: ctx.global.name,
+  compatibilityDate: ctx.global.compatibilityDate,
+  resources: [
+    ctx.has("storage") ? ctx.require(storagePlugin).deployManifest() : undefined,
+    ctx.has("kv") ? ctx.require(kvPlugin).deployManifest() : undefined,
+    ctx.has("d1") ? ctx.require(d1Plugin).deployManifest() : undefined,
+    ctx.has("queues") ? ctx.require(queuesPlugin).deployManifest() : undefined,
+    ctx.has("durableObjects") ? ctx.require(durableObjectsPlugin).deployManifest() : undefined
+  ].filter((resource): resource is NonNullable<typeof resource> => resource !== undefined)
+});
+
+/**
+ * Act on an infra plan: skip the resources that already exist (reusing their ids), create only
+ * the missing ones (capturing each new id), and announce each via provision:skip / :resource.
+ *
+ * @param ctx - The deploy plugin context.
+ * @param plan - The infra plan from planInfra (existing vs missing).
+ * @returns The provisioning result: created, skipped, and the merged binding → id map.
+ * @example
+ * ```ts
+ * const { ids } = await applyPlan(ctx, plan);
+ * ```
+ */
+const applyPlan = async (ctx: Ctx, plan: InfraPlan): Promise<ProvisionResult> => {
+  const ids: Record<string, string> = {};
+
+  // Reuse the ids of resources that already exist; announce each as skipped.
+  for (const ref of plan.exists) {
+    if (ref.id !== undefined && (ref.resource.kind === "kv" || ref.resource.kind === "d1")) {
+      ids[ref.resource.binding] = ref.id;
+    }
+    ctx.emit("provision:skip", { kind: ref.resource.kind, name: resourceName(ref.resource) });
+  }
+
+  // Create only the missing resources; capture each new id (kv/d1).
+  const created: ProvisionedRef[] = [];
+  for (const resource of plan.missing) {
+    const { id } = await provisionResource(resource, ctx.config.ci);
+
+    if (id !== undefined && (resource.kind === "kv" || resource.kind === "d1")) {
+      ids[resource.binding] = id;
+    }
+
+    created.push(id === undefined ? { resource } : { resource, id });
+    ctx.emit("provision:resource", { kind: resource.kind, name: resourceName(resource) });
+  }
+
+  return { created, skipped: plan.exists, ids };
+};
+
+/**
+ * Create the deploy api. Assembles the manifest from each resource plugin's own deployManifest(),
+ * runs an infra preflight (check-before-create + id capture), generates config, uploads, and runs
+ * `wrangler deploy`, emitting global deploy events along the way.
+ *
+ * @param ctx - Plugin context (own config + require + has + emit + global + env).
+ * @returns The app.deploy api: run / dev / init / checkInfra / provisionInfra.
  * @example
  * ```ts
  * const api = createDeployApi(ctx);
@@ -62,12 +133,13 @@ const resourceName = (resource: ResourceManifest): string => {
  */
 export const createDeployApi = (ctx: Ctx) => ({
   /**
-   * Run the full deploy pipeline: detect → provision → wrangler-config → upload → deploy.
-   * When opts.manifest is supplied, it is used verbatim (universal path).
+   * Run the full deploy pipeline: detect → preflight (check-before-create) → provision (only the
+   * missing) → wrangler-config (with real ids) → upload → deploy. When opts.manifest is supplied
+   * it is used verbatim (universal path).
    *
    * @param opts - Optional run options.
-   * @param opts.guided - Enable interactive confirmation steps (skipped when ci=true).
-   * @param opts.yes - Auto-confirm all prompts.
+   * @param opts.guided - Enable interactive confirmation steps (wired in a later phase).
+   * @param opts.yes - Auto-confirm all prompts (wired in a later phase).
    * @param opts.manifest - Caller-supplied manifest (bypasses deployManifest() assembly).
    * @returns Resolves once the deploy completes.
    * @example
@@ -84,28 +156,16 @@ export const createDeployApi = (ctx: Ctx) => ({
     ctx.emit("deploy:phase", { phase: "detect" });
 
     // Manifest from each plugin's OWN deployManifest() api — never sibling pluginConfigs (F6).
-    const manifest: ExternalManifest = opts?.manifest ?? {
-      name: ctx.global.name,
-      compatibilityDate: ctx.global.compatibilityDate,
-      resources: [
-        ctx.has("storage") ? ctx.require(storagePlugin).deployManifest() : undefined,
-        ctx.has("kv") ? ctx.require(kvPlugin).deployManifest() : undefined,
-        ctx.has("d1") ? ctx.require(d1Plugin).deployManifest() : undefined,
-        ctx.has("queues") ? ctx.require(queuesPlugin).deployManifest() : undefined,
-        ctx.has("durableObjects") ? ctx.require(durableObjectsPlugin).deployManifest() : undefined
-      ].filter((resource): resource is NonNullable<typeof resource> => resource !== undefined)
-    };
+    const manifest: ExternalManifest = opts?.manifest ?? assembleManifest(ctx);
 
-    // Provision each resource (idempotent create) and announce it as it lands.
+    // Preflight: discover what already exists, then create only the missing (idempotent).
     ctx.emit("deploy:phase", { phase: "provision" });
-    for (const resource of manifest.resources) {
-      await provisionResource(resource, ctx.config.ci);
-      ctx.emit("provision:resource", { kind: resource.kind, name: resourceName(resource) });
-    }
+    const plan = await planInfra(ctx, manifest);
+    const { ids } = await applyPlan(ctx, plan);
 
-    // Generate/update the wrangler config from the assembled manifest.
+    // Generate/update the wrangler config from the assembled manifest (with the captured ids).
     ctx.emit("deploy:phase", { phase: "wrangler-config" });
-    await writeWranglerConfig(ctx.config.configFile, manifest);
+    await writeWranglerConfig(ctx.config.configFile, manifest, ids);
 
     // Upload the R2 directory when a bucket declares an upload source.
     const r2Resource = manifest.resources.find(
@@ -157,5 +217,29 @@ export const createDeployApi = (ctx: Ctx) => ({
    */
   init: async (opts?: { ci?: boolean }): Promise<void> => {
     await scaffoldWranglerAndCi(ctx.config.configFile, opts?.ci ?? ctx.config.ci);
-  }
+  },
+
+  /**
+   * Read-only infra preflight: assemble the manifest, resolve the account, list what exists in
+   * Cloudflare, diff, emit provision:plan, and return the plan. Writes nothing.
+   *
+   * @returns The infra plan (existing vs missing resources, with captured ids).
+   * @example
+   * ```ts
+   * const plan = await api.checkInfra();
+   * ```
+   */
+  checkInfra: (): Promise<InfraPlan> => planInfra(ctx, assembleManifest(ctx)),
+
+  /**
+   * Create only the resources missing from the plan (skipping existing), capturing each id.
+   *
+   * @param plan - A plan produced by checkInfra().
+   * @returns The provisioning result: created, skipped, and the merged id map.
+   * @example
+   * ```ts
+   * const { created } = await api.provisionInfra(await api.checkInfra());
+   * ```
+   */
+  provisionInfra: (plan: InfraPlan): Promise<ProvisionResult> => applyPlan(ctx, plan)
 });

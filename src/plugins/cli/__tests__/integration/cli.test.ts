@@ -35,12 +35,22 @@ vi.mock("../../../deploy/wrangler-config", () => ({
 }));
 
 vi.mock("../../../deploy/providers", () => ({
-  provisionResource: vi.fn().mockResolvedValue(undefined)
+  provisionResource: vi.fn().mockResolvedValue({})
 }));
 
 vi.mock("../../../deploy/providers/r2", () => ({
   uploadDirToR2: vi.fn().mockResolvedValue(2),
   provisionR2: vi.fn().mockResolvedValue(undefined)
+}));
+
+vi.mock("../../../deploy/infra/plan", () => ({
+  // Bypass the Cloudflare REST preflight: treat every manifest resource as missing.
+  planInfra: vi.fn(async (_ctx: unknown, manifest: { resources: unknown[] }) => ({
+    account: "test-account",
+    accountId: "acct-test",
+    exists: [],
+    missing: manifest.resources
+  }))
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────

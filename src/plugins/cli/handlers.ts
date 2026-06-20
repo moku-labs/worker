@@ -24,8 +24,12 @@ export type CliCtx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
 export type CliHooks = {
   /** Log one clean line per pipeline phase. */
   "deploy:phase": (payload: WorkerEvents["deploy:phase"]) => void;
+  /** Log the infra preflight summary (existing vs to-create, in account). */
+  "provision:plan": (payload: WorkerEvents["provision:plan"]) => void;
   /** Log one clean line per provisioned resource. */
   "provision:resource": (payload: WorkerEvents["provision:resource"]) => void;
+  /** Log one clean line per already-existing resource (skipped). */
+  "provision:skip": (payload: WorkerEvents["provision:skip"]) => void;
   /** Log the terminal success line with the deployed URL. */
   "deploy:complete": (payload: WorkerEvents["deploy:complete"]) => void;
 };
@@ -63,6 +67,19 @@ export const createCliHooks = (ctx: CliCtx): CliHooks => ({
   },
 
   /**
+   * Log the infra preflight summary: "infra · N exist, M to create · account".
+   *
+   * @param p - The provision:plan event payload.
+   * @example
+   * ```ts
+   * handler({ exists: 2, missing: 1, account: "Play Co" }); // "infra · 2 exist, 1 to create · Play Co"
+   * ```
+   */
+  "provision:plan"(p: WorkerEvents["provision:plan"]): void {
+    ctx.log.info(`infra · ${p.exists} exist, ${p.missing} to create · ${p.account}`);
+  },
+
+  /**
    * Log one clean line per provisioned resource: "kind name".
    *
    * @param p - The provision:resource event payload.
@@ -73,6 +90,19 @@ export const createCliHooks = (ctx: CliCtx): CliHooks => ({
    */
   "provision:resource"(p: WorkerEvents["provision:resource"]): void {
     ctx.log.info(`${p.kind} ${p.name}`);
+  },
+
+  /**
+   * Log one clean line per already-existing resource (skipped): "kind name (exists)".
+   *
+   * @param p - The provision:skip event payload.
+   * @example
+   * ```ts
+   * handler({ kind: "kv", name: "KV" }); // "kv KV (exists)"
+   * ```
+   */
+  "provision:skip"(p: WorkerEvents["provision:skip"]): void {
+    ctx.log.info(`${p.kind} ${p.name} (exists)`);
   },
 
   /**

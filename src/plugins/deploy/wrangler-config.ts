@@ -53,20 +53,21 @@ type DoBinding = { name: string; class_name: string };
  * Build the wrangler `kv_namespaces` array from the manifest's kv resources.
  *
  * @param resources - All resource descriptors from the manifest.
- * @returns One wrangler KV namespace entry per kv resource.
+ * @param ids - Captured Cloudflare ids keyed by binding; the entry's `id` is filled from here.
+ * @returns One wrangler KV namespace entry per kv resource (real `id` when known, else "").
  * @example
  * ```ts
- * const kv = buildKvNamespaces([{ kind: "kv", binding: "CACHE" }]);
+ * const kv = buildKvNamespaces([{ kind: "kv", binding: "CACHE" }], { CACHE: "ns123" });
  * ```
  */
-const buildKvNamespaces = (resources: ResourceManifest[]): KvEntry[] =>
+const buildKvNamespaces = (resources: ResourceManifest[], ids: Record<string, string>): KvEntry[] =>
   resources
     .filter(
       (resource): resource is Extract<ResourceManifest, { kind: "kv" }> => resource.kind === "kv"
     )
     .map(resource => ({
       binding: resource.binding,
-      id: ""
+      id: ids[resource.binding] ?? ""
     }));
 
 /**
@@ -93,13 +94,14 @@ const buildR2Buckets = (resources: ResourceManifest[]): R2Entry[] =>
  * Build the wrangler `d1_databases` array from the manifest's d1 resources.
  *
  * @param resources - All resource descriptors from the manifest.
+ * @param ids - Captured Cloudflare ids keyed by binding; the entry's `database_id` is filled from here.
  * @returns One wrangler D1 database entry per d1 resource (migrations_dir set when present).
  * @example
  * ```ts
- * const d1 = buildD1Databases([{ kind: "d1", binding: "DB" }]);
+ * const d1 = buildD1Databases([{ kind: "d1", binding: "DB" }], { DB: "uuid-1234" });
  * ```
  */
-const buildD1Databases = (resources: ResourceManifest[]): D1Entry[] =>
+const buildD1Databases = (resources: ResourceManifest[], ids: Record<string, string>): D1Entry[] =>
   resources
     .filter(
       (resource): resource is Extract<ResourceManifest, { kind: "d1" }> => resource.kind === "d1"
@@ -108,7 +110,7 @@ const buildD1Databases = (resources: ResourceManifest[]): D1Entry[] =>
       const entry: D1Entry = {
         binding: resource.binding,
         database_name: resource.binding.toLowerCase(),
-        database_id: ""
+        database_id: ids[resource.binding] ?? ""
       };
       if (resource.migrations) {
         entry.migrations_dir = resource.migrations;
@@ -183,15 +185,18 @@ const buildDurableObjects = (
  *
  * @param configFile - Path to the wrangler config file.
  * @param manifest - The assembled deploy manifest.
+ * @param ids - Captured Cloudflare ids keyed by binding (kv namespace id, d1 database id). Defaults
+ *   to an empty map, in which case `id`/`database_id` are written as "" (e.g. the universal path).
  * @returns Resolves once the file is written.
  * @example
  * ```ts
- * await writeWranglerConfig("wrangler.jsonc", manifest);
+ * await writeWranglerConfig("wrangler.jsonc", manifest, { CACHE: "ns123", DB: "uuid-1234" });
  * ```
  */
 export const writeWranglerConfig = async (
   configFile: string,
-  manifest: ExternalManifest
+  manifest: ExternalManifest,
+  ids: Record<string, string> = {}
 ): Promise<void> => {
   // Read and merge with existing config if present (non-destructive).
   let existing: Record<string, unknown> = {};
@@ -205,9 +210,10 @@ export const writeWranglerConfig = async (
   }
 
   // Build each wrangler resource section from the manifest (empty when that kind is absent).
-  const kvNamespaces = buildKvNamespaces(manifest.resources);
+  // kv/d1 get their real Cloudflare id from the captured `ids` map (else an empty placeholder).
+  const kvNamespaces = buildKvNamespaces(manifest.resources, ids);
   const r2Buckets = buildR2Buckets(manifest.resources);
-  const d1Databases = buildD1Databases(manifest.resources);
+  const d1Databases = buildD1Databases(manifest.resources, ids);
   const queues = buildQueues(manifest.resources);
   const durableObjects = buildDurableObjects(manifest.resources);
 

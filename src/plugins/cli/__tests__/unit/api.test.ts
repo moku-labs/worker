@@ -5,7 +5,12 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import type { deployPlugin } from "../../../deploy";
-import type { InfraPlan, ProvisionResult } from "../../../deploy/types";
+import type {
+  AuthStatus,
+  InfraPlan,
+  ProvisionResult,
+  TokenRequirement
+} from "../../../deploy/types";
 import type { CliCtx } from "../../api";
 import { createCliApi } from "../../api";
 
@@ -24,7 +29,14 @@ const makeDeployStub = () => ({
     .mockResolvedValue({ account: "", accountId: "", exists: [], missing: [] }),
   provisionInfra: vi
     .fn<(plan: InfraPlan) => Promise<ProvisionResult>>()
-    .mockResolvedValue({ created: [], skipped: [], ids: {} })
+    .mockResolvedValue({ created: [], skipped: [], ids: {} }),
+  verifyAuth: vi
+    .fn<() => Promise<AuthStatus>>()
+    .mockResolvedValue({ ok: true, account: "Play Co", accountId: "acc-1", scopes: [] }),
+  requiredToken: vi
+    .fn<() => TokenRequirement>()
+    .mockReturnValue({ base: "Edit Cloudflare Workers", required: [], toAdd: [] }),
+  tokenInstructions: vi.fn<() => string>().mockReturnValue("token instructions\nline 2")
 });
 
 // ---------------------------------------------------------------------------
@@ -130,6 +142,61 @@ describe("createCliApi", () => {
       const api = createCliApi(ctx);
 
       await expect(api.deploy({ guided: true })).resolves.toBeUndefined();
+    });
+  });
+
+  // ─── auth ─────────────────────────────────────────────────────────────────
+
+  describe("auth", () => {
+    it("auth('setup') prints deploy.tokenInstructions() without verifying", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+
+      await api.auth("setup");
+
+      expect(deployStub.tokenInstructions).toHaveBeenCalled();
+      expect(deployStub.verifyAuth).not.toHaveBeenCalled();
+    });
+
+    it("auth() verifies via deploy.verifyAuth()", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+
+      await api.auth();
+
+      expect(deployStub.verifyAuth).toHaveBeenCalledOnce();
+    });
+
+    it("auth() handles a verify failure without throwing", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      deployStub.verifyAuth.mockRejectedValueOnce(new Error("bad token"));
+      const api = createCliApi(ctx);
+
+      await expect(api.auth()).resolves.toBeUndefined();
+    });
+  });
+
+  // ─── doctor ───────────────────────────────────────────────────────────────
+
+  describe("doctor", () => {
+    it("runs verifyAuth then checkInfra", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+
+      await api.doctor();
+
+      expect(deployStub.verifyAuth).toHaveBeenCalledOnce();
+      expect(deployStub.checkInfra).toHaveBeenCalledOnce();
+    });
+
+    it("stops after a failed token check (does not call checkInfra)", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      deployStub.verifyAuth.mockRejectedValueOnce(new Error("no token"));
+      const api = createCliApi(ctx);
+
+      await api.doctor();
+
+      expect(deployStub.checkInfra).not.toHaveBeenCalled();
     });
   });
 

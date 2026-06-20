@@ -3,7 +3,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { listExisting, resolveAccount } from "../../../infra/cloudflare";
+import { listExisting, resolveAccount, verifyToken } from "../../../infra/cloudflare";
 
 /** Build a minimal fake Response carrying a JSON body. */
 const jsonResponse = (body: unknown, ok = true, status = 200): Response =>
@@ -58,6 +58,32 @@ describe("resolveAccount", () => {
     );
 
     await expect(resolveAccount("token")).rejects.toThrow("Invalid token");
+  });
+});
+
+describe("verifyToken", () => {
+  it("returns the status for an active token", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(jsonResponse({ success: true, result: { id: "t1", status: "active" } }))
+    );
+
+    await expect(verifyToken("tok")).resolves.toEqual({ status: "active" });
+  });
+
+  it("throws a branded error when the token is rejected", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse({ success: false, errors: [{ message: "Invalid API Token" }] }, false, 401)
+        )
+    );
+
+    await expect(verifyToken("bad")).rejects.toThrow("[moku-worker]");
   });
 });
 

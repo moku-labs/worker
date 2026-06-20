@@ -46,4 +46,30 @@ export type Api = {
    * ```
    */
   deploy(opts?: { guided?: boolean; yes?: boolean }): Promise<void>;
+
+  /**
+   * Verify the `.env` Cloudflare token (no sub), or print the config-derived token-creation
+   * guidance (`"setup"`). Delegates to deploy.verifyAuth() / deploy.tokenInstructions().
+   *
+   * @param sub - Pass "setup" to print token guidance; omit to verify the current token.
+   * @returns Resolves once the auth check or guidance render completes.
+   * @example
+   * ```ts
+   * await app.cli.auth();        // verify the current token
+   * await app.cli.auth("setup"); // print what token to create
+   * ```
+   */
+  auth(sub?: "setup"): Promise<void>;
+
+  /**
+   * One-shot preflight report: token + account (verifyAuth) and infra drift (checkInfra),
+   * each rendered as a branded check line.
+   *
+   * @returns Resolves once the report is printed.
+   * @example
+   * ```ts
+   * await app.cli.doctor();
+   * ```
+   */
+  doctor(): Promise<void>;
 };

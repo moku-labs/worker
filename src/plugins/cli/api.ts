@@ -1,6 +1,7 @@
 /**
- * @file cli plugin — API factory (dev, deploy) — thin passthroughs to deploy.
+ * @file cli plugin — API factory (dev, deploy, auth, doctor).
  */
+import { createBrandConsole } from "@moku-labs/common/cli";
 import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEvents } from "../../config";
 import { deployPlugin } from "../deploy";
@@ -72,5 +73,77 @@ export const createCliApi = (ctx: CliCtx): Api => ({
    */
   deploy(opts?: { guided?: boolean; yes?: boolean }): Promise<void> {
     return ctx.require(deployPlugin).run(opts);
+  },
+
+  /**
+   * Verify the `.env` token (no sub) or print the config-derived token guidance (`"setup"`),
+   * rendered in Moku style. `setup` works without a token; verify reports the resolved account.
+   *
+   * @param sub - Pass "setup" to print guidance; omit to verify the current token.
+   * @returns Resolves once the check or guidance render completes.
+   * @example
+   * ```ts
+   * await api.auth("setup"); // print what token to create
+   * await api.auth();        // verify the current token
+   * ```
+   */
+  async auth(sub?: "setup"): Promise<void> {
+    const deploy = ctx.require(deployPlugin);
+    const ui = createBrandConsole();
+
+    if (sub === "setup") {
+      for (const line of deploy.tokenInstructions().split("\n")) {
+        ui.line(line);
+      }
+      return;
+    }
+
+    try {
+      const status = await deploy.verifyAuth();
+      ui.check(true, "token valid", `account "${status.account}" (${status.accountId})`);
+    } catch (error) {
+      ui.error(error instanceof Error ? error.message : String(error));
+    }
+  },
+
+  /**
+   * One-shot preflight report: token + account (verifyAuth) then infra drift (checkInfra),
+   * each as a branded check line. Stops after the token check when auth fails.
+   *
+   * @returns Resolves once the report is printed.
+   * @example
+   * ```ts
+   * await api.doctor();
+   * ```
+   */
+  async doctor(): Promise<void> {
+    const deploy = ctx.require(deployPlugin);
+    const ui = createBrandConsole();
+    ui.heading("doctor");
+
+    let tokenOk = false;
+    try {
+      const status = await deploy.verifyAuth();
+      tokenOk = true;
+      ui.check(true, "token", `valid · account "${status.account}" (${status.accountId})`);
+    } catch (error) {
+      ui.check(false, "token", error instanceof Error ? error.message : String(error));
+    }
+
+    if (!tokenOk) {
+      ui.line("Run `auth setup` for the exact token to create.");
+      return;
+    }
+
+    try {
+      const plan = await deploy.checkInfra();
+      ui.check(
+        true,
+        "infra",
+        `${plan.exists.length} exist, ${plan.missing.length} to create in "${plan.account}"`
+      );
+    } catch (error) {
+      ui.check(false, "infra", error instanceof Error ? error.message : String(error));
+    }
   }
 });

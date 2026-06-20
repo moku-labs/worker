@@ -15,17 +15,22 @@ import { durableObjectsPlugin } from "../durable-objects";
 import { kvPlugin } from "../kv";
 import { queuesPlugin } from "../queues";
 import { storagePlugin } from "../storage";
+import { requiredToken as deriveRequiredToken } from "./auth/permissions";
+import { tokenInstructions as renderTokenInstructions } from "./auth/setup";
+import { verifyAuth as runVerifyAuth } from "./auth/verify";
 import { planInfra } from "./infra/plan";
 import { provisionResource } from "./providers";
 import { uploadDirToR2 } from "./providers/r2";
 import { runWrangler } from "./runner";
 import type {
+  AuthStatus,
   Ctx,
   ExternalManifest,
   InfraPlan,
   ProvisionedRef,
   ProvisionResult,
-  ResourceManifest
+  ResourceManifest,
+  TokenRequirement
 } from "./types";
 import { scaffoldWranglerAndCi, writeWranglerConfig } from "./wrangler-config";
 
@@ -241,5 +246,40 @@ export const createDeployApi = (ctx: Ctx) => ({
    * const { created } = await api.provisionInfra(await api.checkInfra());
    * ```
    */
-  provisionInfra: (plan: InfraPlan): Promise<ProvisionResult> => applyPlan(ctx, plan)
+  provisionInfra: (plan: InfraPlan): Promise<ProvisionResult> => applyPlan(ctx, plan),
+
+  /**
+   * Verify the `.env` Cloudflare API token (must be active) and resolve its account; emits
+   * auth:verified. Throws a branded error pointing at `auth setup` when absent/invalid/inactive.
+   *
+   * @returns The verified auth status (account + id).
+   * @example
+   * ```ts
+   * const { account } = await api.verifyAuth();
+   * ```
+   */
+  verifyAuth: (): Promise<AuthStatus> => runVerifyAuth(ctx),
+
+  /**
+   * Derive the minimum Cloudflare API token this app needs from its manifest (pure, no network).
+   *
+   * @returns The token requirement (full set + groups to add to the stock template).
+   * @example
+   * ```ts
+   * const { toAdd } = api.requiredToken();
+   * ```
+   */
+  requiredToken: (): TokenRequirement => deriveRequiredToken(assembleManifest(ctx)),
+
+  /**
+   * Render the `auth setup` guidance from the derived token requirement (pure, no network).
+   *
+   * @returns The rendered instruction text.
+   * @example
+   * ```ts
+   * const text = api.tokenInstructions();
+   * ```
+   */
+  tokenInstructions: (): string =>
+    renderTokenInstructions(deriveRequiredToken(assembleManifest(ctx)))
 });

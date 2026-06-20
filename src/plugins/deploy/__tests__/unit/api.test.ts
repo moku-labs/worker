@@ -43,11 +43,19 @@ vi.mock("../../infra/plan", () => ({
   }))
 }));
 
+vi.mock("../../auth/verify", () => ({
+  // Network-bound; mocked. requiredToken/tokenInstructions are pure and run for real.
+  verifyAuth: vi
+    .fn()
+    .mockResolvedValue({ ok: true, account: "Play Co", accountId: "acc-1", scopes: [] })
+}));
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Imports after mocking
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { beforeEach } from "vitest";
+import { verifyAuth } from "../../auth/verify";
 import { planInfra } from "../../infra/plan";
 import { provisionResource } from "../../providers";
 import { uploadDirToR2 } from "../../providers/r2";
@@ -474,6 +482,37 @@ describe("createDeployApi", () => {
 
       expect(provisionResource).toHaveBeenCalledWith({ kind: "kv", binding: "KV" }, false);
       expect(result.created).toEqual([{ resource: { kind: "kv", binding: "KV" } }]);
+    });
+  });
+
+  // ───────── auth (verify + token derivation) ─────────────────────────────────
+
+  describe("auth", () => {
+    it("verifyAuth delegates to the auth/verify module with ctx", async () => {
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const status = await api.verifyAuth();
+
+      expect(verifyAuth).toHaveBeenCalledWith(ctx);
+      expect(status).toMatchObject({ ok: true, account: "Play Co" });
+    });
+
+    it("requiredToken derives the permission set from the manifest (D1 + Queues to add)", () => {
+      const ctx = createMockCtx(); // all five resources present
+      const api = createDeployApi(ctx);
+
+      const groups = api.requiredToken().toAdd.map(permission => permission.group);
+
+      expect(groups).toContain("Account · D1");
+      expect(groups).toContain("Account · Queues");
+    });
+
+    it("tokenInstructions returns rendered guidance", () => {
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      expect(api.tokenInstructions()).toContain("Cloudflare API token");
     });
   });
 

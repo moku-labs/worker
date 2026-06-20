@@ -71,6 +71,7 @@ All methods are mounted on `app.deploy.*` and are invoked from thin Node-side `s
 run(opts?: {
   guided?: boolean;
   yes?: boolean;
+  webBuild?: WebBuild; // () => Promise<void> | Promise<{ files?: number }>
   manifest?: ExternalManifest;
 }): Promise<void>
 ```
@@ -90,6 +91,7 @@ Runs the full deploy pipeline. The phases execute, and emit, in this order:
 |---|---|---|
 | `opts.guided` | `boolean` | Enable interactive confirmation steps (skipped when `ci` is `true`). |
 | `opts.yes` | `boolean` | Auto-confirm all prompts. |
+| `opts.webBuild` | `WebBuild` | Build the web site first (e.g. `() => webApp.cli.build()`). When supplied, an extra `deploy:phase { phase: "build", detail: "web" }` runs right after the auth preflight, before provisioning — so the generated assets exist before the R2 upload and `wrangler deploy`. Wired in from the consumer's app-side script (falls back to `ctx.config.webBuild`). |
 | `opts.manifest` | `ExternalManifest` | Caller-supplied manifest; bypasses `deployManifest()` assembly. |
 
 **Returns:** resolves once `wrangler deploy` completes and `deploy:complete` is emitted.
@@ -113,19 +115,23 @@ await app.deploy.run({
 ### `dev(opts?): Promise<void>`
 
 ```typescript
-dev(opts?: { port?: number }): Promise<void>
+dev(opts?: {
+  port?: number;
+  webBuild?: WebBuild; // () => Promise<void> | Promise<{ files?: number }>
+}): Promise<void>
 ```
 
-Starts a local Cloudflare dev session via `wrangler dev --port <port> --config <configFile>` (default port `8787`). Build-time only.
+Starts a long-lived local dev session: cold-build the web site (when a `webBuild` hook is wired in), spawn `wrangler dev --port <port> --config <configFile> --live-reload` **once** (default port `8787`), then watch the site sources and recompile on change — wrangler's asset server live-reloads the browser; wrangler is never restarted for a site change. A failed rebuild emits `dev:error` and keeps serving the last good build. Build-time only; resolves on `SIGINT`.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `opts.port` | `number` | `8787` | Local dev port. |
+| `opts.webBuild` | `WebBuild` | — | Rebuild the web site on each change (e.g. `() => webApp.cli.build()`). Wired in from the consumer's app-side script (falls back to `ctx.config.webBuild`). Omit for a worker-only session. |
 
 **Throws:** propagates the wrangler subprocess `Error` on a non-zero exit / spawn failure.
 
 ```typescript
-await app.deploy.dev({ port: 8787 });
+await app.deploy.dev({ port: 8787, webBuild: () => web.cli.build() });
 ```
 
 ### `init(opts?): Promise<void>`

@@ -104,6 +104,27 @@ describe("runDev", () => {
     expect(ctx.emit).toHaveBeenCalledWith("dev:rebuilt", expect.objectContaining({ files: 3 }));
   });
 
+  it("threads the opts.webBuild hook into both the cold build and each rebuild", async () => {
+    let resolveSignal: (() => void) | undefined;
+    const { deps, captured } = makeDeps({
+      untilSignal: () =>
+        new Promise<void>(resolve => {
+          resolveSignal = resolve;
+        })
+    });
+    const ctx = makeCtx();
+    const webBuild = vi.fn().mockResolvedValue({ files: 5 });
+
+    const promise = runDev(ctx, { webBuild }, deps);
+    await vi.waitFor(() => expect(captured.onChange).toBeDefined());
+    await captured.onChange?.("src/app.tsx");
+    resolveSignal?.();
+    await promise;
+
+    expect(deps.build).toHaveBeenNthCalledWith(1, ctx, webBuild); // cold build
+    expect(deps.build).toHaveBeenNthCalledWith(2, ctx, webBuild); // rebuild
+  });
+
   it("emits dev:error and keeps serving when a rebuild fails (no wrangler restart)", async () => {
     let resolveSignal: (() => void) | undefined;
     const build = vi

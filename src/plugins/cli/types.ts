@@ -2,6 +2,8 @@
  * @file cli plugin — type definitions (Config, Api).
  */
 
+import type { WebBuild } from "../deploy/types";
+
 /** Resolved configuration for the cli plugin. Flat; complete defaults so omission never yields undefined. */
 export type Config = {
   /**
@@ -19,33 +21,35 @@ export type Api = {
    * Run the Worker locally via Wrangler (delegates to deploy.dev).
    * Defaults port to the configured value (8787) when called with no opts.
    *
-   * @param opts - Optional port override.
+   * @param opts - Optional port override and web build hook.
    * @param opts.port - Local dev port to bind.
+   * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await app.cli.dev();            // port 8787
-   * await app.cli.dev({ port: 3000 }); // port 3000
+   * await app.cli.dev();                               // port 8787, worker only
+   * await app.cli.dev({ webBuild: () => web.cli.build() }); // wire the web build in
    * ```
    */
-  dev(opts?: { port?: number }): Promise<void>;
+  dev(opts?: { port?: number; webBuild?: WebBuild }): Promise<void>;
 
   /**
    * One-command guided Cloudflare deploy (delegates to deploy.run).
    * Forwards opts verbatim — passes undefined when called with no opts.
    *
-   * @param opts - Optional guided/yes flags.
+   * @param opts - Optional guided/yes flags and a web build hook.
    * @param opts.guided - Walk through each step interactively.
    * @param opts.yes - Skip confirmation prompts (non-interactive).
+   * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
    * @returns Resolves once the deploy completes.
    * @example
    * ```ts
-   * await app.cli.deploy({ guided: true });
+   * await app.cli.deploy({ guided: true, webBuild: () => web.cli.build() });
    * await app.cli.deploy({ yes: true }); // CI
    * await app.cli.deploy(); // no opts → undefined forwarded
    * ```
    */
-  deploy(opts?: { guided?: boolean; yes?: boolean }): Promise<void>;
+  deploy(opts?: { guided?: boolean; yes?: boolean; webBuild?: WebBuild }): Promise<void>;
 
   /**
    * Verify the `.env` Cloudflare token (no sub), or print the config-derived token-creation

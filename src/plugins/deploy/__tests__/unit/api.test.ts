@@ -9,7 +9,7 @@ import { kvPlugin } from "../../../kv";
 import { queuesPlugin } from "../../../queues";
 import { storagePlugin } from "../../../storage";
 import { createDeployApi } from "../../api";
-import type { Api, Ctx, ExternalManifest, ResourceManifest } from "../../types";
+import type { Api, Ctx, ExternalManifest, ResourceManifest, WebBuild } from "../../types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vitest module stubs — must be at top level (hoisted by vitest)
@@ -468,6 +468,44 @@ describe("createDeployApi", () => {
       await api.run();
 
       expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+  });
+
+  // ───────── run — webBuild (web composed in from the app-side script) ─────────
+
+  describe("run — webBuild", () => {
+    it("builds the web first when opts.webBuild is provided (build·web right after auth)", async () => {
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+      const webBuild = vi.fn<WebBuild>().mockResolvedValue({ files: 6 });
+
+      await api.run({ webBuild });
+
+      expect(webBuild).toHaveBeenCalledOnce();
+
+      const emitCalls = (ctx.emit as ReturnType<typeof vi.fn>).mock.calls as Array<
+        [string, { phase?: string; detail?: string }]
+      >;
+      const phases = emitCalls
+        .filter(([event]) => event === "deploy:phase")
+        .map(([, payload]) => payload.phase);
+      expect(phases).toEqual(["auth", "build", "detect", "provision", "wrangler-config", "deploy"]);
+
+      const buildEmit = emitCalls.find(
+        ([event, payload]) => event === "deploy:phase" && payload.phase === "build"
+      );
+      expect(buildEmit?.[1].detail).toBe("web");
+    });
+
+    it("falls back to ctx.config.webBuild when opts.webBuild is absent", async () => {
+      const base = createMockCtx({ has: () => false });
+      const configWebBuild = vi.fn<WebBuild>().mockResolvedValue(undefined);
+      const ctx: Ctx = { ...base, config: { ...base.config, webBuild: configWebBuild } };
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(configWebBuild).toHaveBeenCalledOnce();
     });
   });
 

@@ -1,17 +1,18 @@
 /**
  * @file deploy plugin — dev site-rebuild resolution.
  *
- * Resolves HOW to rebuild the Moku web site on change: the in-process `buildSite` hook (preferred,
- * fast, typed) → a `buildCommand` shell string → an auto-detected `scripts/build.ts`. When nothing
- * is configured, dev serves the worker only and says so. Subprocesses inherit the parent env by
- * default. Node-only; never imported by the runtime Worker bundle.
+ * Resolves HOW to rebuild the Moku web site on change: the in-process `webBuild` hook (preferred,
+ * fast, typed — passed call-time from the consumer's script or set as a config default) → a
+ * `buildCommand` shell string → an auto-detected `scripts/build.ts`. When nothing is configured,
+ * dev serves the worker only and says so. Subprocesses inherit the parent env by default.
+ * Node-only; never imported by the runtime Worker bundle.
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 
-import type { Ctx } from "../types";
+import type { Ctx, WebBuild } from "../types";
 
-/** Convention build script auto-detected when no buildSite/buildCommand is configured. */
+/** Convention build script auto-detected when no webBuild/buildCommand is configured. */
 const AUTO_DETECT = "scripts/build.ts";
 
 /**
@@ -44,26 +45,32 @@ const runShellBuild = (command: string): Promise<void> => {
 };
 
 /**
- * Rebuild the Moku web site using the configured strategy (hook → command → auto-detect).
+ * Rebuild the Moku web site using the resolved strategy: the call-time `webBuild` hook (the
+ * script-driven path), else the `webBuild` config default, else the `buildCommand` shell string,
+ * else an auto-detected `scripts/build.ts`. A hook's result is normalized to a `{ files }` count
+ * (0 when the hook reports none, and for the shell path where it is unknown).
  *
  * @param ctx - The deploy plugin context (config + emit).
- * @returns The rebuilt file count (0 for the shell path, where it is unknown).
+ * @param webBuild - Optional call-time web build hook (takes precedence over `ctx.config.webBuild`).
+ * @returns The rebuilt file count (0 for the shell path / a countless hook).
  * @throws {Error} When the resolved shell build fails.
  * @example
  * ```ts
- * const { files } = await buildSite(ctx);
+ * const { files } = await buildSite(ctx, () => web.cli.build());
  * ```
  */
-export const buildSite = async (ctx: Ctx): Promise<{ files: number }> => {
-  if (ctx.config.buildSite !== undefined) {
-    return ctx.config.buildSite();
+export const buildSite = async (ctx: Ctx, webBuild?: WebBuild): Promise<{ files: number }> => {
+  const hook = webBuild ?? ctx.config.webBuild;
+  if (hook !== undefined) {
+    const result = await hook();
+    return { files: result?.files ?? 0 };
   }
 
   const command =
     ctx.config.buildCommand || (existsSync(AUTO_DETECT) ? `bun run ${AUTO_DETECT}` : "");
   if (command === "") {
     ctx.emit("dev:error", {
-      message: "No site build configured (set buildSite or buildCommand); serving worker only."
+      message: "No site build configured (pass webBuild or set buildCommand); serving worker only."
     });
     return { files: 0 };
   }

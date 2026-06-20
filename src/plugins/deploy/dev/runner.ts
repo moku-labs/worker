@@ -12,14 +12,14 @@ import { spawn } from "node:child_process";
 
 import { d1Plugin } from "../../d1";
 import { runWrangler } from "../runner";
-import type { Ctx } from "../types";
+import type { Ctx, WebBuild } from "../types";
 import { buildSite } from "./build";
 import { watchPaths } from "./watch";
 
 /** Injectable side effects so runDev is testable without real processes/watchers/signals. */
 export type DevDeps = {
-  /** Rebuild the Moku site; returns the file count. */
-  build: (ctx: Ctx) => Promise<{ files: number }>;
+  /** Rebuild the Moku site via the resolved web build (call-time hook → config → command); returns the file count. */
+  build: (ctx: Ctx, webBuild?: WebBuild) => Promise<{ files: number }>;
   /** Run a one-shot wrangler command (e.g. local d1 migrations). */
   runWrangler: (args: string[]) => Promise<string>;
   /** Spawn the long-lived `wrangler dev` child (non-blocking). */
@@ -119,17 +119,23 @@ const d1Binding = (ctx: Ctx): string | undefined =>
  * @param ctx - The deploy plugin context.
  * @param deps - The injected dev deps.
  * @param changedPath - The path that triggered the rebuild.
+ * @param webBuild - Optional call-time web build hook threaded into the rebuild.
  * @returns Resolves once the rebuild attempt completes.
  * @example
  * ```ts
- * await rebuild(ctx, deps, "src/app.tsx");
+ * await rebuild(ctx, deps, "src/app.tsx", () => web.cli.build());
  * ```
  */
-const rebuild = async (ctx: Ctx, deps: DevDeps, changedPath: string): Promise<void> => {
+const rebuild = async (
+  ctx: Ctx,
+  deps: DevDeps,
+  changedPath: string,
+  webBuild?: WebBuild
+): Promise<void> => {
   ctx.emit("dev:phase", { phase: "rebuild", detail: changedPath });
   const started = deps.now();
   try {
-    const { files } = await deps.build(ctx);
+    const { files } = await deps.build(ctx, webBuild);
     ctx.emit("dev:rebuilt", { files, ms: deps.now() - started });
   } catch (error) {
     ctx.emit("dev:error", { message: error instanceof Error ? error.message : String(error) });
@@ -143,23 +149,25 @@ const rebuild = async (ctx: Ctx, deps: DevDeps, changedPath: string): Promise<vo
  * @param ctx - The deploy plugin context (config + emit + require/has).
  * @param opts - Optional options.
  * @param opts.port - Local dev port (default 8787).
+ * @param opts.webBuild - Web build hook (re)run on cold build + each change (e.g. `() => web.cli.build()`).
  * @param deps - Injected side effects (real ones from realDevDeps in production).
  * @returns Resolves when the session ends (SIGINT).
  * @example
  * ```ts
- * await runDev(ctx, { port: 8787 }, realDevDeps());
+ * await runDev(ctx, { port: 8787, webBuild: () => web.cli.build() }, realDevDeps());
  * ```
  */
 export const runDev = async (
   ctx: Ctx,
-  opts: { port?: number } | undefined,
+  opts: { port?: number; webBuild?: WebBuild } | undefined,
   deps: DevDeps
 ): Promise<void> => {
   const port = opts?.port ?? 8787;
+  const webBuild = opts?.webBuild;
 
   // Cold build so the ASSETS dir has content before wrangler serves it.
   ctx.emit("dev:phase", { phase: "build", detail: "site" });
-  await deps.build(ctx);
+  await deps.build(ctx, webBuild);
 
   // Apply local D1 migrations when configured and a d1 plugin is present.
   const binding = d1Binding(ctx);
@@ -181,7 +189,7 @@ export const runDev = async (
 
   // Watch the site sources; each change rebuilds (wrangler is never restarted for a site change).
   const watcher = deps.watch(ctx.config.watch, ctx.config.debounceMs, changedPath =>
-    rebuild(ctx, deps, changedPath)
+    rebuild(ctx, deps, changedPath, webBuild)
   );
 
   // Block until interrupted, then tear down cleanly.

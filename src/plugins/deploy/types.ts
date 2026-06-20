@@ -6,6 +6,21 @@ import type { PluginCtx, PluginInstance } from "@moku-labs/core";
 
 import type { WorkerConfig, WorkerEvents } from "../../config";
 
+/**
+ * A web-site build hook wired in from the consumer's deploy/dev script — e.g.
+ * `() => webApp.cli.build()`. This is the seam that lets one small app-side script compose a
+ * Moku Web app with this Worker framework: `dev` / `deploy` invoke it to (re)build the site
+ * before serving or deploying. May resolve a `{ files }` count (surfaced in `dev:rebuilt`) or
+ * nothing.
+ *
+ * @returns Resolves when the web build completes; optionally a rebuilt-file count.
+ * @example
+ * ```ts
+ * await server.cli.dev({ webBuild: () => web.cli.build() });
+ * ```
+ */
+export type WebBuild = () => Promise<void> | Promise<{ files?: number }>;
+
 /** deploy plugin configuration. Flat; complete defaults so omission never yields undefined. */
 export type Config = {
   /**
@@ -22,10 +37,12 @@ export type Config = {
   /** Globs watched by `dev()` to trigger a Moku-site rebuild. */
   watch: string[];
   /**
-   * Preferred in-process site rebuild hook (e.g. `() => webApp.cli.build()`). When absent, dev()
-   * falls back to `buildCommand`, then auto-detects `scripts/build.ts`.
+   * Standing default web-site build hook (e.g. `() => webApp.cli.build()`). Usually passed
+   * call-time to `dev` / `deploy` via `opts.webBuild` (the script-driven path); set here only for
+   * a persistent default. When absent, dev() falls back to `buildCommand`, then auto-detects
+   * `scripts/build.ts`.
    */
-  buildSite?: () => Promise<{ files: number }>;
+  webBuild?: WebBuild;
   /** Shell rebuild fallback (e.g. "bun run scripts/build.ts"); empty → auto-detect scripts/build.ts. */
   buildCommand: string;
   /** Apply local D1 migrations before serving when a d1 manifest is present. */
@@ -144,31 +161,39 @@ export type Api = {
   /**
    * Run the full deploy pipeline (detect -> provision -> config -> upload -> deploy).
    *
-   * @param opts - Optional guided/yes flags or a caller-supplied universal manifest.
+   * @param opts - Optional guided/yes flags, a web build hook, or a caller-supplied manifest.
    * @param opts.guided - Walk through each step interactively.
    * @param opts.yes - Skip confirmation prompts (non-interactive).
+   * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
    * @param opts.manifest - Caller-supplied universal manifest (bypasses auto-detection).
    * @returns Resolves once the deploy completes.
    * @example
    * ```ts
-   * await app.deploy.run({ guided: true });
+   * await app.deploy.run({ guided: true, webBuild: () => web.cli.build() });
    * await app.deploy.run({ manifest: { name: "w", compatibilityDate: "2026-06-17", resources: [] } });
    * ```
    */
-  run(opts?: { guided?: boolean; yes?: boolean; manifest?: ExternalManifest }): Promise<void>;
+  run(opts?: {
+    guided?: boolean;
+    yes?: boolean;
+    webBuild?: WebBuild;
+    manifest?: ExternalManifest;
+  }): Promise<void>;
 
   /**
-   * Start a local Cloudflare dev session via `wrangler dev`.
+   * Start a local Cloudflare dev session via `wrangler dev`: cold-build the web site, spawn
+   * `wrangler dev`, then watch + recompile the site on change.
    *
-   * @param opts - Optional port override.
+   * @param opts - Optional port override and web build hook.
    * @param opts.port - Local dev port to bind.
+   * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await app.deploy.dev({ port: 8787 });
+   * await app.deploy.dev({ port: 8787, webBuild: () => web.cli.build() });
    * ```
    */
-  dev(opts?: { port?: number }): Promise<void>;
+  dev(opts?: { port?: number; webBuild?: WebBuild }): Promise<void>;
 
   /**
    * Scaffold a starting wrangler config (and CI files when ci is set).

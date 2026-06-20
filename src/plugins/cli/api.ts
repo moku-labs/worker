@@ -5,7 +5,7 @@ import { createBrandConsole } from "@moku-labs/common/cli";
 import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEvents } from "../../config";
 import { deployPlugin } from "../deploy";
-import type { Api as DeployApi } from "../deploy/types";
+import type { Api as DeployApi, WebBuild } from "../deploy/types";
 import type { Api, Config } from "./types";
 
 /**
@@ -41,37 +41,45 @@ export type CliCtx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
  */
 export const createCliApi = (ctx: CliCtx): Api => ({
   /**
-   * Run the Worker locally; defaults port to ctx.config.port (8787) when no opts supplied.
+   * Run the Worker locally; defaults port to ctx.config.port (8787) when no opts supplied. A
+   * `webBuild` hook (e.g. `() => webApp.cli.build()`) wires the web build into the dev loop so the
+   * site recompiles on change — this is how an app-side script composes web + worker.
    *
    * @param opts - Optional local dev options.
    * @param opts.port - Local dev port to bind. Defaults to ctx.config.port (8787).
+   * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await api.dev();            // port 8787
-   * await api.dev({ port: 3000 }); // port 3000
+   * await api.dev();                                   // port 8787, worker only
+   * await api.dev({ webBuild: () => web.cli.build() }); // wire the web build in
    * ```
    */
-  dev(opts?: { port?: number }): Promise<void> {
-    return ctx.require(deployPlugin).dev(opts ?? { port: ctx.config.port });
+  dev(opts?: { port?: number; webBuild?: WebBuild }): Promise<void> {
+    const port = opts?.port ?? ctx.config.port;
+    return ctx
+      .require(deployPlugin)
+      .dev(opts?.webBuild ? { port, webBuild: opts.webBuild } : { port });
   },
 
   /**
    * One-command guided Cloudflare deploy; forwards flags verbatim to deploy.run.
-   * Passes `undefined` when called with no opts (not a default empty object).
+   * Passes `undefined` when called with no opts (not a default empty object). A `webBuild` hook
+   * builds the web site first (before `wrangler deploy`) — how an app-side script ships web + worker.
    *
    * @param opts - Optional deploy options.
    * @param opts.guided - Walk through each step interactively.
    * @param opts.yes - Skip confirmation prompts (non-interactive / CI).
+   * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
    * @returns Resolves once the deploy completes.
    * @example
    * ```ts
-   * await api.deploy({ guided: true });
+   * await api.deploy({ guided: true, webBuild: () => web.cli.build() });
    * await api.deploy({ yes: true }); // CI
    * await api.deploy(); // opts === undefined
    * ```
    */
-  deploy(opts?: { guided?: boolean; yes?: boolean }): Promise<void> {
+  deploy(opts?: { guided?: boolean; yes?: boolean; webBuild?: WebBuild }): Promise<void> {
     return ctx.require(deployPlugin).run(opts);
   },
 

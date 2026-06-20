@@ -252,21 +252,21 @@ describe("server plugin (integration)", () => {
 
   it("app.server.handle has correct signature", () => {
     const app = createTestApp();
-    expectTypeOf(app.server.handle).toMatchTypeOf<
+    expectTypeOf(app.server.handle).toExtend<
       (req: Request, env: WorkerEnv, exec: ExecutionContext) => Promise<Response>
     >();
   });
 
   it("app.server.scheduled has correct signature", () => {
     const app = createTestApp();
-    expectTypeOf(app.server.scheduled).toMatchTypeOf<
+    expectTypeOf(app.server.scheduled).toExtend<
       (c: ScheduledController, env: WorkerEnv, exec: ExecutionContext) => Promise<void>
     >();
   });
 
   it("endpoint('/x').get(h) returns an Endpoint", () => {
     const e = endpoint("/x").get(typeTestHandler);
-    expectTypeOf(e).toMatchTypeOf<{
+    expectTypeOf(e).toExtend<{
       path: string;
       method: string;
       handler: typeof typeTestHandler;
@@ -291,6 +291,6 @@ describe("server plugin (integration)", () => {
     await app.server.handle(new Request("https://example.com/p/1"), {}, makeExec());
     expect(capturedParams).toBeDefined();
     // biome-ignore lint/style/noNonNullAssertion: capturedParams is asserted defined on the line above
-    expectTypeOf(capturedParams!).toMatchTypeOf<Record<string, string | undefined>>();
+    expectTypeOf(capturedParams!).toExtend<Record<string, string | undefined>>();
   });
 });

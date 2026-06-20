@@ -81,7 +81,7 @@ describe("createServerState", () => {
     it("returns MatchResult type for valid match", () => {
       const s = createServerState([endpoint("/x").get(noop)]);
       const result = s.match("GET", "/x");
-      expectTypeOf(result).toMatchTypeOf<MatchResult | null>();
+      expectTypeOf(result).toExtend<MatchResult | null>();
     });
 
     // ─── Literal beats param ──────────────────────────────────────────────
@@ -171,7 +171,7 @@ describe("createServerState", () => {
       const s = createServerState([endpoint("/item/{id}").get(noop)]);
       const result = s.match("GET", "/item/1");
       if (result) {
-        expectTypeOf(result.params).toMatchTypeOf<Record<string, string | undefined>>();
+        expectTypeOf(result.params).toExtend<Record<string, string | undefined>>();
       }
     });
 
@@ -194,7 +194,7 @@ describe("createServerState", () => {
 
   it("returns a value satisfying the ServerState interface", () => {
     const s = createServerState([]);
-    expectTypeOf(s).toMatchTypeOf<ServerState>();
+    expectTypeOf(s).toExtend<ServerState>();
   });
 });
 

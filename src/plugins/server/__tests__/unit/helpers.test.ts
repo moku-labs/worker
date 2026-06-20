@@ -89,21 +89,21 @@ describe("endpoint() pure builder", () => {
 
   it("endpoint().get(h) return type is Endpoint", () => {
     const e = endpoint("/typed").get(noopHandler);
-    expectTypeOf(e).toMatchTypeOf<Endpoint>();
+    expectTypeOf(e).toExtend<Endpoint>();
   });
 
   it("endpoint().all(h) return type is Endpoint", () => {
     const e = endpoint("/all").all(noopHandler);
-    expectTypeOf(e).toMatchTypeOf<Endpoint>();
+    expectTypeOf(e).toExtend<Endpoint>();
     // 'method' literal is a subset of Method — not just string
-    expectTypeOf(e.method).toMatchTypeOf<
+    expectTypeOf(e.method).toExtend<
       "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS" | "ALL"
     >();
   });
 
   it("EndpointHandler returns Response | Promise<Response>", () => {
-    expectTypeOf(syncHandler).toMatchTypeOf<EndpointHandler>();
-    expectTypeOf(asyncHandler).toMatchTypeOf<EndpointHandler>();
+    expectTypeOf(syncHandler).toExtend<EndpointHandler>();
+    expectTypeOf(asyncHandler).toExtend<EndpointHandler>();
   });
 });
 

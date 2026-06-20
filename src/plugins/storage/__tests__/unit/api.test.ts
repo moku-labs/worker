@@ -36,12 +36,16 @@ const createMockCtx = (overrides?: {
 }): StorageCtx & { require: ReturnType<typeof vi.fn> } => {
   const fakeBindings = makeMemoryBindings(overrides?.bucket ?? "ASSETS");
   return {
+    // Standard-tier ctx also carries global framework config + `has` (spec/08 §2);
+    // both inert here — createStorageApi only reads config and require(bindingsPlugin).
+    global: {},
     config: {
       bucket: overrides?.bucket ?? "ASSETS",
       upload: overrides?.upload ?? ""
     },
     state: {} as Record<string, never>,
     emit: vi.fn() as StorageCtx["emit"],
+    has: () => false,
     // ctx.require(bindingsPlugin) returns our fake bindings api
     require: vi.fn((plugin: unknown) => {
       if (plugin === bindingsPlugin) return fakeBindings;
@@ -194,14 +198,14 @@ describe("createStorageApi", () => {
       const ctx = createMockCtx();
       const api = createStorageApi(ctx);
 
-      expectTypeOf(api).toMatchTypeOf<StorageApi>();
+      expectTypeOf(api).toExtend<StorageApi>();
     });
 
     it("get is env-first: (env, key) => Promise<R2ObjectBody | null>", () => {
       const ctx = createMockCtx();
       const api = createStorageApi(ctx);
 
-      expectTypeOf(api.get).toMatchTypeOf<
+      expectTypeOf(api.get).toEqualTypeOf<
         (env: Record<string, unknown>, key: string) => Promise<R2ObjectBody | null>
       >();
     });
@@ -210,7 +214,7 @@ describe("createStorageApi", () => {
       const ctx = createMockCtx();
       const api = createStorageApi(ctx);
 
-      expectTypeOf(api.deployManifest).toMatchTypeOf<
+      expectTypeOf(api.deployManifest).toExtend<
         () => { kind: "r2"; bucket: string; upload: string }
       >();
     });

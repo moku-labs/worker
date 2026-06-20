@@ -58,6 +58,12 @@ vi.mock("../../src/plugins/deploy/auth/verify", () => ({
     .mockResolvedValue({ ok: true, account: "test", accountId: "acct-test", scopes: [] })
 }));
 
+vi.mock("../../src/plugins/deploy/dev/runner", () => ({
+  // dev() spawns a long-lived watch loop; mock it so the integration test never blocks.
+  runDev: vi.fn().mockResolvedValue(undefined),
+  realDevDeps: vi.fn(() => ({}))
+}));
+
 // Imported AFTER the vi.mock calls above (which are hoisted) so these resolve to the mocks.
 import { afterAll, beforeAll, beforeEach } from "vitest";
 import { cliPlugin, deployPlugin } from "../../src/cli";
@@ -70,6 +76,7 @@ import {
   queuesPlugin,
   storagePlugin
 } from "../../src/index";
+import { runDev } from "../../src/plugins/deploy/dev/runner";
 import { provisionResource } from "../../src/plugins/deploy/providers";
 import { runWrangler } from "../../src/plugins/deploy/runner";
 import { writeWranglerConfig } from "../../src/plugins/deploy/wrangler-config";
@@ -387,24 +394,20 @@ describe("deploy + cli tooling (root integration)", () => {
       expect(events).toContain("deployed → https://deploy-test.workers.dev");
     });
 
-    it("app.cli.dev() delegates to deploy.dev → wrangler dev on the configured port", async () => {
+    it("app.cli.dev() delegates to deploy.dev → the dev orchestrator (runDev)", async () => {
       const app = createToolingApp();
 
       await expect(app.cli.dev()).resolves.toBeUndefined();
 
-      expect(runWrangler).toHaveBeenCalledWith(
-        expect.arrayContaining(["dev", "--port", "8787", "--config", "wrangler.jsonc"])
-      );
+      expect(runDev).toHaveBeenCalled();
     });
 
-    it("app.cli.dev({ port }) forwards an explicit port through to wrangler dev", async () => {
+    it("app.cli.dev({ port }) forwards an explicit port through to runDev", async () => {
       const app = createToolingApp();
 
       await expect(app.cli.dev({ port: 3000 })).resolves.toBeUndefined();
 
-      expect(runWrangler).toHaveBeenCalledWith(
-        expect.arrayContaining(["dev", "--port", "3000", "--config", "wrangler.jsonc"])
-      );
+      expect(runDev).toHaveBeenCalledWith(expect.anything(), { port: 3000 }, expect.anything());
     });
   });
 });

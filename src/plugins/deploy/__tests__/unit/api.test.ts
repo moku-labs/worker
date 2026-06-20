@@ -50,6 +50,12 @@ vi.mock("../../auth/verify", () => ({
     .mockResolvedValue({ ok: true, account: "Play Co", accountId: "acc-1", scopes: [] })
 }));
 
+// dev() delegates to runDev; mock it so the long-lived watch loop never runs in unit tests.
+vi.mock("../../dev/runner", () => ({
+  runDev: vi.fn().mockResolvedValue(undefined),
+  realDevDeps: vi.fn(() => ({}))
+}));
+
 // TTY defaults to interactive so the guided path is exercisable; overridden per test.
 vi.mock("../../tty", () => ({ stdoutIsTty: vi.fn(() => true) }));
 
@@ -72,6 +78,7 @@ vi.mock("@moku-labs/common/cli", async importOriginal => {
 import { createBrandPrompts } from "@moku-labs/common/cli";
 import { beforeEach } from "vitest";
 import { verifyAuth } from "../../auth/verify";
+import { runDev } from "../../dev/runner";
 import { planInfra } from "../../infra/plan";
 import { provisionResource } from "../../providers";
 import { uploadDirToR2 } from "../../providers/r2";
@@ -164,7 +171,11 @@ const createMockCtx = (overrides?: {
   return {
     config: {
       configFile: overrides?.configFile ?? "wrangler.jsonc",
-      ci: overrides?.ci ?? false
+      ci: overrides?.ci ?? false,
+      watch: ["src/**/*"],
+      buildCommand: "",
+      migrateLocal: true,
+      debounceMs: 120
     },
     state: {} as Record<string, never>,
     emit: vi.fn(),
@@ -627,34 +638,22 @@ describe("createDeployApi", () => {
   // ───────── dev ─────────────────────────────────────────────────────────────
 
   describe("dev", () => {
-    it("calls runWrangler with dev args and default port 8787", async () => {
+    it("delegates to runDev with ctx and no opts", async () => {
       const ctx = createMockCtx();
       const api = createDeployApi(ctx);
 
       await api.dev();
 
-      expect(runWrangler).toHaveBeenCalledWith([
-        "dev",
-        "--port",
-        "8787",
-        "--config",
-        "wrangler.jsonc"
-      ]);
+      expect(runDev).toHaveBeenCalledWith(ctx, undefined, expect.anything());
     });
 
-    it("passes the supplied port to wrangler dev", async () => {
+    it("forwards the port to runDev", async () => {
       const ctx = createMockCtx();
       const api = createDeployApi(ctx);
 
       await api.dev({ port: 9000 });
 
-      expect(runWrangler).toHaveBeenCalledWith([
-        "dev",
-        "--port",
-        "9000",
-        "--config",
-        "wrangler.jsonc"
-      ]);
+      expect(runDev).toHaveBeenCalledWith(ctx, { port: 9000 }, expect.anything());
     });
   });
 

@@ -59,6 +59,12 @@ vi.mock("../../../deploy/auth/verify", () => ({
     .mockResolvedValue({ ok: true, account: "test", accountId: "acct-test", scopes: [] })
 }));
 
+vi.mock("../../../deploy/dev/runner", () => ({
+  // dev() spawns a long-lived watch loop; mock it so the integration test never blocks.
+  runDev: vi.fn().mockResolvedValue(undefined),
+  realDevDeps: vi.fn(() => ({}))
+}));
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test-local coreConfig — isolates from sibling plugins
 // ─────────────────────────────────────────────────────────────────────────────

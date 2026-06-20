@@ -182,6 +182,58 @@ describe("createCliHooks", () => {
     });
   });
 
+  // ─── dev:phase ──────────────────────────────────────────────────────────────
+
+  describe("dev:phase handler", () => {
+    it('logs "<phase> · <detail>"', () => {
+      const { ctx, logInfo } = makeMockCtx();
+
+      createCliHooks(ctx)["dev:phase"]({ phase: "serve", detail: "http://localhost:8787" });
+
+      expect(logInfo).toHaveBeenCalledWith("serve · http://localhost:8787");
+    });
+
+    it('logs "<phase>" with no detail', () => {
+      const { ctx, logInfo } = makeMockCtx();
+
+      createCliHooks(ctx)["dev:phase"]({ phase: "build" });
+
+      expect(logInfo).toHaveBeenCalledWith("build");
+    });
+  });
+
+  // ─── dev:rebuilt ──────────────────────────────────────────────────────────
+
+  describe("dev:rebuilt handler", () => {
+    it("logs the file count when known", () => {
+      const { ctx, logInfo } = makeMockCtx();
+
+      createCliHooks(ctx)["dev:rebuilt"]({ files: 12, ms: 240 });
+
+      expect(logInfo).toHaveBeenCalledWith("site 12 files · 240ms");
+    });
+
+    it("omits the count when 0 (shell build path)", () => {
+      const { ctx, logInfo } = makeMockCtx();
+
+      createCliHooks(ctx)["dev:rebuilt"]({ files: 0, ms: 240 });
+
+      expect(logInfo).toHaveBeenCalledWith("site · 240ms");
+    });
+  });
+
+  // ─── dev:error ────────────────────────────────────────────────────────────
+
+  describe("dev:error handler", () => {
+    it("warns the message (non-fatal; the session keeps serving)", () => {
+      const { ctx } = makeMockCtx();
+
+      createCliHooks(ctx)["dev:error"]({ message: "boom" });
+
+      expect(ctx.log.warn).toHaveBeenCalledWith("boom");
+    });
+  });
+
   // ─── deploy:complete ──────────────────────────────────────────────────────
 
   describe("deploy:complete handler", () => {

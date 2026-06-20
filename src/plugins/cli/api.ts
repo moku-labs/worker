@@ -7,7 +7,7 @@ import type { WorkerEvents } from "../../config";
 import { deployPlugin } from "../deploy";
 import { renderAuthSetup } from "../deploy/auth/render";
 import type { Api as DeployApi, WebBuild } from "../deploy/types";
-import { parsePortArg, parseStageArg } from "./args";
+import { parseStageArg } from "./args";
 import type { Api, Config } from "./types";
 
 /**
@@ -43,30 +43,31 @@ export type CliCtx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
  */
 export const createCliApi = (ctx: CliCtx): Api => ({
   /**
-   * Run the Worker locally. Resolves the port from `opts.port`, else a `--port <n>` CLI flag, else
-   * `ctx.config.port` (8787). Prints a branded dev-session banner, then delegates to deploy.dev; a
-   * `webBuild` hook (e.g. `() => webApp.cli.build()`) wires the web build into the dev loop so the
-   * site recompiles on change. A failure renders a branded `✗` line + non-zero exit, not a stack.
+   * Run the Worker locally. The dev port comes ONLY from `opts.port` — the consumer passes it (e.g.
+   * parsed from its own CLI flags in scripts/dev.ts); when omitted it defaults to wrangler's 8787.
+   * There is no hidden argv/config port resolution. Prints a branded dev-session banner, then
+   * delegates to deploy.dev; a `webBuild` hook (e.g. `() => webApp.cli.build()`) wires the web build
+   * into the dev loop so the site recompiles on change. A failure renders a branded `✗` line +
+   * non-zero exit, not a stack.
    *
    * @param opts - Optional local dev options.
-   * @param opts.port - Local dev port to bind. Overrides the `--port` flag and the default.
+   * @param opts.port - Local dev port to bind. Defaults to 8787 when omitted.
    * @param opts.stage - Stage for the generated wrangler config; falls back to `--stage` then the app stage.
    * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await api.dev({ webBuild: () => web.cli.build() }); // port from --port or 8787
+   * await api.dev({ port: 7878, webBuild: () => web.cli.build() });
    * ```
    */
   async dev(opts?: { port?: number; stage?: string; webBuild?: WebBuild }): Promise<void> {
     const ui = createBrandConsole();
     ui.lockup({ wordmark: "moku worker", label: "dev session" });
 
-    const port = opts?.port ?? parsePortArg(process.argv) ?? ctx.config.port;
     const stage = opts?.stage ?? parseStageArg(process.argv);
     try {
       await ctx.require(deployPlugin).dev({
-        port,
+        ...(opts?.port === undefined ? {} : { port: opts.port }),
         ...(stage === undefined ? {} : { stage }),
         ...(opts?.webBuild ? { webBuild: opts.webBuild } : {})
       });

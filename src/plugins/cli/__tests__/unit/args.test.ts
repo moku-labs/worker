@@ -1,50 +1,40 @@
 /**
- * Unit tests for parsePortArg — pure argv parsing, no process access.
+ * Unit tests for parseStageArg — pure argv parsing, no process access.
  */
 import { describe, expect, it } from "vitest";
 
-import { parsePortArg } from "../../args";
+import { parseStageArg } from "../../args";
 
-describe("parsePortArg", () => {
-  it("parses the spaced form `--port 3000`", () => {
-    expect(parsePortArg(["bun", "scripts/dev.ts", "--port", "3000"])).toBe(3000);
+describe("parseStageArg", () => {
+  it("parses the spaced form `--stage dev`", () => {
+    expect(parseStageArg(["bun", "scripts/deploy.ts", "--stage", "dev"])).toBe("dev");
   });
 
-  it("parses the inline form `--port=3000`", () => {
-    expect(parsePortArg(["bun", "scripts/dev.ts", "--port=3000"])).toBe(3000);
+  it("parses the inline form `--stage=dev`", () => {
+    expect(parseStageArg(["bun", "scripts/deploy.ts", "--stage=dev"])).toBe("dev");
   });
 
-  it("parses the short flags `-p 4000` and `-p=4000`", () => {
-    expect(parsePortArg(["bun", "dev.ts", "-p", "4000"])).toBe(4000);
-    expect(parsePortArg(["bun", "dev.ts", "-p=4000"])).toBe(4000);
+  it("returns undefined when no stage flag is present", () => {
+    expect(parseStageArg(["bun", "scripts/deploy.ts"])).toBeUndefined();
   });
 
-  it("returns undefined when no port flag is present", () => {
-    expect(parsePortArg(["bun", "scripts/dev.ts"])).toBeUndefined();
+  it("returns undefined for an empty inline value", () => {
+    expect(parseStageArg(["bun", "deploy.ts", "--stage="])).toBeUndefined();
   });
 
-  it("returns undefined for a non-numeric value", () => {
-    expect(parsePortArg(["bun", "dev.ts", "--port", "abc"])).toBeUndefined();
+  it("returns undefined for an empty spaced value", () => {
+    expect(parseStageArg(["bun", "deploy.ts", "--stage", ""])).toBeUndefined();
   });
 
-  it("returns undefined for a non-integer value", () => {
-    expect(parsePortArg(["bun", "dev.ts", "--port", "30.5"])).toBeUndefined();
-  });
-
-  it("returns undefined for an out-of-range port", () => {
-    expect(parsePortArg(["bun", "dev.ts", "--port", "0"])).toBeUndefined();
-    expect(parsePortArg(["bun", "dev.ts", "--port", "70000"])).toBeUndefined();
-  });
-
-  it("returns undefined when `--port` is the last token (no value)", () => {
-    expect(parsePortArg(["bun", "dev.ts", "--port"])).toBeUndefined();
+  it("returns undefined when `--stage` is the last token (no value)", () => {
+    expect(parseStageArg(["bun", "deploy.ts", "--stage"])).toBeUndefined();
   });
 
   it("ignores unrelated flags", () => {
-    expect(parsePortArg(["bun", "dev.ts", "--config", "wrangler.jsonc"])).toBeUndefined();
+    expect(parseStageArg(["bun", "deploy.ts", "--port", "3000"])).toBeUndefined();
   });
 
-  it("returns the first valid port when several are present", () => {
-    expect(parsePortArg(["bun", "dev.ts", "--port", "3000", "--port", "4000"])).toBe(3000);
+  it("returns the first non-empty stage when several are present", () => {
+    expect(parseStageArg(["bun", "deploy.ts", "--stage", "dev", "--stage", "prod"])).toBe("dev");
   });
 });

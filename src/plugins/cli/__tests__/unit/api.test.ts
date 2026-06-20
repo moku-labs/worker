@@ -60,15 +60,12 @@ const makeDeployStub = () => ({
 /**
  * Builds a mock CliCtx for createCliApi testing.
  *
- * @param port - Default port stored in config (default 8787).
  * @returns A mock CliCtx with a require() that returns the deploy stub.
  */
-const makeMockCtx = (
-  port = 8787
-): { ctx: CliCtx; deployStub: ReturnType<typeof makeDeployStub> } => {
+const makeMockCtx = (): { ctx: CliCtx; deployStub: ReturnType<typeof makeDeployStub> } => {
   const deployStub = makeDeployStub();
   const ctx: CliCtx = {
-    config: { port },
+    config: {},
     state: {} as Record<string, never>,
     emit: vi.fn() as CliCtx["emit"],
     require: (_plugin: typeof deployPlugin) => deployStub
@@ -84,18 +81,18 @@ describe("createCliApi", () => {
   // ─── dev ──────────────────────────────────────────────────────────────────
 
   describe("dev", () => {
-    it("calls require(deployPlugin).dev({ port: <default> }) when no opts are supplied", async () => {
-      const { ctx, deployStub } = makeMockCtx(8787);
+    it("forwards no port to deploy.dev when no opts are supplied", async () => {
+      const { ctx, deployStub } = makeMockCtx();
       const api = createCliApi(ctx);
 
       await api.dev();
 
       expect(deployStub.dev).toHaveBeenCalledOnce();
-      expect(deployStub.dev).toHaveBeenCalledWith({ port: 8787 });
+      expect(deployStub.dev).toHaveBeenCalledWith({});
     });
 
     it("forwards { port: 3000 } unchanged when caller passes an explicit port", async () => {
-      const { ctx, deployStub } = makeMockCtx(8787);
+      const { ctx, deployStub } = makeMockCtx();
       const api = createCliApi(ctx);
 
       await api.dev({ port: 3000 });
@@ -103,27 +100,18 @@ describe("createCliApi", () => {
       expect(deployStub.dev).toHaveBeenCalledWith({ port: 3000 });
     });
 
-    it("respects a non-default configured port (9000) when dev() has no opts", async () => {
-      const { ctx, deployStub } = makeMockCtx(9000);
-      const api = createCliApi(ctx);
-
-      await api.dev();
-
-      expect(deployStub.dev).toHaveBeenCalledWith({ port: 9000 });
-    });
-
-    it("forwards a webBuild hook alongside the default port", async () => {
-      const { ctx, deployStub } = makeMockCtx(8787);
+    it("forwards a webBuild hook (and no port) when only webBuild is given", async () => {
+      const { ctx, deployStub } = makeMockCtx();
       const api = createCliApi(ctx);
       const webBuild = vi.fn<WebBuild>().mockResolvedValue({ files: 4 });
 
       await api.dev({ webBuild });
 
-      expect(deployStub.dev).toHaveBeenCalledWith({ port: 8787, webBuild });
+      expect(deployStub.dev).toHaveBeenCalledWith({ webBuild });
     });
 
     it("forwards a webBuild hook alongside an explicit port", async () => {
-      const { ctx, deployStub } = makeMockCtx(8787);
+      const { ctx, deployStub } = makeMockCtx();
       const api = createCliApi(ctx);
       const webBuild = vi.fn<WebBuild>().mockResolvedValue({ files: 4 });
 

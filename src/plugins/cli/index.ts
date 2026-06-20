@@ -16,8 +16,9 @@ import { createCliApi } from "./api";
 import { createCliHooks } from "./handlers";
 import type { Config } from "./types";
 
-// Typed const ABOVE the factory — no inline `as` in config (R6; spec/11 §Part 2).
-const defaultConfig: Config = { port: 8787 };
+// Typed const ABOVE the factory — no inline `as` in config (R6; spec/11 §Part 2). The cli surface
+// is configuration-free (the dev port comes only from `dev({ port })`), so this is empty.
+const defaultConfig: Config = {};
 
 /**
  * Standard tier (node-only) — developer-facing CLI surface.

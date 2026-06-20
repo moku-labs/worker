@@ -4,31 +4,28 @@
 
 import type { WebBuild } from "../deploy/types";
 
-/** Resolved configuration for the cli plugin. Flat; complete defaults so omission never yields undefined. */
-export type Config = {
-  /**
-   * Default local dev port forwarded to deploy.dev when dev() gets no port.
-   * Passed through to `wrangler dev --port <n>`.
-   *
-   * @default 8787
-   */
-  readonly port: number;
-};
+/**
+ * Resolved configuration for the cli plugin. The cli surface is configuration-free: the dev port is
+ * NOT set here (it comes only from `dev({ port })`), so there are no keys to set under
+ * `pluginConfigs.cli`.
+ */
+export type Config = Record<string, never>;
 
 /** Public api surface of the cli plugin, mounted at app.cli.*. */
 export type Api = {
   /**
-   * Run the Worker locally via Wrangler (delegates to deploy.dev). Resolves the port from
-   * `opts.port`, else a `--port <n>` CLI flag, else the configured default (8787). A failure renders
-   * a branded `✗` line and sets a non-zero exit code rather than throwing a raw stack trace.
+   * Run the Worker locally via Wrangler (delegates to deploy.dev). The dev port comes only from
+   * `opts.port` — the consumer passes it (e.g. parsed from its own CLI flags); it defaults to 8787
+   * when omitted. A failure renders a branded `✗` line and sets a non-zero exit code rather than
+   * throwing a raw stack trace.
    *
-   * @param opts - Optional port override and web build hook.
-   * @param opts.port - Local dev port to bind (overrides the `--port` flag and the default).
+   * @param opts - Optional port and web build hook.
+   * @param opts.port - Local dev port to bind. Defaults to 8787 when omitted.
    * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await app.cli.dev({ webBuild: () => web.cli.build() }); // port from --port or 8787
+   * await app.cli.dev({ port: 7878, webBuild: () => web.cli.build() });
    * ```
    */
   dev(opts?: { port?: number; webBuild?: WebBuild }): Promise<void>;

@@ -194,7 +194,6 @@ const createToolingApp = () =>
       d1: { main: { name: "db", binding: "DB", migrations: "./migrations" } },
       queues: { jobs: { name: "jobs", binding: "JOBS", onMessage: async () => undefined } },
       durableObjects: { counter: { binding: "COUNTER", className: "Counter" } },
-      cli: { port: 8787 },
       deploy: { configFile: "wrangler.jsonc", ci: false }
     }
   });

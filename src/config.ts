@@ -24,6 +24,7 @@ export type WorkerEvents = {
   "provision:resource": { kind: "kv" | "r2" | "d1" | "queue" | "do"; name: string };
   "provision:plan": { exists: number; missing: number; account: string };
   "provision:skip": { kind: "kv" | "r2" | "d1" | "queue" | "do"; name: string };
+  "auth:verified": { account: string; accountId: string; scopes: string[] };
 };
 
 /**

@@ -64,6 +64,23 @@ export const resolveAccount = async (token: string): Promise<{ id: string; name:
 };
 
 /**
+ * Verify a Cloudflare API token via `GET /user/tokens/verify`. Returns its status (`"active"` for
+ * a usable token); throws (via cfGet) when the token is rejected outright (401/invalid).
+ *
+ * @param token - The Cloudflare API token to verify.
+ * @returns The token status string reported by Cloudflare.
+ * @throws {Error} When the verify request fails (invalid/expired token).
+ * @example
+ * ```ts
+ * const { status } = await verifyToken(token); // status === "active"
+ * ```
+ */
+export const verifyToken = async (token: string): Promise<{ status: string }> => {
+  const result = await cfGet<{ id: string; status: string }>(token, "/user/tokens/verify");
+  return { status: result.status };
+};
+
+/**
  * The set of resources that already exist in the account, indexed for fast lookup:
  * kv/d1 map their identity to the captured id; r2/queue track existence by name.
  */

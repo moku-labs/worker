@@ -92,6 +92,40 @@ export type ProvisionResult = {
   ids: Record<string, string>;
 };
 
+/** Result of verifying the `.env` Cloudflare API token and resolving its account. */
+export type AuthStatus = {
+  /** Whether the token is present and active. */
+  ok: boolean;
+  /** Resolved account display name (or id when the name is unknown). */
+  account: string;
+  /** Resolved Cloudflare account id. */
+  accountId: string;
+  /** Token scopes, when discoverable (empty otherwise). */
+  scopes: string[];
+};
+
+/** One Cloudflare API-token permission group the app's manifest requires. */
+export type PermissionGroup = {
+  /** Human-readable group label, e.g. "Account · D1". */
+  group: string;
+  /** Permission scope. */
+  scope: "Edit" | "Read";
+  /** Why it is required, e.g. "d1", "queue", "deploy", "account". */
+  reason: string;
+  /** Whether Cloudflare's stock "Edit Cloudflare Workers" template already includes it. */
+  inBaseTemplate: boolean;
+};
+
+/** The Cloudflare API token this app requires, derived from its manifest. */
+export type TokenRequirement = {
+  /** The recommended starting template. */
+  base: "Edit Cloudflare Workers";
+  /** The full set of permission groups required. */
+  required: PermissionGroup[];
+  /** Groups NOT in the base template that the user must add (e.g. D1, Queues). */
+  toAdd: PermissionGroup[];
+};
+
 /** Public api surface of the deploy plugin, mounted at app.deploy.*. */
 export type Api = {
   /**
@@ -162,6 +196,45 @@ export type Api = {
    * ```
    */
   provisionInfra(plan: InfraPlan): Promise<ProvisionResult>;
+
+  /**
+   * Verify the `.env` Cloudflare API token (must be active) and resolve its account. Emits
+   * auth:verified. Throws a branded, actionable error (pointing at `auth setup`) when the token
+   * is missing, invalid, or inactive.
+   *
+   * @returns The verified auth status (account + id).
+   * @throws {Error} When the token is absent, invalid, or inactive.
+   * @example
+   * ```ts
+   * const { account } = await app.deploy.verifyAuth();
+   * ```
+   */
+  verifyAuth(): Promise<AuthStatus>;
+
+  /**
+   * Derive the minimum Cloudflare API token this app needs from its manifest — including which
+   * permission groups are missing from the stock "Edit Cloudflare Workers" template (D1, Queues).
+   * Pure: no network, works before a token exists.
+   *
+   * @returns The derived token requirement (full set + the groups to add).
+   * @example
+   * ```ts
+   * const { toAdd } = app.deploy.requiredToken();
+   * ```
+   */
+  requiredToken(): TokenRequirement;
+
+  /**
+   * Render copy-pasteable `auth setup` guidance from the derived token requirement: the permission
+   * table, the template + "add these" steps, and the `.env.local` lines. Pure: no network.
+   *
+   * @returns The rendered instruction text.
+   * @example
+   * ```ts
+   * const text = app.deploy.tokenInstructions();
+   * ```
+   */
+  tokenInstructions(): string;
 };
 
 // ─── ctx.require composition (mirrors src/plugins/server/types.ts) ───────────────────

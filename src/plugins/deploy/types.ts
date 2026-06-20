@@ -236,6 +236,31 @@ export type Api = {
   dev(opts?: { port?: number; webBuild?: WebBuild }): Promise<void>;
 
   /**
+   * Execute a SQL file against a configured D1 database via `wrangler d1 execute` — for seeding dev
+   * data (e.g. before a `dev` session). Targets the LOCAL D1 by default; `opts.remote` runs against
+   * Cloudflare. Resolves the database to the single configured d1 instance, or the one bound to
+   * `opts.binding` when more than one exists. Generates/updates the wrangler config first (so the
+   * binding resolves on a first run) and, locally, applies that database's migrations before the file
+   * so its tables exist (the usual seed file only inserts rows). Streams wrangler's output.
+   *
+   * @param sqlFile - Path to the SQL file to execute (e.g. "db/seed.sql").
+   * @param opts - Optional options.
+   * @param opts.stage - Stage for the generated config's resource names (defaults to the app stage).
+   * @param opts.binding - The d1 binding to target when more than one is configured (e.g. "DB").
+   * @param opts.remote - Seed the remote (Cloudflare) D1 instead of the local one.
+   * @returns Resolves once wrangler finishes executing the file.
+   * @example
+   * ```ts
+   * await app.deploy.seed("db/seed.sql");                   // local default d1
+   * await app.deploy.seed("db/seed.sql", { remote: true }); // remote
+   * ```
+   */
+  seed(
+    sqlFile: string,
+    opts?: { stage?: string; binding?: string; remote?: boolean }
+  ): Promise<void>;
+
+  /**
    * Scaffold a starting wrangler config (and CI files when ci is set).
    *
    * @param opts - Optional ci flag.

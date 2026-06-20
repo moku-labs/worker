@@ -311,8 +311,7 @@ export const createDeployApi = (ctx: Ctx) => ({
    * const text = api.tokenInstructions();
    * ```
    */
-  tokenInstructions: (): string =>
-    renderTokenInstructions(deriveRequiredToken(assembleManifest(ctx))),
+  tokenInstructions: (): string => renderTokenInstructions(assembleManifest(ctx)),
 
   /**
    * Run an arbitrary wrangler command, streaming its output (the branded CLI escape hatch).

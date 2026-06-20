@@ -81,6 +81,12 @@ export const verifyToken = async (token: string): Promise<{ status: string }> =>
 };
 
 /**
+ * The resource kinds the preflight can list against the Cloudflare API. Durable Objects ship with
+ * the Worker script (no account-level listing), so they are never queried.
+ */
+export type ListableKind = "kv" | "d1" | "r2" | "queue";
+
+/**
  * The set of resources that already exist in the account, indexed for fast lookup:
  * kv/d1 map their identity to the captured id; r2/queue track existence by name.
  */
@@ -96,29 +102,41 @@ export type ExistingResources = {
 };
 
 /**
- * List every kv / d1 / r2 / queue resource that already exists in the account (one request per
- * kind, in parallel), indexed for the preflight diff.
+ * List the resources that already exist in the account, querying ONLY the kinds the app declares
+ * (one request per declared kind, in parallel), indexed for the preflight diff. Scoping to the
+ * declared kinds keeps the API token minimal — an app with only KV never lists (and so never needs
+ * read permission on) D1, R2, or Queues.
  *
  * @param token - The Cloudflare API token.
  * @param accountId - The Cloudflare account id to scope the listings to.
- * @returns The existing resources, indexed by kind.
+ * @param kinds - The resource kinds present in the manifest (the only kinds queried).
+ * @returns The existing resources, indexed by kind (un-queried kinds resolve empty).
  * @throws {Error} When any listing request fails.
  * @example
  * ```ts
- * const existing = await listExisting(token, accountId);
+ * const existing = await listExisting(token, accountId, new Set(["kv", "d1"]));
  * if (existing.kv.has("SESSIONS")) { ... }
  * ```
  */
 export const listExisting = async (
   token: string,
-  accountId: string
+  accountId: string,
+  kinds: ReadonlySet<ListableKind>
 ): Promise<ExistingResources> => {
   const base = `/accounts/${accountId}`;
   const [kv, d1, r2, queues] = await Promise.all([
-    cfGet<Array<{ id: string; title: string }>>(token, `${base}/storage/kv/namespaces`),
-    cfGet<Array<{ uuid: string; name: string }>>(token, `${base}/d1/database`),
-    cfGet<{ buckets?: Array<{ name: string }> }>(token, `${base}/r2/buckets`),
-    cfGet<Array<{ queue_name: string }>>(token, `${base}/queues`)
+    kinds.has("kv")
+      ? cfGet<Array<{ id: string; title: string }>>(token, `${base}/storage/kv/namespaces`)
+      : Promise.resolve<Array<{ id: string; title: string }>>([]),
+    kinds.has("d1")
+      ? cfGet<Array<{ uuid: string; name: string }>>(token, `${base}/d1/database`)
+      : Promise.resolve<Array<{ uuid: string; name: string }>>([]),
+    kinds.has("r2")
+      ? cfGet<{ buckets?: Array<{ name: string }> }>(token, `${base}/r2/buckets`)
+      : Promise.resolve<{ buckets?: Array<{ name: string }> }>({}),
+    kinds.has("queue")
+      ? cfGet<Array<{ queue_name: string }>>(token, `${base}/queues`)
+      : Promise.resolve<Array<{ queue_name: string }>>([])
   ]);
 
   return {

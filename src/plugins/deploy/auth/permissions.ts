@@ -62,3 +62,65 @@ export const requiredToken = (manifest: ExternalManifest): TokenRequirement => {
     toAdd: required.filter(permission => !permission.inBaseTemplate)
   };
 };
+
+/** Permission every CI/automation redeploy needs: ship the Worker script. */
+const CI_ALWAYS: readonly PermissionGroup[] = [
+  { group: "Account · Workers Scripts", scope: "Edit", reason: "deploy", inBaseTemplate: true }
+];
+
+/**
+ * Per-resource-kind permission for the CI/automation token. After a first LOCAL deploy has
+ * provisioned everything, CI only needs to LIST existing infra (the idempotent preflight) and
+ * ship — so data resources drop to `Read`; R2 stays `Edit` because asset upload writes objects.
+ */
+const CI_BY_KIND: Record<ResourceManifest["kind"], PermissionGroup | undefined> = {
+  kv: {
+    group: "Account · Workers KV Storage",
+    scope: "Read",
+    reason: "kv (preflight)",
+    inBaseTemplate: true
+  },
+  r2: {
+    group: "Account · Workers R2 Storage",
+    scope: "Edit",
+    reason: "r2 (asset upload)",
+    inBaseTemplate: true
+  },
+  d1: { group: "Account · D1", scope: "Read", reason: "d1 (preflight)", inBaseTemplate: false },
+  queue: {
+    group: "Account · Queues",
+    scope: "Read",
+    reason: "queue (preflight)",
+    inBaseTemplate: false
+  },
+  do: undefined
+};
+
+/**
+ * Derive the REDUCED Cloudflare API token for CI/automation redeploys, from the same manifest.
+ * Assumes a prior LOCAL deploy already provisioned the infra, so CI never creates: data resources
+ * need only `Read` (the idempotent preflight lists them), R2 keeps `Edit` for asset upload, and no
+ * `Account Settings · Read` is needed because CI pins `CLOUDFLARE_ACCOUNT_ID`. Pure: no network.
+ *
+ * @param manifest - The assembled deploy manifest.
+ * @returns The minimum permission groups for a CI redeploy token (deduped, manifest-scoped).
+ * @example
+ * ```ts
+ * const groups = ciToken({ name: "w", compatibilityDate: "…", resources: [{ kind: "d1", binding: "DB" }] });
+ * // → [Workers Scripts·Edit, D1·Read]
+ * ```
+ */
+export const ciToken = (manifest: ExternalManifest): PermissionGroup[] => {
+  const groups: PermissionGroup[] = [...CI_ALWAYS];
+  const seen = new Set(groups.map(permission => permission.group));
+
+  for (const resource of manifest.resources) {
+    const permission = CI_BY_KIND[resource.kind];
+    if (permission !== undefined && !seen.has(permission.group)) {
+      groups.push(permission);
+      seen.add(permission.group);
+    }
+  }
+
+  return groups;
+};

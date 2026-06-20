@@ -6,7 +6,7 @@
  * `provision:plan` and writes nothing. Node-only; never imported by the runtime Worker bundle.
  */
 import type { Ctx, ExternalManifest, InfraPlan, ProvisionedRef, ResourceManifest } from "../types";
-import type { ExistingResources } from "./cloudflare";
+import type { ExistingResources, ListableKind } from "./cloudflare";
 import { listExisting, resolveAccount } from "./cloudflare";
 
 /**
@@ -70,7 +70,13 @@ export const planInfra = async (ctx: Ctx, manifest: ExternalManifest): Promise<I
     ? { id: pinnedAccountId, name: pinnedAccountId }
     : await resolveAccount(token);
 
-  const existing = await listExisting(token, account.id);
+  // Query only the kinds the app declares (DO is never listed — it ships with the script), so the
+  // token needs read permission on just those kinds.
+  const kinds = new Set<ListableKind>();
+  for (const resource of manifest.resources) {
+    if (resource.kind !== "do") kinds.add(resource.kind);
+  }
+  const existing = await listExisting(token, account.id, kinds);
 
   // Partition the declared resources into already-existing vs still-missing.
   const exists: ProvisionedRef[] = [];

@@ -22,6 +22,8 @@ export type WorkerEvents = {
   "deploy:phase": { phase: string; detail?: string };
   "deploy:complete": { url: string };
   "provision:resource": { kind: "kv" | "r2" | "d1" | "queue" | "do"; name: string };
+  "provision:plan": { exists: number; missing: number; account: string };
+  "provision:skip": { kind: "kv" | "r2" | "d1" | "queue" | "do"; name: string };
 };
 
 /**

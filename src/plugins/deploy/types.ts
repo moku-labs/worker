@@ -1,6 +1,7 @@
 /**
  * @file deploy plugin — type definitions (Config, ResourceManifest, ExternalManifest, Ctx, Api).
  */
+import type { EnvApi } from "@moku-labs/common";
 import type { PluginCtx, PluginInstance } from "@moku-labs/core";
 
 import type { WorkerConfig, WorkerEvents } from "../../config";
@@ -39,6 +40,56 @@ export type ExternalManifest = {
   compatibilityDate: string;
   /** Resource descriptors to provision. */
   resources: ResourceManifest[];
+};
+
+/**
+ * Outcome of provisioning a single resource. Carries the captured Cloudflare id for the
+ * kinds that have one (kv namespace id, d1 database id) so writeWranglerConfig can write a
+ * real id into the generated config instead of an empty placeholder. r2/queue/do have no
+ * such id (they are referenced by name) and resolve to an empty object.
+ */
+export type ProvisionOutcome = {
+  /** Captured Cloudflare resource id, when the provisioned kind reports one (kv/d1). */
+  id?: string;
+};
+
+/**
+ * A resource that already exists in the account (the infra preflight discovered it), with its
+ * captured Cloudflare id when the kind has one (kv namespace id, d1 database id).
+ */
+export type ProvisionedRef = {
+  /** The resource descriptor from the manifest. */
+  resource: ResourceManifest;
+  /** The existing resource's Cloudflare id (kv/d1 only). */
+  id?: string;
+};
+
+/**
+ * Read-only infra preflight result: which declared resources already exist in the Cloudflare
+ * account versus which are still missing and must be created. Produced by `checkInfra()`.
+ */
+export type InfraPlan = {
+  /** Resolved account display name (or id when the name is unknown). */
+  account: string;
+  /** Resolved Cloudflare account id used for the existence checks. */
+  accountId: string;
+  /** Declared resources that already exist (with their captured ids where applicable). */
+  exists: ProvisionedRef[];
+  /** Declared resources that do not yet exist and must be created. */
+  missing: ResourceManifest[];
+};
+
+/**
+ * Outcome of acting on an {@link InfraPlan}: the resources just created, those skipped because
+ * they already existed, and the merged id map (binding → Cloudflare id) for the config writer.
+ */
+export type ProvisionResult = {
+  /** Resources created during this run. */
+  created: ProvisionedRef[];
+  /** Resources skipped because they already existed. */
+  skipped: ProvisionedRef[];
+  /** Merged binding → Cloudflare id map (existing + created) for writeWranglerConfig. */
+  ids: Record<string, string>;
 };
 
 /** Public api surface of the deploy plugin, mounted at app.deploy.*. */
@@ -84,6 +135,33 @@ export type Api = {
    * ```
    */
   init(opts?: { ci?: boolean }): Promise<void>;
+
+  /**
+   * Read-only infra preflight: resolve the account, list what already exists in Cloudflare,
+   * diff against the assembled manifest, and report the plan. Writes nothing.
+   *
+   * @returns The infra plan (existing vs missing resources, with captured ids).
+   * @example
+   * ```ts
+   * const plan = await app.deploy.checkInfra();
+   * const toCreate = plan.missing.length;
+   * ```
+   */
+  checkInfra(): Promise<InfraPlan>;
+
+  /**
+   * Create only the resources missing from the plan (skipping those that already exist),
+   * capturing each created/existing id for the wrangler config.
+   *
+   * @param plan - A plan produced by {@link Api.checkInfra}.
+   * @returns The provisioning result: created, skipped, and the merged id map.
+   * @example
+   * ```ts
+   * const plan = await app.deploy.checkInfra();
+   * const { created } = await app.deploy.provisionInfra(plan);
+   * ```
+   */
+  provisionInfra(plan: InfraPlan): Promise<ProvisionResult>;
 };
 
 // ─── ctx.require composition (mirrors src/plugins/server/types.ts) ───────────────────
@@ -115,6 +193,8 @@ type RequireFn = <P extends AnyPlugin>(plugin: P) => ApiOf<P>;
 export type Ctx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
   /** Frozen global framework config (name, compatibilityDate, stage). */
   readonly global: Readonly<WorkerConfig>;
+  /** Injected core env api (`@moku-labs/common`) — reads CLOUDFLARE_API_TOKEN / _ACCOUNT_ID. */
+  readonly env: EnvApi;
   /** Resolve a dependency plugin's api (storage / kv / d1 / queues / durableObjects). */
   readonly require: RequireFn;
   /**

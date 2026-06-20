@@ -167,6 +167,52 @@ describe("writeWranglerConfig", () => {
     });
   });
 
+  describe("writes captured resource ids", () => {
+    it("writes the captured kv namespace id when provided", async () => {
+      const manifest: ExternalManifest = {
+        name: "w",
+        compatibilityDate: "2026-06-17",
+        resources: [{ kind: "kv", binding: "SESSIONS" }]
+      };
+
+      await writeWranglerConfig(configPath(), manifest, { SESSIONS: "ns-abc123" });
+
+      const config = readConfig();
+      const kvs = config.kv_namespaces as Array<{ binding: string; id: string }>;
+      expect(kvs).toContainEqual({ binding: "SESSIONS", id: "ns-abc123" });
+    });
+
+    it("writes the captured d1 database_id when provided", async () => {
+      const manifest: ExternalManifest = {
+        name: "w",
+        compatibilityDate: "2026-06-17",
+        resources: [{ kind: "d1", binding: "DB" }]
+      };
+
+      await writeWranglerConfig(configPath(), manifest, { DB: "uuid-1234" });
+
+      const config = readConfig();
+      const dbs = config.d1_databases as Array<{ binding: string; database_id: string }>;
+      expect(dbs).toContainEqual(
+        expect.objectContaining({ binding: "DB", database_id: "uuid-1234" })
+      );
+    });
+
+    it("writes an empty id when none is captured (e.g. the universal path)", async () => {
+      const manifest: ExternalManifest = {
+        name: "w",
+        compatibilityDate: "2026-06-17",
+        resources: [{ kind: "kv", binding: "SESSIONS" }]
+      };
+
+      await writeWranglerConfig(configPath(), manifest);
+
+      const config = readConfig();
+      const kvs = config.kv_namespaces as Array<{ binding: string; id: string }>;
+      expect(kvs[0]?.id).toBe("");
+    });
+  });
+
   describe("merges non-destructively with existing config", () => {
     it("preserves existing top-level keys not managed by this plugin", async () => {
       // Write a pre-existing config with custom fields

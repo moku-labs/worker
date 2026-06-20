@@ -300,6 +300,18 @@ describe("cli plugin (integration)", () => {
       expectTypeOf(app.cli.deploy()).toEqualTypeOf<Promise<void>>();
     });
 
+    it("dev and deploy accept an explicit stage", () => {
+      const app = createTestApp();
+
+      // Type-level: an explicit stage must compile on both (surfaced on the Api type; the impl
+      // already resolves opts.stage ?? --stage ?? config.stage). No @ts-expect-error needed.
+      const devCall = (): Promise<void> => app.cli.dev({ stage: "dev" });
+      const deployCall = (): Promise<void> => app.cli.deploy({ stage: "production" });
+
+      expect(typeof devCall).toBe("function");
+      expect(typeof deployCall).toBe("function");
+    });
+
     it("@ts-expect-error: dev rejects port as string", () => {
       const app = createTestApp();
 

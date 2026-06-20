@@ -54,7 +54,14 @@ vi.mock("../../auth/verify", () => ({
     .mockResolvedValue({ ok: true, account: "test", accountId: "acct-test", scopes: [] })
 }));
 
+vi.mock("../../dev/runner", () => ({
+  // dev() spawns a long-lived watch loop; mock it so the integration test never blocks.
+  runDev: vi.fn().mockResolvedValue(undefined),
+  realDevDeps: vi.fn(() => ({}))
+}));
+
 import { beforeEach } from "vitest";
+import { runDev } from "../../dev/runner";
 import { provisionResource } from "../../providers";
 import { runWrangler } from "../../runner";
 import { writeWranglerConfig } from "../../wrangler-config";
@@ -241,12 +248,12 @@ describe("deploy plugin (integration)", () => {
   // ─────────────────────────────────────────────────────────────────────────
 
   describe("app.deploy.dev()", () => {
-    it("calls runWrangler dev with default port", async () => {
+    it("delegates to the dev orchestrator (runDev)", async () => {
       const app = createTestApp();
 
       await app.deploy.dev();
 
-      expect(runWrangler).toHaveBeenCalledWith(expect.arrayContaining(["dev", "--port", "8787"]));
+      expect(runDev).toHaveBeenCalled();
     });
   });
 

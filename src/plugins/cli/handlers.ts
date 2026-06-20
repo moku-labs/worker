@@ -30,6 +30,12 @@ export type CliHooks = {
   "provision:resource": (payload: WorkerEvents["provision:resource"]) => void;
   /** Log one clean line per already-existing resource (skipped). */
   "provision:skip": (payload: WorkerEvents["provision:skip"]) => void;
+  /** Log one clean line per dev-session phase (build / serve / rebuild / …). */
+  "dev:phase": (payload: WorkerEvents["dev:phase"]) => void;
+  /** Log the per-change site rebuild result. */
+  "dev:rebuilt": (payload: WorkerEvents["dev:rebuilt"]) => void;
+  /** Log a non-fatal dev build failure (the session keeps serving). */
+  "dev:error": (payload: WorkerEvents["dev:error"]) => void;
   /** Log the terminal success line with the deployed URL. */
   "deploy:complete": (payload: WorkerEvents["deploy:complete"]) => void;
 };
@@ -103,6 +109,48 @@ export const createCliHooks = (ctx: CliCtx): CliHooks => ({
    */
   "provision:skip"(p: WorkerEvents["provision:skip"]): void {
     ctx.log.info(`${p.kind} ${p.name} (exists)`);
+  },
+
+  /**
+   * Log one dev-session phase: "phase" or "phase · detail".
+   *
+   * @param p - The dev:phase event payload.
+   * @example
+   * ```ts
+   * handler({ phase: "serve", detail: "http://localhost:8787" }); // "serve · http://localhost:8787"
+   * ```
+   */
+  "dev:phase"(p: WorkerEvents["dev:phase"]): void {
+    ctx.log.info(p.detail ? `${p.phase} · ${p.detail}` : p.phase);
+  },
+
+  /**
+   * Log the site rebuild result: "site <n> files · <ms>ms" (omits the count when unknown).
+   *
+   * @param p - The dev:rebuilt event payload.
+   * @example
+   * ```ts
+   * handler({ files: 12, ms: 240 }); // "site 12 files · 240ms"
+   * handler({ files: 0, ms: 240 }); // "site · 240ms"
+   * ```
+   */
+  "dev:rebuilt"(p: WorkerEvents["dev:rebuilt"]): void {
+    ctx.log.info(
+      p.files > 0 ? `site ${String(p.files)} files · ${String(p.ms)}ms` : `site · ${String(p.ms)}ms`
+    );
+  },
+
+  /**
+   * Log a non-fatal dev build failure via warn (the session keeps serving the last good build).
+   *
+   * @param p - The dev:error event payload.
+   * @example
+   * ```ts
+   * handler({ message: "build failed" }); // warn "build failed"
+   * ```
+   */
+  "dev:error"(p: WorkerEvents["dev:error"]): void {
+    ctx.log.warn(p.message);
   },
 
   /**

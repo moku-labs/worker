@@ -18,7 +18,14 @@ import { createDeployApi } from "./api";
 import type { Config } from "./types";
 
 /** Typed default — no inline `as` cast in config (R6 / spec/11 §Part 2). */
-const defaultConfig: Config = { configFile: "wrangler.jsonc", ci: false };
+const defaultConfig: Config = {
+  configFile: "wrangler.jsonc",
+  ci: false,
+  watch: ["src/**/*.{ts,tsx,css}", "public/**/*"],
+  buildCommand: "",
+  migrateLocal: true,
+  debounceMs: 120
+};
 
 /**
  * Complex tier (node-only) — build-time deploy orchestrator over the five resource plugins.

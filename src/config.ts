@@ -25,6 +25,9 @@ export type WorkerEvents = {
   "provision:plan": { exists: number; missing: number; account: string };
   "provision:skip": { kind: "kv" | "r2" | "d1" | "queue" | "do"; name: string };
   "auth:verified": { account: string; accountId: string; scopes: string[] };
+  "dev:phase": { phase: string; detail?: string };
+  "dev:rebuilt": { files: number; ms: number };
+  "dev:error": { message: string };
 };
 
 /**

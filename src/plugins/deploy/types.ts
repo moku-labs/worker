@@ -19,6 +19,19 @@ export type Config = {
    * Default false.
    */
   ci: boolean;
+  /** Globs watched by `dev()` to trigger a Moku-site rebuild. */
+  watch: string[];
+  /**
+   * Preferred in-process site rebuild hook (e.g. `() => webApp.cli.build()`). When absent, dev()
+   * falls back to `buildCommand`, then auto-detects `scripts/build.ts`.
+   */
+  buildSite?: () => Promise<{ files: number }>;
+  /** Shell rebuild fallback (e.g. "bun run scripts/build.ts"); empty → auto-detect scripts/build.ts. */
+  buildCommand: string;
+  /** Apply local D1 migrations before serving when a d1 manifest is present. */
+  migrateLocal: boolean;
+  /** Debounce window (ms) coalescing rapid file changes into one rebuild. */
+  debounceMs: number;
 };
 
 /** Discriminated union of resource descriptors returned by each plugin's deployManifest(). */

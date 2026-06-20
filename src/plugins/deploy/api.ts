@@ -19,6 +19,7 @@ import { storagePlugin } from "../storage";
 import { requiredToken as deriveRequiredToken } from "./auth/permissions";
 import { tokenInstructions as renderTokenInstructions } from "./auth/setup";
 import { verifyAuth as runVerifyAuth } from "./auth/verify";
+import { realDevDeps, runDev } from "./dev/runner";
 import { planInfra } from "./infra/plan";
 import { provisionResource } from "./providers";
 import { uploadDirToR2 } from "./providers/r2";
@@ -211,7 +212,9 @@ export const createDeployApi = (ctx: Ctx) => ({
   },
 
   /**
-   * Start a local Cloudflare dev session via `wrangler dev`.
+   * Start a long-lived local dev session: cold-build the Moku site, spawn `wrangler dev
+   * --live-reload`, and watch the site sources — rebuilding on change (wrangler live-reloads the
+   * browser). Resolves on SIGINT.
    *
    * @param opts - Optional options.
    * @param opts.port - Local dev port (default 8787).
@@ -221,15 +224,7 @@ export const createDeployApi = (ctx: Ctx) => ({
    * await api.dev({ port: 8787 });
    * ```
    */
-  dev: async (opts?: { port?: number }): Promise<void> => {
-    await runWrangler([
-      "dev",
-      "--port",
-      String(opts?.port ?? 8787),
-      "--config",
-      ctx.config.configFile
-    ]);
-  },
+  dev: (opts?: { port?: number }): Promise<void> => runDev(ctx, opts, realDevDeps()),
 
   /**
    * Scaffold a starting wrangler config (and CI files when ci is set).

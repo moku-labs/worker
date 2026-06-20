@@ -5,6 +5,7 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import type { deployPlugin } from "../../../deploy";
+import type { InfraPlan, ProvisionResult } from "../../../deploy/types";
 import type { CliCtx } from "../../api";
 import { createCliApi } from "../../api";
 
@@ -17,7 +18,13 @@ const makeDeployStub = () => ({
   run: vi
     .fn<(opts?: { guided?: boolean; yes?: boolean }) => Promise<void>>()
     .mockResolvedValue(undefined),
-  init: vi.fn<(opts?: { ci?: boolean }) => Promise<void>>().mockResolvedValue(undefined)
+  init: vi.fn<(opts?: { ci?: boolean }) => Promise<void>>().mockResolvedValue(undefined),
+  checkInfra: vi
+    .fn<() => Promise<InfraPlan>>()
+    .mockResolvedValue({ account: "", accountId: "", exists: [], missing: [] }),
+  provisionInfra: vi
+    .fn<(plan: InfraPlan) => Promise<ProvisionResult>>()
+    .mockResolvedValue({ created: [], skipped: [], ids: {} })
 });
 
 // ---------------------------------------------------------------------------

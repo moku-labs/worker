@@ -1,27 +1,52 @@
 /**
  * @file deploy plugin — KV provisioning adapter.
  *
- * Creates a Cloudflare KV namespace via `wrangler kv namespace create <binding>`.
- * Node-only; never imported by the runtime Worker bundle.
+ * Creates a Cloudflare KV namespace via `wrangler kv namespace create <binding>` and captures
+ * the created namespace id from wrangler's output, so writeWranglerConfig can write a real `id`
+ * (not an empty placeholder) into the generated wrangler config — otherwise the binding resolves
+ * to nothing at runtime. Node-only; never imported by the runtime Worker bundle.
  */
 
 import { runWrangler } from "../runner";
-import type { ResourceManifest } from "../types";
+import type { ProvisionOutcome, ResourceManifest } from "../types";
 
 /** A KV resource descriptor. */
 type KvManifest = Extract<ResourceManifest, { kind: "kv" }>;
 
 /**
- * Provision a KV namespace via `wrangler kv namespace create`.
+ * Parse the created KV namespace id from `wrangler kv namespace create` output.
+ * Wrangler prints the new binding as JSON (`"id": "..."`) or TOML (`id = "..."`); the leading
+ * boundary (start / whitespace / `{` / `,`) keeps the match off a longer identifier such as
+ * `kv_namespace_id`.
+ *
+ * @param output - Raw stdout from the wrangler create command.
+ * @returns The namespace id, or undefined when none is found.
+ * @example
+ * ```ts
+ * parseKvNamespaceId('{ "id": "abc123" }'); // "abc123"
+ * ```
+ */
+export const parseKvNamespaceId = (output: string): string | undefined => {
+  const match = /(?:^|[\s,{])"?id"?\s*[:=]\s*"([^"]+)"/m.exec(output);
+  return match?.[1];
+};
+
+/**
+ * Provision a KV namespace via `wrangler kv namespace create` and capture its id.
  *
  * @param manifest - The KV resource descriptor.
  * @param _ci - Whether running non-interactively (passed through; wrangler respects env vars).
- * @returns Resolves once the namespace is created.
+ * @returns The captured namespace id when wrangler reported one, else an empty outcome.
  * @example
  * ```ts
- * await provisionKv({ kind: "kv", binding: "CACHE" }, false);
+ * const { id } = await provisionKv({ kind: "kv", binding: "CACHE" }, false);
  * ```
  */
-export const provisionKv = async (manifest: KvManifest, _ci: boolean): Promise<void> => {
-  await runWrangler(["kv", "namespace", "create", manifest.binding]);
+export const provisionKv = async (
+  manifest: KvManifest,
+  _ci: boolean
+): Promise<ProvisionOutcome> => {
+  const output = await runWrangler(["kv", "namespace", "create", manifest.binding]);
+  const id = parseKvNamespaceId(output);
+  return id ? { id } : {};
 };

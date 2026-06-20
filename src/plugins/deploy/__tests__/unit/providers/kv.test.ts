@@ -1,12 +1,14 @@
 /**
- * Unit tests for the KV provider adapter.
+ * Unit tests for the KV provider adapter (create + id capture).
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { provisionKv } from "../../../providers/kv";
+import { parseKvNamespaceId, provisionKv } from "../../../providers/kv";
 
 vi.mock("../../../runner", () => ({
-  runWrangler: vi.fn().mockResolvedValue('kv_namespace_id = "abc123"')
+  runWrangler: vi
+    .fn()
+    .mockResolvedValue('{ "kv_namespaces": [ { "binding": "CACHE", "id": "ns-abc123" } ] }')
 }));
 
 import { runWrangler } from "../../../runner";
@@ -20,11 +22,33 @@ describe("provisionKv", () => {
     );
   });
 
-  it("resolves without throwing", async () => {
-    await expect(provisionKv({ kind: "kv", binding: "SESSIONS" }, false)).resolves.toBeUndefined();
+  it("captures the created namespace id from wrangler output", async () => {
+    await expect(provisionKv({ kind: "kv", binding: "CACHE" }, false)).resolves.toEqual({
+      id: "ns-abc123"
+    });
   });
 
   it("passes ci flag through (does not throw in ci mode)", async () => {
-    await expect(provisionKv({ kind: "kv", binding: "KV" }, true)).resolves.toBeUndefined();
+    await expect(provisionKv({ kind: "kv", binding: "KV" }, true)).resolves.toEqual({
+      id: "ns-abc123"
+    });
+  });
+});
+
+describe("parseKvNamespaceId", () => {
+  it("parses the id from JSON output", () => {
+    expect(parseKvNamespaceId('{ "id": "abc123" }')).toBe("abc123");
+  });
+
+  it("parses the id from TOML output", () => {
+    expect(parseKvNamespaceId('binding = "CACHE"\nid = "def456"')).toBe("def456");
+  });
+
+  it("does not match a longer identifier such as kv_namespace_id", () => {
+    expect(parseKvNamespaceId('kv_namespace_id = "nope"')).toBeUndefined();
+  });
+
+  it("returns undefined when no id is present", () => {
+    expect(parseKvNamespaceId("no id here")).toBeUndefined();
   });
 });

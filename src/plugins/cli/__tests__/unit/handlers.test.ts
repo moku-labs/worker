@@ -142,6 +142,46 @@ describe("createCliHooks", () => {
     });
   });
 
+  // ─── provision:plan ────────────────────────────────────────────────────────
+
+  describe("provision:plan handler", () => {
+    it('logs the preflight summary "infra · <e> exist, <m> to create · <account>"', () => {
+      const { ctx, logInfo } = makeMockCtx();
+      const hooks = createCliHooks(ctx);
+
+      hooks["provision:plan"]({ exists: 2, missing: 1, account: "Play Co" });
+
+      expect(logInfo).toHaveBeenCalledWith("infra · 2 exist, 1 to create · Play Co");
+    });
+
+    it("returns void and never throws", () => {
+      const { ctx } = makeMockCtx();
+      const hooks = createCliHooks(ctx);
+
+      expect(() => hooks["provision:plan"]({ exists: 0, missing: 0, account: "x" })).not.toThrow();
+    });
+  });
+
+  // ─── provision:skip ────────────────────────────────────────────────────────
+
+  describe("provision:skip handler", () => {
+    it('logs "<kind> <name> (exists)" for an already-existing resource', () => {
+      const { ctx, logInfo } = makeMockCtx();
+      const hooks = createCliHooks(ctx);
+
+      hooks["provision:skip"]({ kind: "kv", name: "KV" });
+
+      expect(logInfo).toHaveBeenCalledWith("kv KV (exists)");
+    });
+
+    it("returns void and never throws", () => {
+      const { ctx } = makeMockCtx();
+      const hooks = createCliHooks(ctx);
+
+      expect(() => hooks["provision:skip"]({ kind: "d1", name: "DB" })).not.toThrow();
+    });
+  });
+
   // ─── deploy:complete ──────────────────────────────────────────────────────
 
   describe("deploy:complete handler", () => {

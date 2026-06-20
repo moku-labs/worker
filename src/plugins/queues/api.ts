@@ -150,7 +150,10 @@ export const createQueuesApi = (ctx: Ctx): Api => {
       Object.values(ctx.config).map(instance => ({
         kind: "queue" as const,
         name: instance.name,
-        binding: instance.binding
+        binding: instance.binding,
+        // A queue that declares an onMessage handler is also CONSUMED by this Worker — flag it so the
+        // deploy plugin writes a wrangler `consumers` entry (without it, messages are never delivered).
+        ...(instance.onMessage ? { consumer: true } : {})
       }))
   };
 };

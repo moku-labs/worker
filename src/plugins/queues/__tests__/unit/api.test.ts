@@ -398,6 +398,24 @@ describe("createQueuesApi", () => {
       ]);
     });
 
+    it("flags an instance that declares onMessage as consumer: true (others have no flag)", () => {
+      const config: Config = {
+        activity: {
+          name: "tracker-activity",
+          binding: "ACTIVITY",
+          onMessage: async () => undefined
+        },
+        orders: { name: "tracker-orders", binding: "ORDERS" }
+      };
+      const { ctx } = createMockCtx(config);
+      const api = createQueuesApi(ctx as unknown as Ctx);
+
+      expect(api.deployManifest()).toEqual([
+        { kind: "queue", name: "tracker-activity", binding: "ACTIVITY", consumer: true },
+        { kind: "queue", name: "tracker-orders", binding: "ORDERS" }
+      ]);
+    });
+
     it("returns an empty array when no instances are configured", () => {
       const { ctx } = createMockCtx({});
       const api = createQueuesApi(ctx as unknown as Ctx);
@@ -494,7 +512,7 @@ describe("createQueuesApi", () => {
       const api = createQueuesApi(ctx as unknown as Ctx);
 
       expectTypeOf(api.deployManifest()).toEqualTypeOf<
-        Array<{ kind: "queue"; name: string; binding: string }>
+        Array<{ kind: "queue"; name: string; binding: string; consumer?: boolean }>
       >();
     });
   });

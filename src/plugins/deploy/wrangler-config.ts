@@ -33,8 +33,8 @@ const parseJsonc = (source: string): Record<string, unknown> => {
   return JSON.parse(stripped) as Record<string, unknown>;
 };
 
-/** A wrangler KV namespace entry. */
-type KvEntry = { binding: string; id: string; preview_id?: string };
+/** A wrangler KV namespace entry. `id` is omitted (not "") when no real namespace id is known. */
+type KvEntry = { binding: string; id?: string; preview_id?: string };
 /** A wrangler R2 bucket entry. */
 type R2Entry = { binding: string; bucket_name: string };
 /** A wrangler D1 database entry. */
@@ -46,6 +46,8 @@ type D1Entry = {
 };
 /** A wrangler queue producer entry. */
 type QueueProducer = { queue: string; binding: string };
+/** A wrangler queue consumer entry — registers this Worker to receive the queue's messages. */
+type QueueConsumer = { queue: string };
 /** A wrangler Durable Objects binding entry. */
 type DoBinding = { name: string; class_name: string };
 /** A wrangler Durable Objects migration entry (SQLite-backed, the modern default). */
@@ -56,7 +58,8 @@ type DoMigration = { tag: string; new_sqlite_classes: string[] };
  *
  * @param resources - All resource descriptors from the manifest.
  * @param ids - Captured Cloudflare ids keyed by binding; the entry's `id` is filled from here.
- * @returns One wrangler KV namespace entry per kv resource (real `id` when known, else "").
+ * @returns One wrangler KV namespace entry per kv resource — real `id` when known, omitted otherwise
+ *   (wrangler rejects an empty `id`, but a local-dev / freshly-generated config validates without one).
  * @example
  * ```ts
  * const kv = buildKvNamespaces([{ kind: "kv", binding: "CACHE" }], { CACHE: "ns123" });
@@ -67,10 +70,12 @@ const buildKvNamespaces = (resources: ResourceManifest[], ids: Record<string, st
     .filter(
       (resource): resource is Extract<ResourceManifest, { kind: "kv" }> => resource.kind === "kv"
     )
-    .map(resource => ({
-      binding: resource.binding,
-      id: ids[resource.binding] ?? ""
-    }));
+    // Omit `id` when no real namespace id is captured (e.g. `dev`): wrangler rejects `id: ""`, but
+    // accepts (and locally simulates) a namespace with no id.
+    .map(resource => {
+      const id = ids[resource.binding];
+      return id ? { binding: resource.binding, id } : { binding: resource.binding };
+    });
 
 /**
  * Build the wrangler `r2_buckets` array from the manifest's r2 resources.
@@ -109,11 +114,16 @@ const buildD1Databases = (resources: ResourceManifest[], ids: Record<string, str
       (resource): resource is Extract<ResourceManifest, { kind: "d1" }> => resource.kind === "d1"
     )
     .map(resource => {
+      // Omit `database_id` when none is captured (e.g. `dev`): wrangler rejects an empty id but
+      // validates (and locally simulates) a database with no id.
+      const databaseId = ids[resource.binding];
       const entry: D1Entry = {
         binding: resource.binding,
-        database_name: resource.name,
-        database_id: ids[resource.binding] ?? ""
+        database_name: resource.name
       };
+      if (databaseId) {
+        entry.database_id = databaseId;
+      }
       if (resource.migrations) {
         entry.migrations_dir = resource.migrations;
       }
@@ -121,16 +131,22 @@ const buildD1Databases = (resources: ResourceManifest[], ids: Record<string, str
     });
 
 /**
- * Build the wrangler `queues` producers section from the manifest's queue resources.
+ * Build the wrangler `queues` section (producers + consumers) from the manifest's queue resources.
+ * Every queue is a `producer`; a queue flagged `consumer: true` (it declares an `onMessage` handler)
+ * is ALSO registered as a `consumer` so wrangler delivers its messages to this Worker's queue()
+ * handler — both locally under `wrangler dev` and in production. Without the consumer entry the
+ * handler never runs (the bug that silently drops a queue-driven activity feed).
  *
  * @param resources - All resource descriptors from the manifest.
- * @returns The queues section, or undefined when there are no queue resources.
+ * @returns The queues section (producers, plus consumers when any), or undefined when there are none.
  * @example
  * ```ts
- * const q = buildQueues([{ kind: "queue", name: "tracker-activity", binding: "ACTIVITY" }]);
+ * const q = buildQueues([{ kind: "queue", name: "tracker-activity", binding: "ACTIVITY", consumer: true }]);
  * ```
  */
-const buildQueues = (resources: ResourceManifest[]): { producers: QueueProducer[] } | undefined => {
+const buildQueues = (
+  resources: ResourceManifest[]
+): { producers: QueueProducer[]; consumers?: QueueConsumer[] } | undefined => {
   const queueResources = resources.filter(
     (resource): resource is Extract<ResourceManifest, { kind: "queue" }> =>
       resource.kind === "queue"
@@ -141,8 +157,11 @@ const buildQueues = (resources: ResourceManifest[]): { producers: QueueProducer[
     queue: resource.name,
     binding: resource.binding
   }));
+  const consumers: QueueConsumer[] = queueResources
+    .filter(resource => resource.consumer === true)
+    .map(resource => ({ queue: resource.name }));
 
-  return { producers };
+  return consumers.length > 0 ? { producers, consumers } : { producers };
 };
 
 /**
@@ -275,7 +294,8 @@ export const wranglerExtra = (config: Config): Record<string, unknown> => {
  * @param configFile - Path to the wrangler config file.
  * @param manifest - The assembled deploy manifest.
  * @param ids - Captured Cloudflare ids keyed by binding (kv namespace id, d1 database id). Defaults
- *   to an empty map, in which case `id`/`database_id` are written as "" (e.g. the universal path).
+ *   to an empty map, in which case `id`/`database_id` are OMITTED (not "") so the generated config
+ *   still validates for local `dev` (wrangler rejects an empty id); a deploy fills the real ids.
  * @param extra - Extra top-level wrangler keys to merge in (the app's `deploy.wrangler` config).
  * @returns Resolves once the file is written.
  * @example

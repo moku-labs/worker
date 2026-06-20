@@ -53,6 +53,12 @@ vi.mock("../../../deploy/infra/plan", () => ({
   }))
 }));
 
+vi.mock("../../../deploy/auth/verify", () => ({
+  verifyAuth: vi
+    .fn()
+    .mockResolvedValue({ ok: true, account: "test", accountId: "acct-test", scopes: [] })
+}));
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test-local coreConfig — isolates from sibling plugins
 // ─────────────────────────────────────────────────────────────────────────────

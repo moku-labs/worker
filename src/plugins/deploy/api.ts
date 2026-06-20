@@ -10,6 +10,7 @@
  * Node-only: uses node:child_process (via runner.ts), node:fs (via wrangler-config.ts), and the
  * Cloudflare REST API (via infra/). Never called in the deployed Worker runtime.
  */
+import { createBrandPrompts } from "@moku-labs/common/cli";
 import { d1Plugin } from "../d1";
 import { durableObjectsPlugin } from "../durable-objects";
 import { kvPlugin } from "../kv";
@@ -22,6 +23,7 @@ import { planInfra } from "./infra/plan";
 import { provisionResource } from "./providers";
 import { uploadDirToR2 } from "./providers/r2";
 import { runWrangler } from "./runner";
+import { stdoutIsTty } from "./tty";
 import type {
   AuthStatus,
   Ctx,
@@ -143,8 +145,8 @@ export const createDeployApi = (ctx: Ctx) => ({
    * it is used verbatim (universal path).
    *
    * @param opts - Optional run options.
-   * @param opts.guided - Enable interactive confirmation steps (wired in a later phase).
-   * @param opts.yes - Auto-confirm all prompts (wired in a later phase).
+   * @param opts.guided - Enable interactive confirmation steps (only on a TTY, non-CI).
+   * @param opts.yes - Auto-confirm all prompts (non-interactive / CI).
    * @param opts.manifest - Caller-supplied manifest (bypasses deployManifest() assembly).
    * @returns Resolves once the deploy completes.
    * @example
@@ -158,14 +160,31 @@ export const createDeployApi = (ctx: Ctx) => ({
     yes?: boolean;
     manifest?: ExternalManifest;
   }): Promise<void> {
-    ctx.emit("deploy:phase", { phase: "detect" });
+    // Interactive only when guided, on a TTY, not CI, and not auto-confirmed (--yes).
+    const interactive =
+      (opts?.guided ?? false) && !ctx.config.ci && !(opts?.yes ?? false) && stdoutIsTty();
+    const confirm = interactive
+      ? createBrandPrompts().confirm
+      : async (_question: string): Promise<boolean> => true;
+
+    // Auth preflight — verify the .env token up front so a bad token fails clearly and early.
+    ctx.emit("deploy:phase", { phase: "auth" });
+    await runVerifyAuth(ctx);
 
     // Manifest from each plugin's OWN deployManifest() api — never sibling pluginConfigs (F6).
+    ctx.emit("deploy:phase", { phase: "detect" });
     const manifest: ExternalManifest = opts?.manifest ?? assembleManifest(ctx);
 
-    // Preflight: discover what already exists, then create only the missing (idempotent).
+    // Preflight: discover what already exists; confirm before creating anything (guided only).
     ctx.emit("deploy:phase", { phase: "provision" });
     const plan = await planInfra(ctx, manifest);
+    if (
+      plan.missing.length > 0 &&
+      !(await confirm(`Create ${plan.missing.length} missing resource(s) in "${plan.account}"?`))
+    ) {
+      ctx.emit("deploy:phase", { phase: "aborted" });
+      return;
+    }
     const { ids } = await applyPlan(ctx, plan);
 
     // Generate/update the wrangler config from the assembled manifest (with the captured ids).
@@ -181,7 +200,11 @@ export const createDeployApi = (ctx: Ctx) => ({
       ctx.emit("deploy:phase", { phase: "upload", detail: `${String(count)} files` });
     }
 
-    // Hand off to `wrangler deploy` and report the deployed URL.
+    // Confirm the deploy target (guided only), then hand off to `wrangler deploy`.
+    if (!(await confirm(`Deploy "${manifest.name}" to ${ctx.global.stage}?`))) {
+      ctx.emit("deploy:phase", { phase: "aborted" });
+      return;
+    }
     ctx.emit("deploy:phase", { phase: "deploy" });
     const url = await runWrangler(["deploy", "--config", ctx.config.configFile]);
     ctx.emit("deploy:complete", { url });

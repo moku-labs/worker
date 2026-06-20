@@ -52,6 +52,12 @@ vi.mock("../../src/plugins/deploy/infra/plan", () => ({
   }))
 }));
 
+vi.mock("../../src/plugins/deploy/auth/verify", () => ({
+  verifyAuth: vi
+    .fn()
+    .mockResolvedValue({ ok: true, account: "test", accountId: "acct-test", scopes: [] })
+}));
+
 // Imported AFTER the vi.mock calls above (which are hoisted) so these resolve to the mocks.
 import { afterAll, beforeAll, beforeEach } from "vitest";
 import { cliPlugin, deployPlugin } from "../../src/cli";
@@ -246,7 +252,14 @@ describe("deploy + cli tooling (root integration)", () => {
         })
         .map(entry => entry.payload.phase);
 
-      expect(phases).toEqual(["detect", "provision", "wrangler-config", "upload", "deploy"]);
+      expect(phases).toEqual([
+        "auth",
+        "detect",
+        "provision",
+        "wrangler-config",
+        "upload",
+        "deploy"
+      ]);
     });
 
     it("the upload phase carries a file-count detail from the mocked R2 upload", async () => {

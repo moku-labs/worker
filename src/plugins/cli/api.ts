@@ -145,5 +145,39 @@ export const createCliApi = (ctx: CliCtx): Api => ({
     } catch (error) {
       ui.check(false, "infra", error instanceof Error ? error.message : String(error));
     }
+  },
+
+  /**
+   * Print the resolved Cloudflare account for the current `.env` token.
+   *
+   * @returns Resolves once the account summary is printed.
+   * @example
+   * ```ts
+   * await api.whoami();
+   * ```
+   */
+  async whoami(): Promise<void> {
+    const ui = createBrandConsole();
+    try {
+      const status = await ctx.require(deployPlugin).verifyAuth();
+      ui.check(true, "account", `${status.account} (${status.accountId})`);
+    } catch (error) {
+      ui.error(error instanceof Error ? error.message : String(error));
+    }
+  },
+
+  /**
+   * Run an arbitrary wrangler command through the branded CLI (escape hatch). Streams its output.
+   *
+   * @param args - The wrangler arguments.
+   * @returns Resolves once wrangler exits.
+   * @example
+   * ```ts
+   * await api.wrangler(["kv", "namespace", "list"]);
+   * ```
+   */
+  async wrangler(args: string[]): Promise<void> {
+    createBrandConsole().heading(`wrangler ${args.join(" ")}`);
+    await ctx.require(deployPlugin).wrangler(args);
   }
 });

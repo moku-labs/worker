@@ -23,7 +23,7 @@ import { realDevDeps, runDev } from "./dev/runner";
 import { planInfra } from "./infra/plan";
 import { provisionResource } from "./providers";
 import { uploadDirToR2 } from "./providers/r2";
-import { runWrangler } from "./runner";
+import { runWrangler, runWranglerInherit } from "./runner";
 import { stdoutIsTty } from "./tty";
 import type {
   AuthStatus,
@@ -299,5 +299,17 @@ export const createDeployApi = (ctx: Ctx) => ({
    * ```
    */
   tokenInstructions: (): string =>
-    renderTokenInstructions(deriveRequiredToken(assembleManifest(ctx)))
+    renderTokenInstructions(deriveRequiredToken(assembleManifest(ctx))),
+
+  /**
+   * Run an arbitrary wrangler command, streaming its output (the branded CLI escape hatch).
+   *
+   * @param args - The wrangler arguments.
+   * @returns Resolves once wrangler exits.
+   * @example
+   * ```ts
+   * await api.wrangler(["kv", "namespace", "list"]);
+   * ```
+   */
+  wrangler: (args: string[]): Promise<void> => runWranglerInherit(args)
 });

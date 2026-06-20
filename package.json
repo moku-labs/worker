@@ -36,6 +36,10 @@
       }
     }
   },
+  "bin": {
+    "moku-worker": "./dist/bin/moku-worker.mjs",
+    "mw": "./dist/bin/moku-worker.mjs"
+  },
   "files": ["dist", "LICENSE", "README.md"],
   "sideEffects": false,
   "publishConfig": {

@@ -11,6 +11,8 @@
  * are applied first, then the `options` below are shallow-merged on top:
  *
  * - `config` — `Partial<WorkerConfig>`; defaults `{ stage: "production", name: "moku-worker", compatibilityDate: "" }`.
+ *   `config.stage` is the single stage source: the framework mirrors it into the `stage` core
+ *   plugin so `ctx.stage.*` / `app.stage.*` stay in lockstep with `ctx.global.stage` (see {@link createApp}).
  * - `pluginConfigs` — per-plugin config overrides keyed by plugin name (e.g. `server.endpoints`, `bindings.required`); default `{}`.
  * - `plugins` — extra `PluginInstance[]` appended to the defaults; default `[]`. Do NOT re-list a default plugin.
  * - `onReady` — optional `(app) => void`, runs after every plugin's `onInit`.
@@ -48,11 +50,53 @@ const framework = createCore(coreConfig, {
 });
 
 // ─── Framework API ───────────────────────────────────────────
-// Spec-prescribed destructured re-export (spec/02-CORE-API §3; spec/04-FACTORY-CHAIN §4):
-// `createApp` is bound to the framework defaults + types; `createPlugin` is the same
-// binding as config.ts, re-exported for consumer convenience. Consumer-facing docs for
-// `createApp` live in the module JSDoc above (the options/defaults table).
-export const { createApp, createPlugin } = framework;
+// `createPlugin` is the same binding as config.ts, re-exported for consumer
+// convenience (spec/02-CORE-API §3; spec/04-FACTORY-CHAIN §4). `createApp` is the
+// core-bound factory wrapped just below to bridge the stage config — its
+// consumer-facing options/defaults live in the module JSDoc above.
+export const { createPlugin } = framework;
+
+/** The core-bound app factory; wrapped by {@link createApp} to bridge `config.stage`. */
+const boundCreateApp = framework.createApp;
+
+/**
+ * Boots a fully-typed, synchronous, per-isolate Worker app — the Layer-3 entry point.
+ *
+ * Wraps the core-bound factory to BRIDGE the single consumer-facing `config.stage`
+ * into the `stage` core plugin's own config, so the typed accessors
+ * (`ctx.stage.isDev()` / `app.stage.current()` / …) can never diverge from the
+ * global `ctx.global.stage`. Global config and core-plugin config resolve on two
+ * SEPARATE cascades (spec/05 §1b), and a core plugin cannot read global config (its
+ * context is `{ config, state }` only — spec/02 §6). `createApp` is the only layer
+ * that sees the consumer's chosen stage, so it mirrors `config.stage` into the stage
+ * plugin's level-4 `pluginConfigs` override (`WorkerConfig.stage → pluginConfigs.stage.stage`).
+ * When `config.stage` is omitted, the global config and the stage plugin both fall back
+ * to their identical `"production"` default. See the module JSDoc above for the full
+ * options/defaults table.
+ *
+ * @param options - The createApp options (`config`, `pluginConfigs`, `plugins`, and lifecycle callbacks).
+ * @returns The initialized app — every plugin's `onInit` has already run.
+ * @example
+ * ```typescript
+ * const app = createApp({ config: { stage: "development", name: "my-worker" } });
+ * app.stage.isDev(); // true — bridged from config.stage
+ * ```
+ */
+export const createApp: typeof boundCreateApp = options => {
+  const explicitStage = options?.config?.stage;
+
+  // No explicit stage → global config and the stage plugin both fall to their shared default.
+  if (explicitStage === undefined) return boundCreateApp(options);
+
+  // Mirror the single global `config.stage` into the `stage` CORE plugin's config
+  // (level-4 merge, spec/05 §1b). The `stage` key is intentionally absent from the
+  // public `pluginConfigs` type (core plugins are excluded), so re-assert the bound
+  // options type once the key is injected.
+  return boundCreateApp({
+    ...options,
+    pluginConfigs: { ...options?.pluginConfigs, stage: { stage: explicitStage } }
+  } as typeof options);
+};
 
 // ─── Plugins + Types ─────────────────────────────────────────
 export * from "./plugins";

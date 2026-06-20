@@ -27,6 +27,14 @@ const makeDeployStub = () => ({
   run: vi
     .fn<(opts?: { ci?: boolean; webBuild?: WebBuild }) => Promise<void>>()
     .mockResolvedValue(undefined),
+  seed: vi
+    .fn<
+      (
+        sqlFile: string,
+        opts?: { stage?: string; binding?: string; remote?: boolean }
+      ) => Promise<void>
+    >()
+    .mockResolvedValue(undefined),
   init: vi.fn<(opts?: { ci?: boolean }) => Promise<void>>().mockResolvedValue(undefined),
   checkInfra: vi
     .fn<() => Promise<InfraPlan>>()
@@ -203,6 +211,47 @@ describe("createCliApi", () => {
       const api = createCliApi(ctx);
 
       await expect(api.deploy({ ci: true })).resolves.toBeUndefined();
+    });
+  });
+
+  // ─── seed ─────────────────────────────────────────────────────────────────
+
+  describe("seed", () => {
+    it("forwards the sql file to deploy.seed (no opts, no --stage → empty opts)", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+
+      await api.seed("db/seed.sql");
+
+      expect(deployStub.seed).toHaveBeenCalledWith("db/seed.sql", {});
+    });
+
+    it("forwards opts (e.g. remote) verbatim to deploy.seed", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+
+      await api.seed("db/seed.sql", { remote: true });
+
+      expect(deployStub.seed).toHaveBeenCalledWith("db/seed.sql", { remote: true });
+    });
+
+    it("renders a branded error + sets a non-zero exit code when deploy.seed throws", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      deployStub.seed.mockRejectedValueOnce(new Error("no such table: boards"));
+      const api = createCliApi(ctx);
+      const originalExit = process.exitCode;
+
+      await expect(api.seed("db/seed.sql")).resolves.toBeUndefined();
+      expect(process.exitCode).toBe(1);
+
+      process.exitCode = originalExit;
+    });
+
+    it("resolves to undefined on the happy path", async () => {
+      const { ctx } = makeMockCtx();
+      const api = createCliApi(ctx);
+
+      await expect(api.seed("db/seed.sql")).resolves.toBeUndefined();
     });
   });
 

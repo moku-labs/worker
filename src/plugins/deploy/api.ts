@@ -549,6 +549,65 @@ export const createDeployApi = (ctx: Ctx) => ({
   },
 
   /**
+   * Execute a SQL file against a configured D1 database via `wrangler d1 execute` — for seeding dev
+   * data. Local by default (applies that database's migrations first so the file's tables exist);
+   * `opts.remote` seeds Cloudflare (schema is applied by `deploy`). Generates the wrangler config up
+   * front so the binding resolves even on a first run. Streams wrangler's output.
+   *
+   * @param sqlFile - Path to the SQL file to execute (e.g. "db/seed.sql").
+   * @param opts - Optional options.
+   * @param opts.stage - Stage for the generated config's resource names (defaults to the app stage).
+   * @param opts.binding - The d1 binding to target when more than one is configured (e.g. "DB").
+   * @param opts.remote - Seed the remote (Cloudflare) D1 instead of the local one.
+   * @returns Resolves once wrangler finishes executing the file.
+   * @example
+   * ```ts
+   * await api.seed("db/seed.sql");                   // local default d1 (migrate, then execute)
+   * await api.seed("db/seed.sql", { remote: true }); // remote d1
+   * ```
+   */
+  async seed(
+    sqlFile: string,
+    opts?: { stage?: string; binding?: string; remote?: boolean }
+  ): Promise<void> {
+    if (!ctx.has("d1")) {
+      throw new Error("[moku-worker] seed: no d1 database is configured.");
+    }
+
+    // Generate the wrangler config up front so `d1 …` can resolve the binding even on a first run
+    // (idempotent — writeWranglerConfig preserves any ids already in the file).
+    const stage = opts?.stage ?? ctx.global.stage;
+    await writeWranglerConfig(
+      ctx.config.configFile,
+      assembleManifest(ctx, stage),
+      {},
+      wranglerExtra(ctx.config)
+    );
+
+    // Resolve the target database: the only configured one, or the instance bound to opts.binding.
+    const databases = ctx.require(d1Plugin).deployManifest();
+    const wanted = opts?.binding;
+    const matched =
+      wanted === undefined ? databases : databases.filter(database => database.binding === wanted);
+    const target = matched.length === 1 ? matched[0] : undefined;
+    if (target === undefined) {
+      throw new Error(
+        wanted === undefined
+          ? `[moku-worker] seed: ${String(databases.length)} d1 databases configured — pass { binding } to choose one.`
+          : `[moku-worker] seed: no d1 database is bound to "${wanted}".`
+      );
+    }
+
+    // Local seed (default): apply this database's migrations first so the file's tables exist, then
+    // run it. Remote seeds run against Cloudflare (schema is applied by `deploy`).
+    const scope = opts?.remote === true ? "--remote" : "--local";
+    if (scope === "--local" && target.migrations !== undefined) {
+      await runWranglerInherit(["d1", "migrations", "apply", target.binding, "--local"]);
+    }
+    await runWranglerInherit(["d1", "execute", target.binding, scope, "--file", sqlFile]);
+  },
+
+  /**
    * Scaffold a starting wrangler config (and CI files when ci is set).
    * Idempotent: an existing config file is left untouched.
    *

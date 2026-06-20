@@ -105,6 +105,38 @@ export const createCliApi = (ctx: CliCtx): Api => ({
   },
 
   /**
+   * Seed a configured D1 database from a SQL file (delegates to deploy.seed). Local by default;
+   * `opts.remote` seeds Cloudflare. The stage is resolved from a `--stage <name>` CLI flag (so
+   * `bun run dev --seed --stage dev` seeds the dev database). A failure renders a branded `✗` line
+   * and sets a non-zero exit code rather than throwing.
+   *
+   * @param sqlFile - Path to the SQL file to execute (e.g. "db/seed.sql").
+   * @param opts - Optional options.
+   * @param opts.binding - The d1 binding to target when more than one is configured (e.g. "DB").
+   * @param opts.remote - Seed the remote (Cloudflare) D1 instead of the local one.
+   * @returns Resolves once the seed completes (or after a failure is rendered).
+   * @example
+   * ```ts
+   * await app.cli.seed("db/seed.sql"); // before app.cli.dev(...)
+   * ```
+   */
+  async seed(sqlFile: string, opts?: { binding?: string; remote?: boolean }): Promise<void> {
+    const ui = createBrandConsole();
+    ui.lockup({ wordmark: "moku worker", label: "seed" });
+
+    const stage = parseStageArg(process.argv);
+    try {
+      await ctx
+        .require(deployPlugin)
+        .seed(sqlFile, { ...opts, ...(stage === undefined ? {} : { stage }) });
+      ui.check(true, "seeded", sqlFile);
+    } catch (error) {
+      ui.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  },
+
+  /**
    * Verify the `.env` token (no sub) or print the config-derived token guidance (`"setup"`),
    * rendered in Moku style. `setup` works without a token; verify reports the resolved account.
    *

@@ -1071,6 +1071,104 @@ describe("createDeployApi", () => {
     });
   });
 
+  // ───────── seed ────────────────────────────────────────────────────────────
+
+  describe("seed", () => {
+    it("generates the config, applies local migrations, then executes the SQL file (single d1)", async () => {
+      const ctx = createMockCtx({ has: name => name === "d1" });
+      const api = createDeployApi(ctx);
+
+      await api.seed("db/seed.sql");
+
+      // Config first (so the binding resolves), then migrate (DB declares migrations), then execute.
+      expect(writeWranglerConfig).toHaveBeenCalled();
+      expect(runWranglerInherit).toHaveBeenCalledWith([
+        "d1",
+        "migrations",
+        "apply",
+        "DB",
+        "--local"
+      ]);
+      expect(runWranglerInherit).toHaveBeenCalledWith([
+        "d1",
+        "execute",
+        "DB",
+        "--local",
+        "--file",
+        "db/seed.sql"
+      ]);
+    });
+
+    it("seeds the remote d1 (no local migrate) when opts.remote is set", async () => {
+      const ctx = createMockCtx({ has: name => name === "d1" });
+      const api = createDeployApi(ctx);
+
+      await api.seed("db/seed.sql", { remote: true });
+
+      expect(runWranglerInherit).not.toHaveBeenCalledWith(
+        expect.arrayContaining(["migrations", "apply"])
+      );
+      expect(runWranglerInherit).toHaveBeenCalledWith([
+        "d1",
+        "execute",
+        "DB",
+        "--remote",
+        "--file",
+        "db/seed.sql"
+      ]);
+    });
+
+    it("throws when no d1 database is configured", async () => {
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+
+      await expect(api.seed("db/seed.sql")).rejects.toThrow("no d1 database is configured");
+    });
+
+    it("throws (asking for a binding) when multiple d1 databases exist and none is given", async () => {
+      const ctx = createMockCtx({ has: name => name === "d1" });
+      (ctx.require(d1Plugin).deployManifest as ReturnType<typeof vi.fn>).mockReturnValue([
+        { kind: "d1", name: "db", binding: "DB", migrations: "./migrations" },
+        { kind: "d1", name: "analytics", binding: "ANALYTICS" }
+      ]);
+      const api = createDeployApi(ctx);
+
+      await expect(api.seed("db/seed.sql")).rejects.toThrow("pass { binding }");
+    });
+
+    it("selects the d1 bound to opts.binding when multiple exist (no migrations → execute only)", async () => {
+      const ctx = createMockCtx({ has: name => name === "d1" });
+      (ctx.require(d1Plugin).deployManifest as ReturnType<typeof vi.fn>).mockReturnValue([
+        { kind: "d1", name: "db", binding: "DB", migrations: "./migrations" },
+        { kind: "d1", name: "analytics", binding: "ANALYTICS" }
+      ]);
+      const api = createDeployApi(ctx);
+
+      await api.seed("db/analytics.sql", { binding: "ANALYTICS" });
+
+      expect(runWranglerInherit).toHaveBeenCalledWith([
+        "d1",
+        "execute",
+        "ANALYTICS",
+        "--local",
+        "--file",
+        "db/analytics.sql"
+      ]);
+      expect(runWranglerInherit).not.toHaveBeenCalledWith(
+        expect.arrayContaining(["migrations", "apply", "ANALYTICS"])
+      );
+    });
+
+    it("throws when opts.binding matches no configured d1", async () => {
+      const ctx = createMockCtx({ has: name => name === "d1" });
+      const api = createDeployApi(ctx);
+
+      await expect(api.seed("db/seed.sql", { binding: "NOPE" })).rejects.toThrow(
+        'no d1 database is bound to "NOPE"'
+      );
+    });
+  });
+
   // ───────── init ────────────────────────────────────────────────────────────
 
   describe("init", () => {

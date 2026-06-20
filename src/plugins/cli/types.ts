@@ -51,6 +51,24 @@ export type Api = {
   deploy(opts?: { ci?: boolean; webBuild?: WebBuild }): Promise<void>;
 
   /**
+   * Seed a configured D1 database from a SQL file (delegates to deploy.seed). Local by default
+   * (applies the database's migrations first so its tables exist, then executes the file);
+   * `opts.remote` seeds Cloudflare. A failure renders a branded `✗` line and sets a non-zero exit
+   * code rather than throwing.
+   *
+   * @param sqlFile - Path to the SQL file to execute (e.g. "db/seed.sql").
+   * @param opts - Optional options.
+   * @param opts.binding - The d1 binding to target when more than one is configured (e.g. "DB").
+   * @param opts.remote - Seed the remote (Cloudflare) D1 instead of the local one.
+   * @returns Resolves once the seed completes (or after a failure is rendered).
+   * @example
+   * ```ts
+   * await app.cli.seed("db/seed.sql"); // local; --stage honored
+   * ```
+   */
+  seed(sqlFile: string, opts?: { binding?: string; remote?: boolean }): Promise<void>;
+
+  /**
    * Verify the `.env` Cloudflare token (no sub), or print the config-derived token-creation
    * guidance (`"setup"`). Delegates to deploy.verifyAuth() / deploy.tokenInstructions().
    *

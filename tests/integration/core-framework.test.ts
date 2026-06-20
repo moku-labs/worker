@@ -194,6 +194,56 @@ describe("core framework (root integration)", () => {
     });
   });
 
+  // ─── Stage bridge: global config.stage drives the stage core plugin ───────
+  //
+  // `config.stage` is the single stage source. The framework mirrors it into the
+  // `stage` core plugin's config so the flat-injected `ctx.stage.*` accessors and
+  // the `app.stage.*` mount can never diverge from `ctx.global.stage` (the two
+  // otherwise resolve on SEPARATE config cascades — spec/05 §1b).
+
+  describe("stage bridge (config.stage -> ctx.stage / app.stage)", () => {
+    // Probe reads BOTH stage paths off one regular plugin's ctx — proving they
+    // resolve to the same value (the anti-divergence contract). Contextual typing:
+    // ctx.global is Readonly<WorkerConfig>; ctx.stage is the flat-injected core api.
+    const stageProbe = createPlugin("stageProbe", {
+      config: {},
+      api: ctx => ({
+        global: (): string => ctx.global.stage,
+        plugin: (): string => ctx.stage.current()
+      })
+    });
+
+    it("ctx.global.stage and ctx.stage.current() agree on an overridden stage", () => {
+      const app = createApp({
+        plugins: [stageProbe],
+        config: { stage: "development", name: "x", compatibilityDate: "" }
+      });
+
+      expect(app.stageProbe.global()).toBe("development");
+      expect(app.stageProbe.plugin()).toBe("development");
+      expect(app.stageProbe.global()).toBe(app.stageProbe.plugin());
+    });
+
+    it("app.stage reflects an explicit 'test' stage (isDev + isProduction both false)", () => {
+      const app = createApp({
+        config: { stage: "test", name: "x", compatibilityDate: "" }
+      });
+
+      expect(app.stage.current()).toBe("test");
+      expect(app.stage.isDev()).toBe(false);
+      expect(app.stage.isProduction()).toBe(false);
+    });
+
+    it("both paths default to 'production' when config.stage is omitted", () => {
+      const app = createApp({ plugins: [stageProbe] });
+
+      expect(app.stage.current()).toBe("production");
+      expect(app.stage.isProduction()).toBe(true);
+      expect(app.stageProbe.global()).toBe("production");
+      expect(app.stageProbe.plugin()).toBe("production");
+    });
+  });
+
   // ─── Duplicate-name guard (spec/11 §Part 1) ───────────────────────────────
 
   describe("duplicate plugin name", () => {

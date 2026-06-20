@@ -45,20 +45,20 @@ export const createServerApi = (ctx: ServerCtx): Api => {
     env: WorkerEnv,
     exec: ExecutionContext
   ): Promise<Response> => {
+    // Parse the URL and announce request start before any routing work.
     const url = new URL(request.url);
     const requestId = crypto.randomUUID();
     const startTime = Date.now();
-
     ctx.emit("request:start", { method: request.method, path: url.pathname, requestId });
 
+    // Route against the compiled table; a miss is a 404 with no further events.
     const match = ctx.state.match(request.method, url.pathname);
     if (!match) {
       return new Response("Not Found", { status: 404 });
     }
 
+    // Matched: announce it, then build the fresh per-request context — env on the stack, never state (SB4).
     ctx.emit("server:matched", { path: url.pathname, method: request.method });
-
-    // Fresh per-request context on the stack — env is NEVER written to state (SB4)
     const rc: RequestContext = {
       request,
       env,
@@ -69,8 +69,8 @@ export const createServerApi = (ctx: ServerCtx): Api => {
       has: ctx.has
     };
 
+    // Dispatch to the handler, then announce completion with status + elapsed ms.
     const response = await match.endpoint.handler(rc);
-
     ctx.emit("request:end", {
       method: request.method,
       path: url.pathname,

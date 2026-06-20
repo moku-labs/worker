@@ -103,19 +103,20 @@ const tryMatchEndpoint = (
   method: string,
   tokens: string[]
 ): Record<string, string | undefined> | undefined => {
+  // Method guard: an `ALL` endpoint matches any verb; otherwise the verb must match exactly.
   if (compiled.endpoint.method !== "ALL" && compiled.endpoint.method !== method) {
     return undefined;
   }
 
+  // Arity guard: reject token counts below the mandatory segments or above the total.
   const { segments } = compiled;
   const mandatoryCount = segments.filter(segment => !segment.optional).length;
-
   if (tokens.length < mandatoryCount || tokens.length > segments.length) {
     return undefined;
   }
 
+  // Named-param extraction: walk segments and tokens in lockstep, bailing on any literal mismatch.
   const params: Record<string, string | undefined> = {};
-
   for (const [index, segment] of segments.entries()) {
     const token = tokens[index];
 
@@ -208,10 +209,13 @@ const findBestMatch = (
  * ```
  */
 export const compileServerState = (state: ServerState): void => {
+  // Idempotence guard: onInit runs once per isolate — never compile the table twice.
   if (state.compiled) return;
 
+  // Sort by specificity so the matcher returns the first hit (literal beats param, method beats ALL).
   state.table.sort(bySpecificityDesc);
 
+  // Validate each endpoint path: reject the retired `{name?}` syntax and duplicate param names.
   for (const compiled of state.table) {
     const seen = new Set<string>();
     for (const segment of compiled.segments) {
@@ -236,6 +240,7 @@ export const compileServerState = (state: ServerState): void => {
     }
   }
 
+  // Mark compiled so a repeat onInit (or a pre-init match() re-sort) is a no-op.
   state.compiled = true;
 };
 

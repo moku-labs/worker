@@ -36,12 +36,16 @@ const createMockCtx = (overrides?: {
 }): StorageCtx & { require: ReturnType<typeof vi.fn> } => {
   const fakeBindings = makeMemoryBindings(overrides?.bucket ?? "ASSETS");
   return {
+    // Standard-tier ctx also carries global framework config + `has` (spec/08 §2);
+    // both inert here — createStorageApi only reads config and require(bindingsPlugin).
+    global: {},
     config: {
       bucket: overrides?.bucket ?? "ASSETS",
       upload: overrides?.upload ?? ""
     },
     state: {} as Record<string, never>,
     emit: vi.fn() as StorageCtx["emit"],
+    has: () => false,
     // ctx.require(bindingsPlugin) returns our fake bindings api
     require: vi.fn((plugin: unknown) => {
       if (plugin === bindingsPlugin) return fakeBindings;

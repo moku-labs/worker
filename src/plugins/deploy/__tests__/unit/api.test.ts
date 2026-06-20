@@ -62,11 +62,16 @@ vi.mock("../../auth/env-file", () => ({
   ensureEnvLocal: vi.fn().mockResolvedValue({ created: true, path: "/cwd/.env.local" })
 }));
 
-// dev() delegates to runDev; mock it so the long-lived watch loop never runs in unit tests.
-vi.mock("../../dev/runner", () => ({
-  runDev: vi.fn().mockResolvedValue(undefined),
-  realDevDeps: vi.fn(() => ({}))
-}));
+// dev() delegates to runDev; mock it so the long-lived watch loop never runs in unit tests. Keep the
+// real d1MigrationBindings (run()'s remote-migrate step uses it) so it reflects the mock ctx's d1.
+vi.mock("../../dev/runner", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../dev/runner")>();
+  return {
+    ...actual,
+    runDev: vi.fn().mockResolvedValue(undefined),
+    realDevDeps: vi.fn(() => ({}))
+  };
+});
 
 // TTY defaults to interactive so the guided path is exercisable; overridden per test.
 vi.mock("../../tty", () => ({ stdoutIsTty: vi.fn(() => true) }));
@@ -391,8 +396,8 @@ describe("createDeployApi", () => {
       expect(phases).toEqual(["auth", "detect", "provision", "wrangler-config", "deploy"]);
     });
 
-    it("emits deploy:phase in full order detect → provision → wrangler-config → upload → deploy", async () => {
-      const ctx = createMockCtx(); // all resources present; storage has an upload dir
+    it("emits deploy:phase in full order detect → provision → wrangler-config → migrate → upload → deploy", async () => {
+      const ctx = createMockCtx(); // all resources present (d1 has migrations); storage has an upload dir
       const api = createDeployApi(ctx);
 
       await api.run();

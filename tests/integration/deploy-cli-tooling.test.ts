@@ -25,7 +25,8 @@ import type { WorkerEvents } from "../../src/config";
 // ─────────────────────────────────────────────────────────────────────────────
 
 vi.mock("../../src/plugins/deploy/runner", () => ({
-  runWrangler: vi.fn().mockResolvedValue("https://deploy-test.workers.dev")
+  runWrangler: vi.fn().mockResolvedValue("https://deploy-test.workers.dev"),
+  runWranglerInherit: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock("../../src/plugins/deploy/wrangler-config", async importActual => ({
@@ -62,7 +63,7 @@ vi.mock("../../src/plugins/deploy/auth/verify", () => ({
 }));
 
 vi.mock("../../src/plugins/deploy/dev/runner", () => ({
-  // dev() spawns a long-lived watch loop; mock it so the integration test never blocks.
+  // Stub the long-lived dev watch loop + its deps so the integration test never blocks.
   runDev: vi.fn().mockResolvedValue(undefined),
   realDevDeps: vi.fn(() => ({}))
 }));
@@ -258,7 +259,7 @@ describe("deploy + cli tooling (root integration)", () => {
   // ─── 2. deploy:phase ordering ──────────────────────────────────────────────
 
   describe("deploy:phase ordering", () => {
-    it("emits phases in pipeline order: detect → provision → wrangler-config → upload → deploy", async () => {
+    it("emits phases in pipeline order: detect → provision → wrangler-config → migrate → upload → deploy", async () => {
       const app = createToolingApp();
 
       await app.deploy.run({ ci: true });

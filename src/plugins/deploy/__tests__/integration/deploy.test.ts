@@ -21,7 +21,8 @@ import type { Api, ExternalManifest } from "../../types";
 // ─────────────────────────────────────────────────────────────────────────────
 
 vi.mock("../../runner", () => ({
-  runWrangler: vi.fn().mockResolvedValue("https://deploy-test.workers.dev")
+  runWrangler: vi.fn().mockResolvedValue("https://deploy-test.workers.dev"),
+  runWranglerInherit: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock("../../wrangler-config", () => ({
@@ -56,7 +57,7 @@ vi.mock("../../auth/verify", () => ({
 }));
 
 vi.mock("../../dev/runner", () => ({
-  // dev() spawns a long-lived watch loop; mock it so the integration test never blocks.
+  // Stub the long-lived dev watch loop + its deps so the integration test never blocks.
   runDev: vi.fn().mockResolvedValue(undefined),
   realDevDeps: vi.fn(() => ({}))
 }));

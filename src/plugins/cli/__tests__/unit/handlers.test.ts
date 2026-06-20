@@ -38,6 +38,29 @@ const makeMockCtx = (): { ctx: CliCtx; logInfo: ReturnType<typeof vi.fn> } => {
   return { ctx, logInfo };
 };
 
+/**
+ * Run `body` with process.stdout faked as a TTY and fake timers (restoring both after), so the
+ * spinner's animated TTY path is exercised deterministically.
+ *
+ * @param body - The test body to run under a faked TTY + fake timers.
+ * @example
+ * ```ts
+ * onTty(() => { hooks["deploy:phase"]({ phase: "deploy" }); });
+ * ```
+ */
+const onTty = (body: () => void): void => {
+  const tty = process.stdout as { isTTY?: boolean | undefined };
+  const orig = tty.isTTY;
+  tty.isTTY = true;
+  vi.useFakeTimers();
+  try {
+    body();
+  } finally {
+    vi.useRealTimers();
+    tty.isTTY = orig;
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -159,6 +182,53 @@ describe("createCliHooks", () => {
       const hooks = createCliHooks(ctx);
 
       expect(() => hooks["deploy:complete"]({ url: "https://x.workers.dev" })).not.toThrow();
+    });
+  });
+
+  // ─── deploy spinner (TTY only) ──────────────────────────────────────────────
+
+  describe("deploy spinner (TTY)", () => {
+    it("animates a slow phase (deploy) and settles it as a line on completion", () => {
+      onTty(() => {
+        const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+        const { ctx, logInfo } = makeMockCtx();
+        const hooks = createCliHooks(ctx);
+
+        hooks["deploy:phase"]({ phase: "deploy" });
+        expect(logInfo).not.toHaveBeenCalledWith("deploy"); // animating, not yet a permanent line
+        vi.advanceTimersByTime(80);
+        expect(writeSpy).toHaveBeenCalled(); // a braille frame was painted
+
+        hooks["deploy:complete"]({ url: "https://x.workers.dev" });
+        expect(logInfo).toHaveBeenCalledWith("deploy"); // settled phase line
+        expect(logInfo).toHaveBeenCalledWith("deployed → https://x.workers.dev");
+        writeSpy.mockRestore();
+      });
+    });
+
+    it("settles a running spinner when the next phase starts", () => {
+      onTty(() => {
+        const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+        const { ctx, logInfo } = makeMockCtx();
+        const hooks = createCliHooks(ctx);
+
+        hooks["deploy:phase"]({ phase: "upload", detail: "3 files" }); // spins
+        hooks["deploy:phase"]({ phase: "deploy" }); // settles upload, spins deploy
+        expect(logInfo).toHaveBeenCalledWith("upload · 3 files");
+        writeSpy.mockRestore();
+      });
+    });
+
+    it("does not spin a quick phase even on a TTY", () => {
+      onTty(() => {
+        const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+        const { ctx, logInfo } = makeMockCtx();
+
+        createCliHooks(ctx)["deploy:phase"]({ phase: "detect" });
+
+        expect(logInfo).toHaveBeenCalledWith("detect"); // immediate line, no animation
+        writeSpy.mockRestore();
+      });
     });
   });
 });

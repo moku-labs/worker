@@ -19,33 +19,39 @@ export type Api = {
    * when omitted. A failure renders a branded `✗` line and sets a non-zero exit code rather than
    * throwing a raw stack trace.
    *
-   * @param opts - Optional port and web build hook.
+   * @param opts - Optional port, stage, and web build hook.
    * @param opts.port - Local dev port to bind. Defaults to 8787 when omitted.
+   * @param opts.stage - Stage for the generated wrangler config's resource names. Falls back to the
+   *   `--stage` CLI flag, then the app's configured stage. Pass it explicitly from a script for a
+   *   self-documenting `dev({ stage })` instead of relying on the hidden flag.
    * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await app.cli.dev({ port: 7878, webBuild: () => web.cli.build() });
+   * await app.cli.dev({ stage: "dev", port: 7878, webBuild: () => web.cli.build() });
    * ```
    */
-  dev(opts?: { port?: number; webBuild?: WebBuild }): Promise<void>;
+  dev(opts?: { port?: number; stage?: string; webBuild?: WebBuild }): Promise<void>;
 
   /**
    * One-command Cloudflare deploy (delegates to deploy.run). Guided/interactive by default; pass
    * `{ ci: true }` for the automated/non-interactive path (CI). A failure renders a branded `✗`
    * line and sets a non-zero exit code rather than throwing a raw stack trace.
    *
-   * @param opts - Optional ci flag and a web build hook.
+   * @param opts - Optional ci flag, stage, and a web build hook.
    * @param opts.ci - Automated mode: never prompts, auto-confirms. Omit/false → guided on a TTY.
+   * @param opts.stage - Stage for the generated wrangler config's resource names (e.g. "production",
+   *   "staging"). Falls back to the `--stage` CLI flag, then the app's configured stage. Pass it
+   *   explicitly from a script for a self-documenting `deploy({ stage })` instead of the hidden flag.
    * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
    * @returns Resolves once the deploy completes (or after a failure is rendered).
    * @example
    * ```ts
-   * await app.cli.deploy({ webBuild: () => web.cli.build() });           // guided
-   * await app.cli.deploy({ ci: true, webBuild: () => web.cli.build() }); // CI
+   * await app.cli.deploy({ stage: "production", webBuild: () => web.cli.build() }); // guided
+   * await app.cli.deploy({ ci: true, webBuild: () => web.cli.build() });            // CI
    * ```
    */
-  deploy(opts?: { ci?: boolean; webBuild?: WebBuild }): Promise<void>;
+  deploy(opts?: { ci?: boolean; stage?: string; webBuild?: WebBuild }): Promise<void>;
 
   /**
    * Seed a configured D1 database from a SQL file (delegates to deploy.seed). Local by default

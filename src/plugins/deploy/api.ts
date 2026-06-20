@@ -422,6 +422,40 @@ const guidedUpload = async (
 };
 
 /**
+ * The final deploy step: confirm the target (guided only), run `wrangler deploy` with interactive
+ * retry, then emit deploy:complete. Resolves false when the target gate or a deploy retry is declined.
+ *
+ * @param ctx - The deploy plugin context.
+ * @param manifest - The assembled (or caller-supplied) deploy manifest.
+ * @param stage - The resolved deploy stage (for the confirm prompt).
+ * @param deps - Interactivity + the confirm prompt.
+ * @returns True once deployed; false when the user declined the gate or a retry (abort).
+ * @example
+ * ```ts
+ * if (!(await guidedDeployStep(ctx, manifest, stage, deps))) return emitAborted(ctx);
+ * ```
+ */
+const guidedDeployStep = async (
+  ctx: Ctx,
+  manifest: ExternalManifest,
+  stage: string,
+  deps: GuidedDeps
+): Promise<boolean> => {
+  if (!(await deps.confirm(`Deploy "${manifest.name}" to ${stage}?`))) return false;
+
+  ctx.emit("deploy:phase", { phase: "deploy" });
+  const url = await guidedStep(
+    () => runWrangler(["deploy", "--config", ctx.config.configFile]),
+    HINTS.deploy,
+    deps
+  );
+  if (url === ABORTED) return false;
+
+  ctx.emit("deploy:complete", { url });
+  return true;
+};
+
+/**
  * Create the deploy api. Assembles the manifest from each resource plugin's own deployManifest(),
  * runs an infra preflight (check-before-create + id capture), generates config, uploads, and runs
  * `wrangler deploy`, emitting global deploy events along the way.
@@ -511,17 +545,7 @@ export const createDeployApi = (ctx: Ctx) => ({
     if (!(await guidedUpload(ctx, manifest, deps))) return emitAborted(ctx);
 
     // Confirm the deploy target (guided only), then hand off to `wrangler deploy` (with retry).
-    if (!(await confirm(`Deploy "${manifest.name}" to ${stage}?`))) {
-      return emitAborted(ctx);
-    }
-    ctx.emit("deploy:phase", { phase: "deploy" });
-    const url = await guidedStep(
-      () => runWrangler(["deploy", "--config", ctx.config.configFile]),
-      HINTS.deploy,
-      deps
-    );
-    if (url === ABORTED) return emitAborted(ctx);
-    ctx.emit("deploy:complete", { url });
+    if (!(await guidedDeployStep(ctx, manifest, stage, deps))) return emitAborted(ctx);
   },
 
   /**

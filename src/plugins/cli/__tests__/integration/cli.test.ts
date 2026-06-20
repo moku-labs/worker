@@ -26,7 +26,8 @@ import type { Api } from "../../types";
 // ─────────────────────────────────────────────────────────────────────────────
 
 vi.mock("../../../deploy/runner", () => ({
-  runWrangler: vi.fn().mockResolvedValue("https://cli-test.workers.dev")
+  runWrangler: vi.fn().mockResolvedValue("https://cli-test.workers.dev"),
+  runWranglerInherit: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock("../../../deploy/wrangler-config", () => ({
@@ -63,7 +64,7 @@ vi.mock("../../../deploy/auth/verify", () => ({
 }));
 
 vi.mock("../../../deploy/dev/runner", () => ({
-  // dev() spawns a long-lived watch loop; mock it so the integration test never blocks.
+  // Stub the long-lived dev watch loop + its deps so the integration test never blocks.
   runDev: vi.fn().mockResolvedValue(undefined),
   realDevDeps: vi.fn(() => ({}))
 }));
@@ -295,6 +296,18 @@ describe("cli plugin (integration)", () => {
       const app = createTestApp();
 
       expectTypeOf(app.cli.deploy()).toEqualTypeOf<Promise<void>>();
+    });
+
+    it("dev and deploy accept an explicit stage", () => {
+      const app = createTestApp();
+
+      // Type-level: an explicit stage must compile on both (surfaced on the Api type; the impl
+      // already resolves opts.stage ?? --stage ?? config.stage). No @ts-expect-error needed.
+      const devCall = (): Promise<void> => app.cli.dev({ stage: "dev" });
+      const deployCall = (): Promise<void> => app.cli.deploy({ stage: "production" });
+
+      expect(typeof devCall).toBe("function");
+      expect(typeof deployCall).toBe("function");
     });
 
     it("@ts-expect-error: dev rejects port as string", () => {

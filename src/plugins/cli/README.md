@@ -34,11 +34,9 @@ import { cliPlugin, createApp } from "@moku-labs/worker";
 
 const app = createApp({
   // deploy + its resource deps (kv, d1, storage, queues, durableObjects) — NOT bindings/server (defaults).
-  plugins: [/* …resource plugins…, deployPlugin, */ cliPlugin],
-  pluginConfigs: {
-    cli: { port: 3000 }
-  }
+  plugins: [/* …resource plugins…, deployPlugin, */ cliPlugin]
 });
+// cli takes no config — the dev port is a `dev()` argument: `app.cli.dev({ port: 3000 })`.
 ```
 
 ## API
@@ -51,7 +49,7 @@ Two public methods, both mounted on `app.cli.*` (regular plugins mount on `app.<
 dev(opts?: { port?: number }): Promise<void>
 ```
 
-Run the Worker locally via Wrangler. Prints a branded dev-session banner, then delegates to `ctx.require(deployPlugin).dev(...)`. The port is resolved from `opts.port`, else a `--port <n>` CLI flag, else `ctx.config.port` (8787). A failure renders a branded `✗` line and sets a non-zero exit code rather than throwing.
+Run the Worker locally via Wrangler. Prints a branded dev-session banner, then delegates to `ctx.require(deployPlugin).dev(...)`. The dev port comes **only** from `opts.port` — the consumer passes it (e.g. parsed from its own CLI flags in `scripts/dev.ts`); it defaults to 8787 when omitted. There is no hidden argv/config port resolution. A failure renders a branded `✗` line and sets a non-zero exit code rather than throwing.
 
 ```typescript
 await app.cli.dev();               // port from --port, else 8787 → deploy.dev({ port })
@@ -130,10 +128,7 @@ const server = createApp({
     durableObjectsPlugin,
     deployPlugin,
     cliPlugin
-  ],
-  pluginConfigs: {
-    cli: { port: 8787 }
-  }
+  ]
 });
 
 // The script is the wiring point: pass the web build into dev/deploy so one small
@@ -168,7 +163,7 @@ A worker-only app omits the `webBuild` hook entirely (`server.cli.dev()` / `serv
 
 | `cli` verb | Delegates to |
 |------------|--------------|
-| `app.cli.dev(opts?)` | `ctx.require(deployPlugin).dev({ port: opts?.port ?? ctx.config.port, webBuild? })` |
+| `app.cli.dev(opts?)` | `ctx.require(deployPlugin).dev({ port: opts?.port, webBuild? })` (port only when given; defaults to 8787 downstream) |
 | `app.cli.deploy(opts?)` | `ctx.require(deployPlugin).run(opts)` |
 
 Both verbs accept an optional `webBuild` hook (`() => webApp.cli.build()`): `dev` recompiles the web site on every change, `deploy` builds it once before `wrangler deploy`. The hook is threaded straight through to `deploy`; `cli` adds only the port default.

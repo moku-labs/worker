@@ -117,8 +117,7 @@ const createTestApp = () => {
           onMessage: async () => undefined
         }
       },
-      durableObjects: { board: { binding: "BOARD", className: "BoardChannel" } },
-      cli: { port: 8787 }
+      durableObjects: { board: { binding: "BOARD", className: "BoardChannel" } }
     }
   });
 };

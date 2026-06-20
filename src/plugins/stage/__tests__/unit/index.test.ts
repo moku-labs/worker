@@ -21,6 +21,7 @@ type StageCoreCtx = { config: { stage: Stage }; state: Record<string, never> };
 type StageApiFactory = (ctx: StageCoreCtx) => StageApi;
 
 /** Typed accessor into the plugin's spec.api factory. */
+// A CorePlugin's `api` factory isn't exported directly — extract it from the `spec` slot so it can be unit-tested in isolation, without standing up a full kernel.
 const stageApiFactory = (stagePlugin as unknown as { spec: { api: StageApiFactory } }).spec.api;
 
 /**

@@ -42,13 +42,16 @@ const createMockCtx = (overrides?: {
   const defaultState = createServerState([]);
   defaultState.compiled = true;
 
+  // Standard-tier ctx also carries the global framework config (spec/08 §2);
+  // inert here — handle()/scheduled() only read config/state/emit/require/has.
   return {
+    global: {},
     config: { endpoints: [] },
     state: overrides?.state ?? defaultState,
     emit: (overrides?.emit ?? vi.fn()) as AnyEmit,
     require: overrides?.require ?? defaultRequire,
     has: overrides?.has ?? ((_name: string) => false)
-  };
+  } as ServerCtx;
 };
 
 /** Return a recording emit + the records array it writes to. */

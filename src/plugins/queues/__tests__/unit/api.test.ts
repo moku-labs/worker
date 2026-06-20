@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { WorkerEnv } from "../../../../config";
 import type { bindingsPlugin } from "../../../bindings";
 import { createQueuesApi } from "../../api";
-import type { Ctx, QueueEvents } from "../../types";
+import type { Ctx } from "../../types";
 
 // ---------------------------------------------------------------------------
 // Helpers — fake Cloudflare Queue + MessageBatch
@@ -282,14 +282,9 @@ describe("createQueuesApi", () => {
     it("ctx.emit accepts queue:message with correct payload", () => {
       const { ctx } = createMockCtx();
 
-      (
-        ctx.emit as unknown as (
-          event: "queue:message",
-          payload: QueueEvents["queue:message"]
-        ) => void
-      )("queue:message", { queue: "q", messageId: "m1" });
-
-      expect(ctx.emit).toBeDefined();
+      expectTypeOf(ctx.emit).toExtend<
+        (event: "queue:message", payload: { queue: string; messageId: string }) => void
+      >();
     });
 
     it("ctx.emit rejects wrong payload for queue:message", () => {

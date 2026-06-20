@@ -38,13 +38,33 @@ const makeCtx = (config: Partial<Ctx["config"]>): Ctx =>
   }) as unknown as Ctx;
 
 describe("buildSite", () => {
-  it("calls the buildSite hook when configured", async () => {
+  it("calls the config webBuild hook when configured", async () => {
     const hook = vi.fn().mockResolvedValue({ files: 7 });
 
-    const result = await buildSite(makeCtx({ buildSite: hook }));
+    const result = await buildSite(makeCtx({ webBuild: hook }));
 
     expect(hook).toHaveBeenCalled();
     expect(result).toEqual({ files: 7 });
+  });
+
+  it("prefers the call-time webBuild param over the config webBuild", async () => {
+    const configHook = vi.fn().mockResolvedValue({ files: 1 });
+    const paramHook = vi.fn().mockResolvedValue({ files: 9 });
+
+    const result = await buildSite(makeCtx({ webBuild: configHook }), paramHook);
+
+    expect(paramHook).toHaveBeenCalled();
+    expect(configHook).not.toHaveBeenCalled();
+    expect(result).toEqual({ files: 9 });
+  });
+
+  it("normalizes a countless (void) hook result to files: 0", async () => {
+    const hook = vi.fn().mockResolvedValue(undefined);
+
+    const result = await buildSite(makeCtx({}), hook);
+
+    expect(hook).toHaveBeenCalled();
+    expect(result).toEqual({ files: 0 });
   });
 
   it("emits dev:error and no-ops when nothing is configured", async () => {

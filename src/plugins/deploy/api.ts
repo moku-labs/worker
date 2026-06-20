@@ -33,7 +33,8 @@ import type {
   ProvisionedRef,
   ProvisionResult,
   ResourceManifest,
-  TokenRequirement
+  TokenRequirement,
+  WebBuild
 } from "./types";
 import { scaffoldWranglerAndCi, writeWranglerConfig } from "./wrangler-config";
 
@@ -148,17 +149,19 @@ export const createDeployApi = (ctx: Ctx) => ({
    * @param opts - Optional run options.
    * @param opts.guided - Enable interactive confirmation steps (only on a TTY, non-CI).
    * @param opts.yes - Auto-confirm all prompts (non-interactive / CI).
+   * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
    * @param opts.manifest - Caller-supplied manifest (bypasses deployManifest() assembly).
    * @returns Resolves once the deploy completes.
    * @example
    * ```ts
-   * await api.run({ guided: true });
+   * await api.run({ guided: true, webBuild: () => web.cli.build() });
    * await api.run({ manifest: { name: "w", compatibilityDate: "2026-06-17", resources: [] } });
    * ```
    */
   async run(opts?: {
     guided?: boolean;
     yes?: boolean;
+    webBuild?: WebBuild;
     manifest?: ExternalManifest;
   }): Promise<void> {
     // Interactive only when guided, on a TTY, not CI, and not auto-confirmed (--yes).
@@ -171,6 +174,14 @@ export const createDeployApi = (ctx: Ctx) => ({
     // Auth preflight — verify the .env token up front so a bad token fails clearly and early.
     ctx.emit("deploy:phase", { phase: "auth" });
     await runVerifyAuth(ctx);
+
+    // Build the web site first (when a hook is wired in from the consumer's script), so its
+    // generated assets exist before the R2 upload and `wrangler deploy`.
+    const webBuild = opts?.webBuild ?? ctx.config.webBuild;
+    if (webBuild !== undefined) {
+      ctx.emit("deploy:phase", { phase: "build", detail: "web" });
+      await webBuild();
+    }
 
     // Manifest from each plugin's OWN deployManifest() api — never sibling pluginConfigs (F6).
     ctx.emit("deploy:phase", { phase: "detect" });
@@ -218,13 +229,15 @@ export const createDeployApi = (ctx: Ctx) => ({
    *
    * @param opts - Optional options.
    * @param opts.port - Local dev port (default 8787).
+   * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await api.dev({ port: 8787 });
+   * await api.dev({ port: 8787, webBuild: () => web.cli.build() });
    * ```
    */
-  dev: (opts?: { port?: number }): Promise<void> => runDev(ctx, opts, realDevDeps()),
+  dev: (opts?: { port?: number; webBuild?: WebBuild }): Promise<void> =>
+    runDev(ctx, opts, realDevDeps()),
 
   /**
    * Scaffold a starting wrangler config (and CI files when ci is set).

@@ -116,13 +116,14 @@ import {
   storagePlugin
 } from "@moku-labs/worker";
 import { cliPlugin, deployPlugin } from "@moku-labs/worker/cli";
+import { web } from "./web"; // your @moku-labs/web app — web.cli.build() rebuilds the site
 
 // bindings + server are framework defaults baked into the exported createApp
 // ([log, env, stage, bindings, server]) — do NOT re-list them or createApp throws
 // `TypeError: [moku-worker] Duplicate plugin name: "bindings".`. Among the CONSUMER
 // extras, every `depends` target must still be registered EARLIER in the array:
 // cli → deploy → [storage, kv, d1, queues, durableObjects] (→ bindings, already a default).
-const app = createApp({
+const server = createApp({
   plugins: [
     storagePlugin,
     kvPlugin,
@@ -137,25 +138,31 @@ const app = createApp({
   }
 });
 
+// The script is the wiring point: pass the web build into dev/deploy so one small
+// app-side script composes the Moku Web app with this Worker framework. dev recompiles
+// the site on change; deploy builds it once before `wrangler deploy`.
+const webBuild = () => web.cli.build();
 const command = process.argv[2];
 
 if (command === "dev") {
   const portArg = process.argv[3];
-  await app.cli.dev(portArg ? { port: Number(portArg) } : undefined);
+  await server.cli.dev(portArg ? { port: Number(portArg), webBuild } : { webBuild });
 } else if (command === "deploy") {
   const ci = process.argv.includes("--ci");
-  await app.cli.deploy(ci ? { yes: true } : { guided: true });
+  await server.cli.deploy(ci ? { yes: true, webBuild } : { guided: true, webBuild });
 } else {
   throw new Error(`unknown command: ${String(command)} (expected "dev" or "deploy")`);
 }
 ```
 
 ```bash
-bun scripts/cli.ts dev            # wrangler dev --port 8787
+bun scripts/cli.ts dev            # wrangler dev --port 8787, web recompiles on change
 bun scripts/cli.ts dev 3000       # wrangler dev --port 3000
-bun scripts/cli.ts deploy         # guided deploy, live TUI
+bun scripts/cli.ts deploy         # build web → guided deploy, live TUI
 bun scripts/cli.ts deploy --ci    # non-interactive deploy
 ```
+
+A worker-only app omits the `webBuild` hook entirely (`server.cli.dev()` / `server.cli.deploy()`); dev then serves the worker without recompiling a site.
 
 ## Integration
 
@@ -163,8 +170,10 @@ bun scripts/cli.ts deploy --ci    # non-interactive deploy
 
 | `cli` verb | Delegates to |
 |------------|--------------|
-| `app.cli.dev(opts?)` | `ctx.require(deployPlugin).dev(opts ?? { port: ctx.config.port })` |
+| `app.cli.dev(opts?)` | `ctx.require(deployPlugin).dev({ port: opts?.port ?? ctx.config.port, webBuild? })` |
 | `app.cli.deploy(opts?)` | `ctx.require(deployPlugin).run(opts)` |
+
+Both verbs accept an optional `webBuild` hook (`() => webApp.cli.build()`): `dev` recompiles the web site on every change, `deploy` builds it once before `wrangler deploy`. The hook is threaded straight through to `deploy`; `cli` adds only the port default.
 
 The resource plugins (`storage`/R2, `kv`, `d1`, `queues`, `durableObjects`) are reached only **transitively**, through `deploy`. `cli` never imports or requires them: `deploy` is the one that declares `depends: [storagePlugin, kvPlugin, d1Plugin, queuesPlugin, durableObjectsPlugin]`, assembles each resource's `deployManifest()`, provisions, writes the wrangler config, uploads, and runs `wrangler deploy` — emitting the global events `cli` renders. `cli` reads neither `deploy`'s config nor any sibling `pluginConfigs`; `ctx.require` returns a plugin's API, never its config.
 

@@ -9,7 +9,8 @@ import type {
   AuthStatus,
   InfraPlan,
   ProvisionResult,
-  TokenRequirement
+  TokenRequirement,
+  WebBuild
 } from "../../../deploy/types";
 import type { CliCtx } from "../../api";
 import { createCliApi } from "../../api";
@@ -19,9 +20,11 @@ import { createCliApi } from "../../api";
 // ---------------------------------------------------------------------------
 
 const makeDeployStub = () => ({
-  dev: vi.fn<(opts?: { port?: number }) => Promise<void>>().mockResolvedValue(undefined),
+  dev: vi
+    .fn<(opts?: { port?: number; webBuild?: WebBuild }) => Promise<void>>()
+    .mockResolvedValue(undefined),
   run: vi
-    .fn<(opts?: { guided?: boolean; yes?: boolean }) => Promise<void>>()
+    .fn<(opts?: { guided?: boolean; yes?: boolean; webBuild?: WebBuild }) => Promise<void>>()
     .mockResolvedValue(undefined),
   init: vi.fn<(opts?: { ci?: boolean }) => Promise<void>>().mockResolvedValue(undefined),
   checkInfra: vi
@@ -99,6 +102,26 @@ describe("createCliApi", () => {
       expect(deployStub.dev).toHaveBeenCalledWith({ port: 9000 });
     });
 
+    it("forwards a webBuild hook alongside the default port", async () => {
+      const { ctx, deployStub } = makeMockCtx(8787);
+      const api = createCliApi(ctx);
+      const webBuild = vi.fn<WebBuild>().mockResolvedValue({ files: 4 });
+
+      await api.dev({ webBuild });
+
+      expect(deployStub.dev).toHaveBeenCalledWith({ port: 8787, webBuild });
+    });
+
+    it("forwards a webBuild hook alongside an explicit port", async () => {
+      const { ctx, deployStub } = makeMockCtx(8787);
+      const api = createCliApi(ctx);
+      const webBuild = vi.fn<WebBuild>().mockResolvedValue({ files: 4 });
+
+      await api.dev({ port: 3000, webBuild });
+
+      expect(deployStub.dev).toHaveBeenCalledWith({ port: 3000, webBuild });
+    });
+
     it("returns the exact Promise the deploy api returns (passthrough, not re-wrapped)", async () => {
       const { ctx } = makeMockCtx();
       const api = createCliApi(ctx);
@@ -136,6 +159,16 @@ describe("createCliApi", () => {
       await api.deploy({ yes: true });
 
       expect(deployStub.run).toHaveBeenCalledWith({ yes: true });
+    });
+
+    it("forwards a webBuild hook verbatim to run", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+      const webBuild = vi.fn<WebBuild>().mockResolvedValue({ files: 4 });
+
+      await api.deploy({ guided: true, webBuild });
+
+      expect(deployStub.run).toHaveBeenCalledWith({ guided: true, webBuild });
     });
 
     it("returns the exact Promise the deploy api returns (passthrough, not re-wrapped)", async () => {

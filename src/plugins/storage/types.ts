@@ -8,32 +8,46 @@ import type { BindingsApi, bindingsPlugin } from "../bindings";
 export type { StorageProvider } from "./providers/types";
 
 /**
- * storage plugin configuration. Flat; complete defaults so omission never yields undefined.
+ * A single R2 bucket instance: its base Cloudflare name, the env binding it resolves off, and an
+ * optional deploy-time upload directory.
  *
  * @example
- * ```ts
- * { upload: "./public", bucket: "ASSETS" }
+ * ```typescript
+ * { name: "tracker-files", binding: "FILES" }
  * ```
  */
-export type StorageConfig = {
-  /** Directory uploaded to R2 at deploy (deploy metadata only). Default "". */
-  upload: string;
-  /** R2 bucket binding name resolved off the per-request env. Default "ASSETS". */
-  bucket: string;
+export type R2Instance = {
+  /** Base Cloudflare R2 bucket name (stage-suffixed at deploy). */
+  name: string;
+  /** Env binding name the bucket resolves off the per-request `env` (e.g. `env.FILES`). */
+  binding: string;
+  /** Directory uploaded to this bucket at deploy (deploy metadata only). */
+  upload?: string;
+  /** Marks this instance the default when more than one is configured. */
+  default?: boolean;
 };
 
-/** Deploy metadata returned to the deploy plugin. */
-export type StorageManifest = {
-  /** Discriminant identifying this as an R2 resource. */
-  readonly kind: "r2";
-  /** R2 bucket binding name. */
-  readonly bucket: string;
-  /** Directory uploaded to R2 at deploy. */
-  readonly upload: string;
-};
+/**
+ * storage plugin config — a keyed map of R2 bucket instances. The key is the stable logical id used by
+ * `app.storage.use("key")`; a single entry (or one flagged `default: true`) is the implicit default.
+ *
+ * @example
+ * ```typescript
+ * { files: { name: "tracker-files", binding: "FILES" } }
+ * ```
+ */
+export type StorageConfig = Record<string, R2Instance>;
 
-/** Public storage API surface (env-first). */
-export type StorageApi = {
+/**
+ * The env-first object surface for one R2 bucket (the methods bound to a single instance).
+ *
+ * @example
+ * ```typescript
+ * const body = await app.storage.get(env, "assets/logo.png");
+ * await app.storage.use("uploads").put(env, "avatar.png", buffer);
+ * ```
+ */
+export type StorageBucketApi = {
   /**
    * Read an object; resolves null when the key is absent.
    *
@@ -71,12 +85,33 @@ export type StorageApi = {
    * @returns The list result.
    */
   list(env: WorkerEnv, opts?: R2ListOptions): Promise<R2Objects>;
+};
+
+/**
+ * The app.storage surface — the default bucket's methods, a `use(key)` selector for the others, plus
+ * deploy metadata.
+ *
+ * @example
+ * ```typescript
+ * const body = await app.storage.get(env, "assets/logo.png");      // default bucket
+ * await app.storage.use("uploads").put(env, "avatar.png", buffer); // a named bucket
+ * ```
+ */
+export type StorageApi = StorageBucketApi & {
   /**
-   * Build-time deploy metadata for the deploy plugin.
+   * Select a specific R2 bucket instance by its config key.
    *
-   * @returns Deploy manifest entry `{ kind: "r2", bucket, upload }`.
+   * @param key - The instance key (as configured under `pluginConfigs.storage`).
+   * @returns The object surface bound to that bucket.
    */
-  deployManifest(): StorageManifest;
+  use(key: string): StorageBucketApi;
+  /**
+   * Returns this plugin's own deploy metadata (one entry per configured bucket), read by the deploy
+   * plugin. Build-time only — takes no env.
+   *
+   * @returns One r2 deploy descriptor per configured instance.
+   */
+  deployManifest(): Array<{ kind: "r2"; name: string; binding: string; upload?: string }>;
 };
 
 /**

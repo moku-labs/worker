@@ -100,8 +100,14 @@ const createEventsApp = (
     pluginConfigs: {
       server: { endpoints: options.endpoints ?? [] },
       queues: {
-        producers: options.producers ?? ["jobs"],
-        onMessage: options.onMessage ?? (async () => {})
+        // Single keyed instance — its CF `name` is the (optional) first producer; `binding` is the
+        // producer env var. With one instance, consume() routes every batch to it regardless of
+        // batch.queue, so the queue name asserted below is the one the batch carries.
+        jobs: {
+          name: options.producers?.[0] ?? "jobs",
+          binding: "JOBS",
+          onMessage: options.onMessage ?? (async () => {})
+        }
       }
     }
   });

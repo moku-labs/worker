@@ -1,7 +1,7 @@
 /**
  * @file deploy plugin — Queues provisioning adapter.
  *
- * Creates Cloudflare Queues via `wrangler queues create <name>` for each producer.
+ * Creates one Cloudflare Queue via `wrangler queues create <name>` per queue instance.
  * Node-only; never imported by the runtime Worker bundle.
  */
 
@@ -12,18 +12,16 @@ import type { ResourceManifest } from "../types";
 type QueueManifest = Extract<ResourceManifest, { kind: "queue" }>;
 
 /**
- * Provision queues via `wrangler queues create` for each declared producer.
+ * Provision the queue via `wrangler queues create <name>`.
  *
  * @param manifest - The queue resource descriptor.
  * @param _ci - Whether running non-interactively.
- * @returns Resolves once all queues are created.
+ * @returns Resolves once the queue is created.
  * @example
  * ```ts
- * await provisionQueue({ kind: "queue", producers: ["orders"] }, false);
+ * await provisionQueue({ kind: "queue", name: "tracker-activity", binding: "ACTIVITY" }, false);
  * ```
  */
 export const provisionQueue = async (manifest: QueueManifest, _ci: boolean): Promise<void> => {
-  for (const producer of manifest.producers) {
-    await runWrangler(["queues", "create", producer]);
-  }
+  await runWrangler(["queues", "create", manifest.name]);
 };

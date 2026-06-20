@@ -67,6 +67,8 @@ type FakeBindingsApi = {
 const createMockCtx = (overrides?: {
   binding?: string;
   migrations?: string;
+  /** Full keyed-map config override (takes precedence over binding/migrations). */
+  config?: D1Ctx["config"];
   bindingsApi?: Partial<FakeBindingsApi>;
   /** Override the require fn on the ctx directly */
   requireFn?: D1Ctx["require"];
@@ -100,8 +102,10 @@ const createMockCtx = (overrides?: {
       throw new Error("unexpected require call in test");
     });
 
+  const config = overrides?.config ?? { main: { name: "db", binding, migrations } };
+
   return {
-    config: { binding, migrations },
+    config,
     state: {},
     emit: vi.fn(),
     require: requireFn as D1Ctx["require"],
@@ -369,22 +373,46 @@ describe("createD1Api", () => {
   // ── deployManifest ────────────────────────────────────────────────────────
 
   describe("deployManifest", () => {
-    it("returns kind:d1 with binding and migrations from ctx.config", () => {
-      const ctx = createMockCtx({ binding: "PROD_DB", migrations: "./migrations" });
+    it("returns one entry per instance with name, binding and migrations from ctx.config", () => {
+      const ctx = createMockCtx({
+        config: { main: { name: "tracker-db", binding: "PROD_DB", migrations: "./migrations" } }
+      });
       const api = createD1Api(ctx);
 
       const manifest = api.deployManifest();
 
-      expect(manifest).toEqual({ kind: "d1", binding: "PROD_DB", migrations: "./migrations" });
+      expect(manifest).toEqual([
+        { kind: "d1", name: "tracker-db", binding: "PROD_DB", migrations: "./migrations" }
+      ]);
     });
 
-    it("returns empty migrations string when not configured", () => {
-      const ctx = createMockCtx({ binding: "DB", migrations: "" });
+    it("omits migrations from an entry when the instance has none", () => {
+      const ctx = createMockCtx({
+        config: { main: { name: "tracker-db", binding: "DB" } }
+      });
+      const api = createD1Api(ctx);
+
+      const [entry] = api.deployManifest();
+
+      expect(entry).toEqual({ kind: "d1", name: "tracker-db", binding: "DB" });
+      expect(entry).not.toHaveProperty("migrations");
+    });
+
+    it("returns one entry per configured instance, order preserved", () => {
+      const ctx = createMockCtx({
+        config: {
+          main: { name: "tracker-db", binding: "DB", migrations: "db/migrations", default: true },
+          analytics: { name: "analytics-db", binding: "ANALYTICS_DB" }
+        }
+      });
       const api = createD1Api(ctx);
 
       const manifest = api.deployManifest();
 
-      expect(manifest).toEqual({ kind: "d1", binding: "DB", migrations: "" });
+      expect(manifest).toEqual([
+        { kind: "d1", name: "tracker-db", binding: "DB", migrations: "db/migrations" },
+        { kind: "d1", name: "analytics-db", binding: "ANALYTICS_DB" }
+      ]);
     });
 
     it("takes no env argument (build-time only)", () => {
@@ -393,6 +421,83 @@ describe("createD1Api", () => {
 
       // Should not throw even with no env
       expect(() => api.deployManifest()).not.toThrow();
+    });
+  });
+
+  // ── use(key) ───────────────────────────────────────────────────────────────
+
+  describe("use(key)", () => {
+    it("binds the surface to the named instance's binding", async () => {
+      const ctx = createMockCtx({
+        config: {
+          main: { name: "tracker-db", binding: "DB", default: true },
+          analytics: { name: "analytics-db", binding: "ANALYTICS_DB" }
+        }
+      });
+      const api = createD1Api(ctx);
+
+      const fakeDb = makeFakeDb();
+      const env = makeEnv(fakeDb, "ANALYTICS_DB");
+
+      api.use("analytics").prepare(env);
+
+      // Resolving the analytics surface used the ANALYTICS_DB binding off env.
+      const resolved = api.use("analytics").prepare(env);
+      expect(resolved).toBe(fakeDb);
+    });
+
+    it("throws a branded error for an unknown instance key", () => {
+      const ctx = createMockCtx({
+        config: { main: { name: "tracker-db", binding: "DB" } }
+      });
+      const api = createD1Api(ctx);
+      const env = makeEnv(makeFakeDb());
+
+      expect(() => api.use("missing").prepare(env)).toThrow(
+        '[moku-worker] No d1 instance "missing". Configured: main.'
+      );
+    });
+  });
+
+  // ── default instance resolution ────────────────────────────────────────────
+
+  describe("default instance resolution", () => {
+    it("top-level methods resolve the sole instance as the default", () => {
+      const ctx = createMockCtx({
+        config: { only: { name: "tracker-db", binding: "DB" } }
+      });
+      const api = createD1Api(ctx);
+      const fakeDb = makeFakeDb();
+      const env = makeEnv(fakeDb);
+
+      expect(api.prepare(env)).toBe(fakeDb);
+    });
+
+    it("top-level methods resolve the instance flagged default:true", () => {
+      const ctx = createMockCtx({
+        config: {
+          main: { name: "main-db", binding: "DB" },
+          analytics: { name: "analytics-db", binding: "ANALYTICS_DB", default: true }
+        }
+      });
+      const api = createD1Api(ctx);
+      const fakeDb = makeFakeDb();
+      const env = makeEnv(fakeDb, "ANALYTICS_DB");
+
+      expect(api.prepare(env)).toBe(fakeDb);
+    });
+
+    it("throws a branded error when several instances lack a default flag", () => {
+      const ctx = createMockCtx({
+        config: {
+          main: { name: "main-db", binding: "DB" },
+          analytics: { name: "analytics-db", binding: "ANALYTICS_DB" }
+        }
+      });
+      const api = createD1Api(ctx);
+      const env = makeEnv(makeFakeDb());
+
+      expect(() => api.prepare(env)).toThrow("[moku-worker] d1 has 2 instances");
     });
   });
 
@@ -493,13 +598,20 @@ describe("createD1Api", () => {
       expect(ctx).toBeDefined();
     });
 
-    it("deployManifest() return has literal kind 'd1'", () => {
-      const ctx = createMockCtx({ binding: "DB", migrations: "" });
+    it("deployManifest() returns an array whose entries have literal kind 'd1'", () => {
+      const ctx = createMockCtx({
+        config: { main: { name: "tracker-db", binding: "DB" } }
+      });
       const api = createD1Api(ctx);
 
       const manifest = api.deployManifest();
 
-      expectTypeOf(manifest.kind).toEqualTypeOf<"d1">();
+      expectTypeOf(manifest).toEqualTypeOf<
+        Array<{ kind: "d1"; name: string; binding: string; migrations?: string }>
+      >();
+      expectTypeOf(manifest[0]).toEqualTypeOf<
+        { kind: "d1"; name: string; binding: string; migrations?: string } | undefined
+      >();
     });
 
     it("@ts-expect-error: no flat ctx.d1 injection (d1 is regular, not core)", () => {

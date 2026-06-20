@@ -102,7 +102,7 @@ describe("core framework (root integration)", () => {
     it("adding kvPlugin mounts app.kv alongside the default app.server", () => {
       const app = createApp({
         plugins: [kvPlugin],
-        pluginConfigs: { kv: { binding: "MY_KV" } }
+        pluginConfigs: { kv: { cache: { name: "core-cache", binding: "MY_KV" } } }
       });
 
       // spec/02 §4: registration is [...defaults, ...extras] — both must be present.
@@ -113,7 +113,7 @@ describe("core framework (root integration)", () => {
     it("the default bindings plugin is still wired when extras are added", () => {
       const app = createApp({
         plugins: [kvPlugin],
-        pluginConfigs: { kv: { binding: "MY_KV" } }
+        pluginConfigs: { kv: { cache: { name: "core-cache", binding: "MY_KV" } } }
       });
 
       expect(app.bindings).toBeDefined();
@@ -126,7 +126,7 @@ describe("core framework (root integration)", () => {
     it("pluginConfigs.kv.binding resolves the value off the per-request env", async () => {
       const app = createApp({
         plugins: [kvPlugin],
-        pluginConfigs: { kv: { binding: "CUSTOM_KV" } }
+        pluginConfigs: { kv: { cache: { name: "core-cache", binding: "CUSTOM_KV" } } }
       });
       const env: WorkerEnv = { CUSTOM_KV: makeFakeKv({ k: "v" }) };
 
@@ -138,7 +138,7 @@ describe("core framework (root integration)", () => {
     it("resolving the overridden binding against an env lacking it throws [moku-worker]", async () => {
       const app = createApp({
         plugins: [kvPlugin],
-        pluginConfigs: { kv: { binding: "CUSTOM_KV" } }
+        pluginConfigs: { kv: { cache: { name: "core-cache", binding: "CUSTOM_KV" } } }
       });
       const env: WorkerEnv = {}; // CUSTOM_KV absent
 
@@ -148,7 +148,7 @@ describe("core framework (root integration)", () => {
     it("the not-bound error names the overridden binding", async () => {
       const app = createApp({
         plugins: [kvPlugin],
-        pluginConfigs: { kv: { binding: "CUSTOM_KV" } }
+        pluginConfigs: { kv: { cache: { name: "core-cache", binding: "CUSTOM_KV" } } }
       });
       const env: WorkerEnv = {};
 
@@ -291,7 +291,7 @@ describe("core framework (root integration)", () => {
     it("the app is usable immediately after createApp (onInit ran synchronously)", async () => {
       const app = createApp({
         plugins: [kvPlugin],
-        pluginConfigs: { kv: { binding: "SESSIONS" } }
+        pluginConfigs: { kv: { sessions: { name: "core-sessions", binding: "SESSIONS" } } }
       });
       const env: WorkerEnv = { SESSIONS: makeFakeKv({ ready: "yes" }) };
 

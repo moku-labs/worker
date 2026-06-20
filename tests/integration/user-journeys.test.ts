@@ -199,6 +199,8 @@ describe("journey: JSON API worker (server + kv + d1)", () => {
     const app = createApp({
       plugins: [kvPlugin, d1Plugin],
       pluginConfigs: {
+        kv: { cache: { name: "journey-cache", binding: "KV" } },
+        d1: { main: { name: "journey-db", binding: "DB" } },
         server: {
           endpoints: [
             endpoint("/users/{id}").get(async ({ params, env, require }) => {
@@ -264,6 +266,7 @@ describe("journey: asset server (server + storage)", () => {
     const app = createApp({
       plugins: [storagePlugin],
       pluginConfigs: {
+        storage: { assets: { name: "journey-files", binding: "ASSETS" } },
         server: {
           endpoints: [
             endpoint("/assets/{key}").get(async ({ params, env, require }) => {
@@ -342,7 +345,7 @@ describe("journey: DO-backed counter (server + durableObjects)", () => {
     const app = createApp({
       plugins: [durableObjectsPlugin],
       pluginConfigs: {
-        durableObjects: { bindings: { counter: "COUNTER" } },
+        durableObjects: { counter: { binding: "COUNTER", className: "Counter" } },
         server: {
           endpoints: [
             endpoint("/count/{room}").get(async ({ params, env, require }) => {
@@ -381,16 +384,19 @@ describe("journey: queue produce -> consume round-trip (server + queues)", () =>
       plugins: [queuesPlugin],
       pluginConfigs: {
         queues: {
-          producers: ["JOBS"],
-          onMessage: async (message: Message) => {
-            processed.push(message.body);
+          jobs: {
+            name: "journey-jobs",
+            binding: "JOBS",
+            onMessage: async (message: Message) => {
+              processed.push(message.body);
+            }
           }
         },
         server: {
           endpoints: [
             endpoint("/enqueue").post(async ({ env, request, require }) => {
               const body = await request.json();
-              await require(queuesPlugin).send(env, "JOBS", body);
+              await require(queuesPlugin).send(env, body);
               return Response.json({ enqueued: true }, { status: 202 });
             })
           ]

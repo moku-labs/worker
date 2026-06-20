@@ -21,30 +21,42 @@ const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("moku-worker
 });
 
 /**
- * Build a stub env that carries a memory-backed ASSETS binding. The bindings
- * plugin resolves env["ASSETS"] by name — here we inject the memory provider
+ * Build a stub env that carries a memory-backed FILES binding. The bindings
+ * plugin resolves env["FILES"] by name — here we inject the memory provider
  * as the bucket value so the R2 provider delegates to it.
  *
- * resolveR2Provider calls bindings.require<R2Bucket>(env, "ASSETS") and then
+ * resolveR2Provider calls bindings.require<R2Bucket>(env, "FILES") and then
  * calls bucket.get/put/delete/list. The memory provider satisfies this
  * interface so it works as an in-process test double.
+ *
+ * @returns The stub env plus the underlying memory provider.
  */
 const makeStubEnv = () => {
   const mem = createMemoryProvider();
   return {
-    env: { ASSETS: mem } as Record<string, unknown>,
+    env: { FILES: mem } as Record<string, unknown>,
     mem
   };
 };
 
-// createApp is synchronous — no start/stop needed (Workers are request-scoped).
-const createTestApp = (uploadDir = "./public") => {
+/**
+ * Create a test app with a single `files` R2 instance. `binding` (env var) and
+ * `name` (CF bucket name) are distinct, mirroring the keyed-map config shape.
+ *
+ * @param upload - Optional deploy-time upload directory for the `files` instance.
+ * @returns The created app instance.
+ */
+const createTestApp = (upload?: string) => {
   const { createApp } = testCoreConfig.createCore(testCoreConfig, {
     plugins: [bindingsPlugin, storagePlugin]
   });
+  const files =
+    upload === undefined
+      ? { name: "tracker-files", binding: "FILES" }
+      : { name: "tracker-files", binding: "FILES", upload };
   return createApp({
     pluginConfigs: {
-      storage: { upload: uploadDir, bucket: "ASSETS" }
+      storage: { files }
     }
   });
 };
@@ -131,12 +143,37 @@ describe("storage plugin (integration)", () => {
     });
   });
 
+  // ───────── use(key) — named instance selection ──────────────────────────────
+
+  describe("use", () => {
+    it("round-trips through a named (non-default) instance", async () => {
+      const { createApp } = testCoreConfig.createCore(testCoreConfig, {
+        plugins: [bindingsPlugin, storagePlugin]
+      });
+      const app = createApp({
+        pluginConfigs: {
+          storage: {
+            files: { name: "tracker-files", binding: "FILES", default: true },
+            uploads: { name: "tracker-uploads", binding: "UPLOADS" }
+          }
+        }
+      });
+      const mem = createMemoryProvider();
+      const env: Record<string, unknown> = { UPLOADS: mem };
+
+      await app.storage.use("uploads").put(env, "avatar.png", "data");
+      const body = await app.storage.use("uploads").get(env, "avatar.png");
+
+      expect(body).not.toBeNull();
+    });
+  });
+
   // ───────── missing binding ─────────────────────────────────────────────────
 
   describe("missing binding", () => {
     it("throws the [moku-worker] error when the binding is absent from env", async () => {
       const app = createTestApp();
-      const emptyEnv: Record<string, unknown> = {}; // no ASSETS key
+      const emptyEnv: Record<string, unknown> = {}; // no FILES key
 
       await expect(app.storage.get(emptyEnv, "k")).rejects.toThrow("[moku-worker]");
     });
@@ -145,12 +182,22 @@ describe("storage plugin (integration)", () => {
   // ───────── deployManifest ──────────────────────────────────────────────────
 
   describe("deployManifest", () => {
-    it("returns { kind:'r2', bucket, upload } reflecting pluginConfigs", () => {
+    it("returns one r2 descriptor per configured instance, reflecting pluginConfigs", () => {
       const app = createTestApp("./public");
 
       const manifest = app.storage.deployManifest();
 
-      expect(manifest).toEqual({ kind: "r2", bucket: "ASSETS", upload: "./public" });
+      expect(manifest).toEqual([
+        { kind: "r2", name: "tracker-files", binding: "FILES", upload: "./public" }
+      ]);
+    });
+
+    it("omits `upload` when the instance does not declare it", () => {
+      const app = createTestApp();
+
+      const manifest = app.storage.deployManifest();
+
+      expect(manifest).toEqual([{ kind: "r2", name: "tracker-files", binding: "FILES" }]);
     });
 
     it("does not require env (build-time only — no env argument)", () => {
@@ -177,11 +224,11 @@ describe("storage plugin (integration)", () => {
       >();
     });
 
-    it("app.storage.deployManifest returns { kind:'r2'; bucket:string; upload:string }", () => {
+    it("app.storage.deployManifest returns an array of r2 descriptors", () => {
       const app = createTestApp();
 
       expectTypeOf(app.storage.deployManifest).toExtend<
-        () => { kind: "r2"; bucket: string; upload: string }
+        () => Array<{ kind: "r2"; name: string; binding: string; upload?: string }>
       >();
     });
 

@@ -45,11 +45,11 @@ export const provisionD1 = async (
   manifest: D1Manifest,
   _ci: boolean
 ): Promise<ProvisionOutcome> => {
-  const output = await runWrangler(["d1", "create", manifest.binding]);
+  const output = await runWrangler(["d1", "create", manifest.name]);
   const id = parseD1DatabaseId(output);
 
   if (manifest.migrations) {
-    await runWrangler(["d1", "migrations", "apply", manifest.binding, "--local"]);
+    await runWrangler(["d1", "migrations", "apply", manifest.name, "--local"]);
   }
 
   return id ? { id } : {};

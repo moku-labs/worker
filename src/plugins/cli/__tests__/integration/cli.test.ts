@@ -31,7 +31,10 @@ vi.mock("../../../deploy/runner", () => ({
 
 vi.mock("../../../deploy/wrangler-config", () => ({
   writeWranglerConfig: vi.fn().mockResolvedValue(undefined),
-  scaffoldWranglerAndCi: vi.fn().mockResolvedValue(undefined)
+  scaffoldWranglerAndCi: vi.fn().mockResolvedValue(undefined),
+  // run()/dev() merge wranglerExtra(ctx.config) into the generated config; the deploy config here
+  // declares no entry/nodeCompat/assets so the real fn returns {} — mirror that.
+  wranglerExtra: vi.fn(() => ({}))
 }));
 
 vi.mock("../../../deploy/providers", () => ({
@@ -104,11 +107,17 @@ const createTestApp = () => {
   });
   return createApp({
     pluginConfigs: {
-      storage: { bucket: "ASSETS", upload: "./public" },
-      kv: { binding: "KV" },
-      d1: { binding: "DB", migrations: "./migrations" },
-      queues: { producers: ["orders"], onMessage: async () => undefined },
-      durableObjects: { bindings: { counter: "COUNTER" } },
+      storage: { files: { name: "tracker-files", binding: "ASSETS", upload: "./public" } },
+      kv: { cache: { name: "tracker-cache", binding: "KV" } },
+      d1: { main: { name: "tracker-db", binding: "DB", migrations: "./migrations" } },
+      queues: {
+        activity: {
+          name: "tracker-activity",
+          binding: "ACTIVITY",
+          onMessage: async () => undefined
+        }
+      },
+      durableObjects: { board: { binding: "BOARD", className: "BoardChannel" } },
       cli: { port: 8787 }
     }
   });
@@ -177,11 +186,12 @@ describe("cli plugin (integration)", () => {
 
       await app.cli.deploy();
 
-      // onInit installed brandedSink (always) — events render through the brand vocabulary,
-      // not the default object-dump sink. (Plain mode off a TTY: the › glyph, no ANSI.)
+      // onInit installed brandedSink (always) — phase events render through the brand vocabulary,
+      // not the default object-dump sink. (Plain mode off a TTY: the › glyph, no ANSI.) The infra
+      // plan + per-resource result are branded PANELS (rendered by the deploy plugin), not › lines.
       const out = consoleOut.join("\n");
       expect(out).toContain("› detect");
-      expect(out).toContain("› kv KV");
+      expect(out).toContain("Provisioned"); // the result panel heading
       expect(out).toContain("› deployed → https://cli-test.workers.dev");
     });
 
@@ -228,32 +238,20 @@ describe("cli plugin (integration)", () => {
       expect(events).toContain("deployed → https://cli-test.workers.dev");
     });
 
-    it("cli hooks log kv KV when provision:resource(kv, KV) is emitted", async () => {
+    it("renders the infra plan + provision result as branded panels on the console", async () => {
       const app = createTestApp();
-
-      const traceBeforeLen = app.log.trace().length;
 
       await app.cli.deploy();
 
-      const events = app.log
-        .trace()
-        .slice(traceBeforeLen)
-        .map(e => e.event);
-      expect(events).toContain("kv KV");
-    });
-
-    it("cli hooks log r2 ASSETS when provision:resource(r2, ASSETS) is emitted", async () => {
-      const app = createTestApp();
-
-      const traceBeforeLen = app.log.trace().length;
-
-      await app.cli.deploy();
-
-      const events = app.log
-        .trace()
-        .slice(traceBeforeLen)
-        .map(e => e.event);
-      expect(events).toContain("r2 ASSETS");
+      // The deploy plugin renders these as boxes (not cli ctx.log lines), so assert on console.
+      // The panels show each resource's stage-suffixed NAME (binding is no longer rendered), and the
+      // app stage is "test" so names get a `-test` suffix (stageName: production = bare).
+      const out = consoleOut.join("\n");
+      expect(out).toContain("Infra plan");
+      expect(out).toContain("Provisioned");
+      expect(out).toContain("tracker-cache-test"); // the kv namespace row
+      expect(out).toContain("tracker-files-test"); // the r2 bucket row
+      expect(out).toContain("created"); // the result summary line
     });
   });
 

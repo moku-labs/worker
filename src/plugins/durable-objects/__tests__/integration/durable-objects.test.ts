@@ -9,6 +9,7 @@ import type { WorkerConfig, WorkerEnv, WorkerEvents } from "../../../../config";
 import { bindingsPlugin } from "../../../bindings";
 import { defineDurableObject } from "../../helpers";
 import { durableObjectsPlugin } from "../../index";
+import type { Config } from "../../types";
 
 // ---------------------------------------------------------------------------
 // Test-local coreConfig — isolates from siblings that may still be stubs.
@@ -50,23 +51,23 @@ const makeFakeNamespace = (): FakeNamespace => ({
 // Test app factory
 // ---------------------------------------------------------------------------
 
-/** Default bindings config used by createTestApp when no override is provided. */
-const defaultTestBindings: Record<string, string> = { counter: "COUNTER" };
+/** Default keyed-map config used by createTestApp when no override is provided. */
+const defaultTestConfig: Config = { board: { binding: "BOARD", className: "BoardChannel" } };
 
 /**
  * Creates a test app with bindingsPlugin ordered before durableObjectsPlugin,
  * satisfying the depends:[bindingsPlugin] requirement.
  *
- * @param bindings - Optional plugin config override for durableObjects.bindings.
+ * @param config - Optional keyed-map plugin config override for durableObjects.
  * @returns The created app instance.
  */
-const createTestApp = (bindings: Record<string, string> = defaultTestBindings) => {
+const createTestApp = (config: Config = defaultTestConfig) => {
   const { createApp } = testCoreConfig.createCore(testCoreConfig, {
     plugins: [bindingsPlugin, durableObjectsPlugin]
   });
   return createApp({
     pluginConfigs: {
-      durableObjects: { bindings }
+      durableObjects: config
     }
   });
 };
@@ -107,23 +108,23 @@ describe("durableObjects plugin (integration)", () => {
   // ─── runtime: get resolves stub ───────────────────────────────────────────
 
   describe("runtime: get resolves a DO stub from a stub env", () => {
-    it("get(env, 'counter', 'room') resolves a stub from COUNTER namespace", () => {
-      const fakeCounter = makeFakeNamespace();
-      const env: WorkerEnv = { COUNTER: fakeCounter };
+    it("get(env, 'board', id) resolves a stub from the BOARD namespace", () => {
+      const fakeBoard = makeFakeNamespace();
+      const env: WorkerEnv = { BOARD: fakeBoard };
 
-      const app = createTestApp({ counter: "COUNTER" });
+      const app = createTestApp();
 
-      const stub = app.durableObjects.get(env, "counter", "room");
+      const stub = app.durableObjects.get(env, "board", "room");
 
       expect(stub).toBeDefined();
       expect((stub as unknown as FakeStub).id.name).toBe("room");
     });
 
-    it("get uses the binding name from config.bindings (logical → CF name)", () => {
+    it("get selects the instance by its logical key (key → instance binding)", () => {
       const fakeChat = makeFakeNamespace();
       const env: WorkerEnv = { CHAT_DO: fakeChat };
 
-      const app = createTestApp({ chat: "CHAT_DO" });
+      const app = createTestApp({ chat: { binding: "CHAT_DO", className: "ChatRoom" } });
 
       const stub = app.durableObjects.get(env, "chat", "room-99");
 
@@ -132,27 +133,45 @@ describe("durableObjects plugin (integration)", () => {
 
     it("get resolves idName via idFromName and returns the stub from namespace.get", () => {
       const fakeNs = makeFakeNamespace();
-      const env: WorkerEnv = { COUNTER: fakeNs };
+      const env: WorkerEnv = { BOARD: fakeNs };
 
-      const app = createTestApp({ counter: "COUNTER" });
+      const app = createTestApp();
 
-      const stub = app.durableObjects.get(env, "counter", "specific-room");
+      const stub = app.durableObjects.get(env, "board", "specific-room");
       expect((stub as unknown as FakeStub).id.name).toBe("specific-room");
+    });
+
+    it("throws a branded error when the logical key is not configured", () => {
+      const env: WorkerEnv = { BOARD: makeFakeNamespace() };
+      const app = createTestApp();
+
+      expect(() => app.durableObjects.get(env, "nope", "room")).toThrow(
+        '[moku-worker] No durableObjects instance "nope".'
+      );
     });
   });
 
   // ─── runtime: deployManifest ──────────────────────────────────────────────
 
   describe("runtime: deployManifest returns correct metadata", () => {
-    it("deployManifest() returns { kind: 'do', bindings } matching pluginConfigs", () => {
-      const app = createTestApp({ counter: "COUNTER" });
+    it("deployManifest() returns one { kind: 'do', binding, className } per instance", () => {
+      const app = createTestApp();
 
       const manifest = app.durableObjects.deployManifest();
 
-      expect(manifest).toEqual({ kind: "do", bindings: { counter: "COUNTER" } });
+      expect(manifest).toEqual([{ kind: "do", binding: "BOARD", className: "BoardChannel" }]);
     });
 
-    it("deployManifest() returns { kind: 'do', bindings: {} } with empty default", () => {
+    it("deployManifest() decouples className from the logical key", () => {
+      const app = createTestApp({ board: { binding: "BOARD", className: "BoardChannel" } });
+
+      const [entry] = app.durableObjects.deployManifest();
+
+      expect(entry?.binding).toBe("BOARD");
+      expect(entry?.className).toBe("BoardChannel");
+    });
+
+    it("deployManifest() returns [] with the empty default config", () => {
       const { createApp } = testCoreConfig.createCore(testCoreConfig, {
         plugins: [bindingsPlugin, durableObjectsPlugin]
       });
@@ -160,7 +179,7 @@ describe("durableObjects plugin (integration)", () => {
 
       const manifest = app.durableObjects.deployManifest();
 
-      expect(manifest).toEqual({ kind: "do", bindings: {} });
+      expect(manifest).toEqual([]);
     });
   });
 
@@ -168,12 +187,12 @@ describe("durableObjects plugin (integration)", () => {
 
   describe("re-exported defineDurableObject: consumer can extend the base class", () => {
     it("a class from defineDurableObject can be extended and instantiated", () => {
-      const Base = defineDurableObject("Counter");
+      const Base = defineDurableObject("BoardChannel");
 
       expect(Base).toBeDefined();
-      expect(Base.doName).toBe("Counter");
+      expect(Base.doName).toBe("BoardChannel");
 
-      class Counter extends Base {
+      class BoardChannel extends Base {
         async fetch(): Promise<Response> {
           return new Response("count");
         }
@@ -181,7 +200,7 @@ describe("durableObjects plugin (integration)", () => {
 
       const fakeState = { storage: {}, id: {} } as unknown as DurableObjectState;
       const fakeEnv: WorkerEnv = {};
-      const instance = new Counter(fakeState, fakeEnv);
+      const instance = new BoardChannel(fakeState, fakeEnv);
 
       expect(instance.ctx).toBe(fakeState);
       expect(instance.env).toBe(fakeEnv);
@@ -197,7 +216,11 @@ describe("durableObjects plugin (integration)", () => {
         const { createApp } = testCoreConfig.createCore(testCoreConfig, {
           plugins: [bindingsPlugin, durableObjectsPlugin]
         });
-        createApp({ pluginConfigs: { durableObjects: { bindings: { counter: "COUNTER" } } } });
+        createApp({
+          pluginConfigs: {
+            durableObjects: { board: { binding: "BOARD", className: "BoardChannel" } }
+          }
+        });
       }).not.toThrow();
     });
   });
@@ -214,30 +237,32 @@ describe("durableObjects plugin (integration)", () => {
 
     it("get(env, logical, id) returns DurableObjectStub synchronously (not a Promise)", () => {
       const fakeNs = makeFakeNamespace();
-      const env: WorkerEnv = { COUNTER: fakeNs };
-      const app = createTestApp({ counter: "COUNTER" });
+      const env: WorkerEnv = { BOARD: fakeNs };
+      const app = createTestApp();
 
-      const result = app.durableObjects.get(env, "counter", "room");
+      const result = app.durableObjects.get(env, "board", "room");
 
       expect(result).not.toBeInstanceOf(Promise);
     });
 
-    it("deployManifest().kind is the literal type 'do'", () => {
-      const app = createTestApp({ counter: "COUNTER" });
+    it("deployManifest() returns an array of { kind: 'do'; binding; className }", () => {
+      const app = createTestApp();
 
       const manifest = app.durableObjects.deployManifest();
 
-      expectTypeOf(manifest.kind).toEqualTypeOf<"do">();
-      expect(manifest.kind).toBe("do");
+      expectTypeOf(manifest).toEqualTypeOf<
+        Array<{ kind: "do"; binding: string; className: string }>
+      >();
+      expect(manifest[0]?.kind).toBe("do");
     });
 
-    it("@ts-expect-error: get('counter', 'room') without env as first arg is rejected", () => {
+    it("@ts-expect-error: get('board', 'room') without env as first arg is rejected", () => {
       const app = createTestApp();
 
       // Wrap in a non-invoked arrow to keep compile-time check without runtime execution.
       const _typeCheckOnly = () => {
         // @ts-expect-error — env is the mandatory first argument; two-arg form is rejected
-        app.durableObjects.get("counter", "room");
+        app.durableObjects.get("board", "room");
       };
 
       expect(_typeCheckOnly).toBeDefined();

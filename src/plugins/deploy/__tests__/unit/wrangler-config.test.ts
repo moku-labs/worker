@@ -73,7 +73,7 @@ describe("writeWranglerConfig", () => {
       const manifest: ExternalManifest = {
         name: "w",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "kv", binding: "SESSIONS" }]
+        resources: [{ kind: "kv", name: "tracker-sessions", binding: "SESSIONS" }]
       };
 
       await writeWranglerConfig(configPath(), manifest);
@@ -83,39 +83,52 @@ describe("writeWranglerConfig", () => {
       expect(kvs).toContainEqual(expect.objectContaining({ binding: "SESSIONS" }));
     });
 
-    it("writes r2_buckets for r2 resources", async () => {
+    it("writes r2_buckets for r2 resources (bucket_name from resource name)", async () => {
       const manifest: ExternalManifest = {
         name: "w",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "r2", bucket: "ASSETS" }]
+        resources: [{ kind: "r2", name: "tracker-assets", binding: "ASSETS" }]
       };
 
       await writeWranglerConfig(configPath(), manifest);
 
       const config = readConfig();
       const r2s = config.r2_buckets as Array<{ binding: string; bucket_name: string }>;
-      expect(r2s).toContainEqual(expect.objectContaining({ binding: "ASSETS" }));
+      expect(r2s).toContainEqual({ binding: "ASSETS", bucket_name: "tracker-assets" });
     });
 
-    it("writes d1_databases for d1 resources", async () => {
+    it("writes d1_databases for d1 resources (database_name from resource name)", async () => {
       const manifest: ExternalManifest = {
         name: "w",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "d1", binding: "DB", migrations: "./migrations" }]
+        resources: [{ kind: "d1", name: "tracker-db", binding: "DB", migrations: "./migrations" }]
       };
 
       await writeWranglerConfig(configPath(), manifest);
 
       const config = readConfig();
-      const dbs = config.d1_databases as Array<{ binding: string }>;
-      expect(dbs).toContainEqual(expect.objectContaining({ binding: "DB" }));
+      const dbs = config.d1_databases as Array<{
+        binding: string;
+        database_name: string;
+        migrations_dir?: string;
+      }>;
+      expect(dbs).toContainEqual(
+        expect.objectContaining({
+          binding: "DB",
+          database_name: "tracker-db",
+          migrations_dir: "./migrations"
+        })
+      );
     });
 
-    it("writes queues for queue resources", async () => {
+    it("writes queues producers for queue resources (queue = resource name)", async () => {
       const manifest: ExternalManifest = {
         name: "w",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "queue", producers: ["orders", "refunds"] }]
+        resources: [
+          { kind: "queue", name: "orders", binding: "ORDERS" },
+          { kind: "queue", name: "refunds", binding: "REFUNDS" }
+        ]
       };
 
       await writeWranglerConfig(configPath(), manifest);
@@ -123,13 +136,14 @@ describe("writeWranglerConfig", () => {
       const config = readConfig();
       const queues = config.queues as { producers?: Array<{ queue: string; binding: string }> };
       expect(queues?.producers).toHaveLength(2);
+      expect(queues?.producers).toContainEqual({ queue: "orders", binding: "ORDERS" });
     });
 
     it("writes durable_objects for do resources", async () => {
       const manifest: ExternalManifest = {
         name: "w",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "do", bindings: { counter: "COUNTER" } }]
+        resources: [{ kind: "do", binding: "COUNTER", className: "Counter" }]
       };
 
       await writeWranglerConfig(configPath(), manifest);
@@ -139,8 +153,37 @@ describe("writeWranglerConfig", () => {
         bindings: Array<{ name: string; class_name: string }>;
       };
       expect(doConfig.bindings).toContainEqual(
-        expect.objectContaining({ name: "COUNTER", class_name: "counter" })
+        expect.objectContaining({ name: "COUNTER", class_name: "Counter" })
       );
+    });
+
+    it("auto-derives a v1 migration registering every DO class as SQLite-backed", async () => {
+      const manifest: ExternalManifest = {
+        name: "w",
+        compatibilityDate: "2026-06-17",
+        resources: [
+          { kind: "do", binding: "BOARD", className: "Board" },
+          { kind: "do", binding: "ROOM", className: "Room" }
+        ]
+      };
+
+      await writeWranglerConfig(configPath(), manifest);
+
+      expect(readConfig().migrations).toEqual([
+        { tag: "v1", new_sqlite_classes: ["Board", "Room"] }
+      ]);
+    });
+
+    it("does NOT write migrations when there are no DO resources", async () => {
+      const manifest: ExternalManifest = {
+        name: "w",
+        compatibilityDate: "2026-06-17",
+        resources: [{ kind: "kv", name: "tracker-cache", binding: "CACHE" }]
+      };
+
+      await writeWranglerConfig(configPath(), manifest);
+
+      expect(readConfig().migrations).toBeUndefined();
     });
 
     it("writes all resource types when manifest has multiple kinds", async () => {
@@ -148,11 +191,11 @@ describe("writeWranglerConfig", () => {
         name: "full-worker",
         compatibilityDate: "2026-06-17",
         resources: [
-          { kind: "kv", binding: "CACHE" },
-          { kind: "r2", bucket: "FILES" },
-          { kind: "d1", binding: "DB" },
-          { kind: "queue", producers: ["jobs"] },
-          { kind: "do", bindings: { counter: "COUNTER" } }
+          { kind: "kv", name: "tracker-cache", binding: "CACHE" },
+          { kind: "r2", name: "tracker-files", binding: "FILES" },
+          { kind: "d1", name: "tracker-db", binding: "DB" },
+          { kind: "queue", name: "tracker-jobs", binding: "JOBS" },
+          { kind: "do", binding: "COUNTER", className: "Counter" }
         ]
       };
 
@@ -167,12 +210,65 @@ describe("writeWranglerConfig", () => {
     });
   });
 
+  describe("wrangler passthrough (main / compatibility_flags / assets)", () => {
+    const manifest: ExternalManifest = {
+      name: "w",
+      compatibilityDate: "2026-06-17",
+      resources: [{ kind: "do", binding: "BOARD", className: "Board" }]
+    };
+
+    it("merges the passthrough keys the manifest cannot derive (main / flags / assets)", async () => {
+      await writeWranglerConfig(
+        configPath(),
+        manifest,
+        {},
+        {
+          main: "src/cloudflare/worker.ts",
+          compatibility_flags: ["nodejs_compat"],
+          assets: { directory: "dist/client", binding: "ASSETS" }
+        }
+      );
+
+      const config = readConfig();
+      expect(config.main).toBe("src/cloudflare/worker.ts");
+      expect(config.compatibility_flags).toEqual(["nodejs_compat"]);
+      expect(config.assets).toEqual({ directory: "dist/client", binding: "ASSETS" });
+      // managed keys still present alongside the passthrough
+      expect(config.durable_objects).toBeDefined();
+      expect(config.migrations).toBeDefined();
+    });
+
+    it("lets deploy-managed resource keys win over a conflicting passthrough", async () => {
+      await writeWranglerConfig(
+        configPath(),
+        manifest,
+        {},
+        {
+          name: "hijacked",
+          durable_objects: { bindings: [] }
+        }
+      );
+
+      const config = readConfig();
+      expect(config.name).toBe("w"); // manifest name wins
+      const doConfig = config.durable_objects as { bindings: unknown[] };
+      expect(doConfig.bindings).toHaveLength(1); // generated DO binding wins
+    });
+
+    it("does not clobber a migrations list already supplied via the passthrough", async () => {
+      const custom = [{ tag: "v1", new_classes: ["Board"] }]; // e.g. non-SQLite DO
+      await writeWranglerConfig(configPath(), manifest, {}, { migrations: custom });
+
+      expect(readConfig().migrations).toEqual(custom);
+    });
+  });
+
   describe("writes captured resource ids", () => {
     it("writes the captured kv namespace id when provided", async () => {
       const manifest: ExternalManifest = {
         name: "w",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "kv", binding: "SESSIONS" }]
+        resources: [{ kind: "kv", name: "tracker-sessions", binding: "SESSIONS" }]
       };
 
       await writeWranglerConfig(configPath(), manifest, { SESSIONS: "ns-abc123" });
@@ -186,7 +282,7 @@ describe("writeWranglerConfig", () => {
       const manifest: ExternalManifest = {
         name: "w",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "d1", binding: "DB" }]
+        resources: [{ kind: "d1", name: "tracker-db", binding: "DB" }]
       };
 
       await writeWranglerConfig(configPath(), manifest, { DB: "uuid-1234" });
@@ -202,7 +298,7 @@ describe("writeWranglerConfig", () => {
       const manifest: ExternalManifest = {
         name: "w",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "kv", binding: "SESSIONS" }]
+        resources: [{ kind: "kv", name: "tracker-sessions", binding: "SESSIONS" }]
       };
 
       await writeWranglerConfig(configPath(), manifest);
@@ -227,7 +323,7 @@ describe("writeWranglerConfig", () => {
       const manifest: ExternalManifest = {
         name: "new-worker",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "kv", binding: "CACHE" }]
+        resources: [{ kind: "kv", name: "tracker-cache", binding: "CACHE" }]
       };
 
       await writeWranglerConfig(configPath(), manifest);
@@ -260,7 +356,7 @@ describe("writeWranglerConfig", () => {
       const manifest: ExternalManifest = {
         name: "w",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "kv", binding: "KV" }]
+        resources: [{ kind: "kv", name: "tracker-kv", binding: "KV" }]
       };
 
       await writeWranglerConfig(configPath(), manifest);

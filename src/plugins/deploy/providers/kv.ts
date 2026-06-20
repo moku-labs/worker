@@ -46,7 +46,7 @@ export const provisionKv = async (
   manifest: KvManifest,
   _ci: boolean
 ): Promise<ProvisionOutcome> => {
-  const output = await runWrangler(["kv", "namespace", "create", manifest.binding]);
+  const output = await runWrangler(["kv", "namespace", "create", manifest.name]);
   const id = parseKvNamespaceId(output);
   return id ? { id } : {};
 };

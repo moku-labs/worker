@@ -1,138 +1,156 @@
 /**
- * @file queues plugin — API factory (send, sendBatch, consume, deployManifest).
+ * @file queues plugin — API factory (send, sendBatch, use, consume, deployManifest).
  *
- * All binding-resolving methods take the per-request `env` as the first argument
- * and resolve the `Queue` via `ctx.require(bindingsPlugin).require<Queue>(env, name)`.
- * The `env` is never stored (SB4 / design §1a) — resolved fresh on every call.
+ * Producer methods take the per-request `env` as the first argument and resolve the `Queue` via
+ * `ctx.require(bindingsPlugin).require<Queue>(env, binding)` — the `env` is never stored (SB4 /
+ * design §1a), resolved fresh on every call, and the instance binding is resolved lazily so an
+ * unconfigured-but-present plugin only errors when actually called.
+ *
+ * Consumer dispatch (`consume`) routes the incoming batch to the matching instance's `onMessage`.
  */
+import type { WorkerEnv } from "../../config";
+import { defaultInstanceKey, pickInstance } from "../../instances";
 import { bindingsPlugin } from "../bindings";
-import type { Ctx } from "./types";
+import type { Api, Config, Ctx, QueueInstance, QueueProducerApi } from "./types";
 
 /**
- * Builds app.queues.* — read by worker.ts queue() delegation (design §1d; spec/02 §7).
+ * Resolve the instance a consumed batch belongs to. With a single instance, that instance always
+ * matches. With several, match the instance whose `name` equals `batch.queue` OR whose stage-suffixed
+ * form (`${name}-`) prefixes it (tolerant of the deploy stage suffix, e.g. `tracker-activity-dev`);
+ * fall back to the default instance when nothing matches.
  *
- * Resolves Queue bindings off the request env per call (never stored — SB4).
- * Emits `queue:message` for observability after each consumed message (F8).
- *
- * @param ctx - Plugin context (own config + require + emit).
- * @returns The queues API surface: send, sendBatch, consume, deployManifest.
+ * @param config - The keyed-map queues config.
+ * @param queueName - The CF queue name from `batch.queue`.
+ * @returns The matched `QueueInstance` (its `onMessage` is what `consume` awaits).
  * @example
  * ```ts
- * // Worker entry (design §1d)
- * export default {
- *   queue: (b, e, c) => app.queues.consume(b, e, c),
- * };
+ * routeInstance(cfg, "tracker-activity-dev"); // → the `activity` instance
  * ```
  */
-export const createQueuesApi = (ctx: Ctx) => {
-  /**
-   * Resolves a named Queue binding from the per-request env.
-   * Throws a [moku-worker]-prefixed error when the binding is absent.
-   *
-   * @param env - Per-request Cloudflare bindings.
-   * @param name - Queue binding name.
-   * @returns The resolved Queue instance.
-   * @example
-   * ```ts
-   * const q = queue(env, "ORDERS");
-   * ```
-   */
-  const queue = (env: Parameters<typeof ctx.config.onMessage>[1], name: string): Queue =>
-    ctx.require(bindingsPlugin).require<Queue>(env, name);
+const routeInstance = (config: Config, queueName: string): QueueInstance => {
+  const keys = Object.keys(config);
+  if (keys.length === 1) {
+    return pickInstance(config, keys[0] as string, "queues");
+  }
+
+  const matched = Object.values(config).find(
+    instance => instance.name === queueName || queueName.startsWith(`${instance.name}-`)
+  );
+  return matched ?? pickInstance(config, defaultInstanceKey(config, "queues"), "queues");
+};
+
+/**
+ * Builds app.queues.* over a keyed map of Queue instances — read by worker.ts queue() delegation
+ * (design §1d; spec/02 §7). The default-instance producer methods and `use(key)` both resolve the
+ * Queue off the REQUEST-SUPPLIED env on every call (env is threaded, never stored — SB4); the
+ * instance key is resolved lazily. Emits `queue:message` for observability after each consumed
+ * message (F8).
+ *
+ * @param ctx - Plugin context (keyed-map config + require + emit).
+ * @returns The queues API surface: send, sendBatch, use, consume, deployManifest.
+ * @example
+ * ```ts
+ * const api = createQueuesApi(ctx);
+ * await api.send(env, { orderId: "1" });            // default instance
+ * await api.use("activity").send(env, { id: 2 });   // a named instance
+ * // Worker entry (design §1d): queue: (b, e, c) => app.queues.consume(b, e, c)
+ * ```
+ */
+export const createQueuesApi = (ctx: Ctx): Api => {
+  const bindings = ctx.require(bindingsPlugin);
+
+  // The send/sendBatch surface bound to one instance, resolved lazily by binding-getter so the
+  // default key (and a `use(key)` lookup) is resolved at call time, not at createApp time.
+  // eslint-disable-next-line jsdoc/require-jsdoc -- internal closure
+  const surface = (binding: () => string): QueueProducerApi => {
+    // eslint-disable-next-line jsdoc/require-jsdoc -- internal closure
+    const queue = (env: WorkerEnv): Queue => bindings.require<Queue>(env, binding());
+    return {
+      /**
+       * Enqueue a single message onto this instance's queue.
+       *
+       * @param env - The per-request Cloudflare env.
+       * @param body - The message body to enqueue.
+       * @returns Resolves once the message is enqueued.
+       * @example
+       * ```typescript
+       * await api.send(env, { userId: "u1" });
+       * ```
+       */
+      send: async (env, body) => {
+        await queue(env).send(body);
+      },
+      /**
+       * Enqueue many messages onto this instance's queue; each element becomes one message.
+       *
+       * @param env - The per-request Cloudflare env.
+       * @param bodies - Array of message bodies; each becomes one message.
+       * @returns Resolves once all messages are enqueued.
+       * @example
+       * ```typescript
+       * await api.sendBatch(env, [{ id: 1 }, { id: 2 }]);
+       * ```
+       */
+      sendBatch: async (env, bodies) => {
+        await queue(env).sendBatch(bodies.map(body => ({ body })));
+      }
+    };
+  };
+
+  // The default instance's binding, resolved lazily (errors only when actually called).
+  // eslint-disable-next-line jsdoc/require-jsdoc -- internal closure
+  const defaultBinding = (): string =>
+    pickInstance(ctx.config, defaultInstanceKey(ctx.config, "queues"), "queues").binding;
 
   return {
+    ...surface(defaultBinding),
     /**
-     * Enqueue a single message onto the named queue.
+     * Select a specific Queue instance by its config key.
      *
-     * Resolves the Queue binding fresh from `env` on every call (SB4).
-     * Request/response work → api method, never emit (F8).
-     *
-     * @param env - Per-request Cloudflare bindings object.
-     * @param q - Target queue binding name in `env`.
-     * @param body - Message body to enqueue.
-     * @returns Resolves once the message is enqueued.
-     * @throws {Error} With a `[moku-worker]` prefix if the binding is missing.
+     * @param key - The instance key (as configured under `pluginConfigs.queues`).
+     * @returns The producer surface bound to that instance.
      * @example
-     * ```ts
-     * await app.queues.send(env, "ORDERS", { orderId: "123" });
+     * ```typescript
+     * await api.use("activity").send(env, { id: 2 });
      * ```
      */
-    send: async (
-      env: Parameters<typeof ctx.config.onMessage>[1],
-      q: string,
-      body: unknown
-    ): Promise<void> => {
-      await queue(env, q).send(body);
-    },
-
+    use: (key: string) => surface(() => pickInstance(ctx.config, key, "queues").binding),
     /**
-     * Enqueue many messages in one call; each element becomes one message.
+     * Consumer dispatch — the Worker's `queue()` export delegates here. Routes the batch to the
+     * matching instance's `onMessage` and emits `queue:message` per message.
      *
-     * Maps each body to `{ body }` before calling `Queue.sendBatch` (design §4.3).
-     *
-     * @param env - Per-request Cloudflare bindings object.
-     * @param q - Target queue binding name in `env`.
-     * @param bodies - Array of message bodies; each becomes one message.
-     * @returns Resolves once all messages are enqueued.
-     * @throws {Error} With a `[moku-worker]` prefix if the binding is missing.
+     * @param batch - The incoming message batch.
+     * @param env - The per-request Cloudflare env.
+     * @param _ctx - The execution context (waitUntil / passThroughOnException); unused.
+     * @returns Resolves after all messages settle.
      * @example
-     * ```ts
-     * await app.queues.sendBatch(env, "ORDERS", orders);
+     * ```typescript
+     * // Worker entry (design §1d): queue: (b, e, c) => app.queues.consume(b, e, c)
      * ```
      */
-    sendBatch: async (
-      env: Parameters<typeof ctx.config.onMessage>[1],
-      q: string,
-      bodies: unknown[]
-    ): Promise<void> => {
-      await queue(env, q).sendBatch(bodies.map(body => ({ body })));
-    },
-
-    /**
-     * Consumer dispatch — the Worker's `queue()` export delegates here.
-     *
-     * Iterates `batch.messages`, **awaits** `config.onMessage(message, env)` per message
-     * (so Cloudflare gets a settled promise and the handler controls ack/retry; F8,
-     * spec/07 §3 — never emit for awaited work), then fire-and-forget emits `queue:message`
-     * for observability. Returns a promise the Worker **must** await so the isolate is not
-     * killed mid-batch.
-     *
-     * @param batch - The incoming message batch from Cloudflare.
-     * @param env - Per-request Cloudflare bindings object.
-     * @param _exec - waitUntil / passThroughOnException (reserved for future use).
-     * @returns Resolves after all messages in the batch are processed.
-     * @throws {Error} Re-throws any error from `config.onMessage` so Cloudflare can retry.
-     * @example
-     * ```ts
-     * // Worker entry
-     * queue: (b, e, c) => app.queues.consume(b, e, c),
-     * ```
-     */
-    consume: async (
-      batch: MessageBatch,
-      env: Parameters<typeof ctx.config.onMessage>[1],
-      _exec: ExecutionContext
-    ): Promise<void> => {
+    consume: async (batch, env, _ctx): Promise<void> => {
+      const instance = routeInstance(ctx.config, batch.queue);
       for (const m of batch.messages) {
-        await ctx.config.onMessage(m, env);
+        if (instance.onMessage) {
+          await instance.onMessage(m, env);
+        }
         ctx.emit("queue:message", { queue: batch.queue, messageId: m.id });
       }
     },
-
     /**
-     * Returns this plugin's deploy metadata, read by the deploy plugin via
-     * `ctx.require(queuesPlugin).deployManifest()` (F6 — never reads sibling config).
+     * Return this plugin's deploy metadata — one descriptor per configured instance.
      *
-     * @returns Deploy manifest entry `{ kind: "queue", producers }`.
+     * @returns One queue deploy descriptor per instance.
      * @example
-     * ```ts
-     * const manifest = ctx.require(queuesPlugin).deployManifest();
-     * // → { kind: "queue", producers: ["orders"] }
+     * ```typescript
+     * const manifest = api.deployManifest(); // [{ kind: "queue", name: "tracker-activity", binding: "ACTIVITY" }]
      * ```
      */
-    deployManifest: (): { kind: "queue"; producers: string[] } => ({
-      kind: "queue" as const,
-      producers: ctx.config.producers
-    })
+    deployManifest: () =>
+      Object.values(ctx.config).map(instance => ({
+        kind: "queue" as const,
+        name: instance.name,
+        binding: instance.binding
+      }))
   };
 };

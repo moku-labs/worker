@@ -28,7 +28,10 @@ vi.mock("../../src/plugins/deploy/runner", () => ({
   runWrangler: vi.fn().mockResolvedValue("https://deploy-test.workers.dev")
 }));
 
-vi.mock("../../src/plugins/deploy/wrangler-config", () => ({
+vi.mock("../../src/plugins/deploy/wrangler-config", async importActual => ({
+  // Stub only the two side-effecting (node:fs) writers; keep the PURE `wranglerExtra`
+  // (the typed entry/nodeCompat/assets/wrangler → extra-keys mapper) the real run() now calls.
+  ...(await importActual<typeof import("../../src/plugins/deploy/wrangler-config")>()),
   writeWranglerConfig: vi.fn().mockResolvedValue(undefined),
   scaffoldWranglerAndCi: vi.fn().mockResolvedValue(undefined)
 }));
@@ -186,11 +189,11 @@ const createToolingApp = () =>
     ],
     config: { stage: "test", name: "deploy-test", compatibilityDate: "2026-01-01" },
     pluginConfigs: {
-      storage: { bucket: "ASSETS", upload: "./public" },
-      kv: { binding: "KV" },
-      d1: { binding: "DB", migrations: "./migrations" },
-      queues: { producers: ["JOBS"], onMessage: async () => undefined },
-      durableObjects: { bindings: { counter: "COUNTER" } },
+      storage: { assets: { name: "assets", binding: "ASSETS", upload: "./public" } },
+      kv: { cache: { name: "kv", binding: "KV" } },
+      d1: { main: { name: "db", binding: "DB", migrations: "./migrations" } },
+      queues: { jobs: { name: "jobs", binding: "JOBS", onMessage: async () => undefined } },
+      durableObjects: { counter: { binding: "COUNTER", className: "Counter" } },
       cli: { port: 8787 },
       deploy: { configFile: "wrangler.jsonc", ci: false }
     }
@@ -216,7 +219,8 @@ describe("deploy + cli tooling (root integration)", () => {
 
       const { configFile, manifest } = firstWranglerConfigCall();
       expect(configFile).toBe("wrangler.jsonc");
-      expect(manifest.name).toBe("deploy-test");
+      // The worker name is stage-qualified too: stage "test" → base + `-test`.
+      expect(manifest.name).toBe("deploy-test-test");
       expect(manifest.compatibilityDate).toBe("2026-01-01");
 
       const kinds = manifest.resources.map(resource => resource.kind);
@@ -236,11 +240,19 @@ describe("deploy + cli tooling (root integration)", () => {
       const { manifest } = firstWranglerConfigCall();
       const byKind = Object.fromEntries(manifest.resources.map(r => [r.kind, r]));
 
+      // Each entry is now a per-instance descriptor `{ kind, name, binding, … }` (DO carries no
+      // provisioned name — it ships with the Worker — so it declares `binding` + `className`).
+      // Names are stage-qualified: stage "test" suffixes every base name with `-test`.
       expect(byKind.kv?.binding).toBe("KV");
+      expect(byKind.kv?.name).toBe("kv-test");
       expect(byKind.d1?.binding).toBe("DB");
-      expect(byKind.r2?.bucket).toBe("ASSETS");
-      expect(byKind.queue?.producers).toEqual(["JOBS"]);
-      expect(byKind.do?.bindings).toEqual({ counter: "COUNTER" });
+      expect(byKind.d1?.name).toBe("db-test");
+      expect(byKind.r2?.binding).toBe("ASSETS");
+      expect(byKind.r2?.name).toBe("assets-test");
+      expect(byKind.queue?.binding).toBe("JOBS");
+      expect(byKind.queue?.name).toBe("jobs-test");
+      expect(byKind.do?.binding).toBe("COUNTER");
+      expect(byKind.do?.className).toBe("Counter");
     });
   });
 
@@ -310,12 +322,14 @@ describe("deploy + cli tooling (root integration)", () => {
 
       expect(provisions).toHaveLength(5);
 
+      // provision:resource carries `resourceName(resource)`: the stage-qualified Cloudflare name for
+      // the provisioned kinds (kv/d1/r2/queue → base + `-test`), or the exported className for a DO.
       const byKind = Object.fromEntries(provisions.map(payload => [payload.kind, payload.name]));
-      expect(byKind.kv).toBe("KV");
-      expect(byKind.d1).toBe("DB");
-      expect(byKind.r2).toBe("ASSETS");
-      expect(byKind.queue).toBe("JOBS");
-      expect(byKind.do).toBe("COUNTER");
+      expect(byKind.kv).toBe("kv-test");
+      expect(byKind.d1).toBe("db-test");
+      expect(byKind.r2).toBe("assets-test");
+      expect(byKind.queue).toBe("jobs-test");
+      expect(byKind.do).toBe("Counter");
     });
   });
 
@@ -384,13 +398,14 @@ describe("deploy + cli tooling (root integration)", () => {
       await app.cli.deploy({ ci: true });
       await flushEvents();
 
-      // cli registers hook formatters that write one line per event via ctx.log.
-      // The in-memory trace sink is always installed, so the formatted lines appear there.
+      // cli registers hook formatters that write one line per deploy:phase / deploy:complete event
+      // via ctx.log. The in-memory trace sink is always installed, so the formatted lines appear
+      // there. (The infra plan + per-resource result are branded PANELS rendered by the deploy
+      // plugin, not ctx.log lines — so they are not in the trace.)
       const events = app.log.trace().map(entry => entry.event);
 
       expect(events).toContain("detect");
       expect(events).toContain("provision");
-      expect(events).toContain("kv KV");
       expect(events).toContain("deployed → https://deploy-test.workers.dev");
     });
 

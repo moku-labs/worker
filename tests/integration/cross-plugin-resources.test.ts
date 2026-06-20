@@ -133,7 +133,7 @@ describe("cross-plugin resources (root integration)", () => {
       plugins: [kvPlugin],
       config: baseConfig,
       pluginConfigs: {
-        kv: { binding: "MY_KV" },
+        kv: { cache: { name: "xplugin-cache", binding: "MY_KV" } },
         server: {
           endpoints: [
             endpoint("/kv/{key}").get(({ params, env, require }) =>
@@ -164,7 +164,7 @@ describe("cross-plugin resources (root integration)", () => {
       plugins: [kvPlugin],
       config: baseConfig,
       pluginConfigs: {
-        kv: { binding: "MY_KV" },
+        kv: { cache: { name: "xplugin-cache", binding: "MY_KV" } },
         server: {
           endpoints: [
             endpoint("/kv/{key}").put(async ({ params, env, request, require }) => {
@@ -210,7 +210,7 @@ describe("cross-plugin resources (root integration)", () => {
       plugins: [d1Plugin],
       config: baseConfig,
       pluginConfigs: {
-        d1: { binding: "DB", migrations: "" },
+        d1: { main: { name: "xplugin-db", binding: "DB" } },
         server: {
           endpoints: [
             endpoint("/users/{id}").get(async ({ params, env, require }) => {
@@ -244,7 +244,7 @@ describe("cross-plugin resources (root integration)", () => {
       plugins: [storagePlugin],
       config: baseConfig,
       pluginConfigs: {
-        storage: { bucket: "ASSETS", upload: "./public" },
+        storage: { assets: { name: "xplugin-files", binding: "ASSETS" } },
         server: {
           endpoints: [
             endpoint("/assets/{key}").get(async ({ params, env, require }) => {
@@ -285,7 +285,7 @@ describe("cross-plugin resources (root integration)", () => {
       plugins: [durableObjectsPlugin],
       config: baseConfig,
       pluginConfigs: {
-        durableObjects: { bindings: { counter: "COUNTER" } },
+        durableObjects: { counter: { binding: "COUNTER", className: "Counter" } },
         server: {
           endpoints: [
             endpoint("/do/{room}").get(({ params, env, require }) =>
@@ -316,11 +316,11 @@ describe("cross-plugin resources (root integration)", () => {
       plugins: [queuesPlugin],
       config: baseConfig,
       pluginConfigs: {
-        queues: { producers: ["jobs"], onMessage: async () => {} },
+        queues: { jobs: { name: "xplugin-jobs", binding: "JOBS", onMessage: async () => {} } },
         server: {
           endpoints: [
             endpoint("/enqueue").post(async ({ env, require }) => {
-              await require(queuesPlugin).send(env, "JOBS", { task: "x" });
+              await require(queuesPlugin).send(env, { task: "x" });
               return new Response("queued", { status: 202 });
             })
           ]
@@ -349,8 +349,8 @@ describe("cross-plugin resources (root integration)", () => {
       plugins: [kvPlugin, d1Plugin],
       config: baseConfig,
       pluginConfigs: {
-        kv: { binding: "MY_KV" },
-        d1: { binding: "DB", migrations: "" },
+        kv: { cache: { name: "xplugin-cache", binding: "MY_KV" } },
+        d1: { main: { name: "xplugin-db", binding: "DB" } },
         server: {
           endpoints: [
             endpoint("/probe").get(async ({ env, require, has }) => {

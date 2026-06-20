@@ -26,7 +26,8 @@ vi.mock("../../runner", () => ({
 
 vi.mock("../../wrangler-config", () => ({
   writeWranglerConfig: vi.fn().mockResolvedValue(undefined),
-  scaffoldWranglerAndCi: vi.fn().mockResolvedValue(undefined)
+  scaffoldWranglerAndCi: vi.fn().mockResolvedValue(undefined),
+  wranglerExtra: vi.fn(() => ({}))
 }));
 
 vi.mock("../../providers", () => ({
@@ -101,11 +102,11 @@ const createTestApp = (overrides?: { pluginConfigs?: Record<string, unknown> }) 
   });
   return createApp({
     pluginConfigs: {
-      storage: { bucket: "ASSETS", upload: "./public" },
-      kv: { binding: "KV" },
-      d1: { binding: "DB", migrations: "./migrations" },
-      queues: { producers: ["orders"], onMessage: async () => undefined },
-      durableObjects: { bindings: { counter: "COUNTER" } },
+      storage: { assets: { name: "tracker-assets", binding: "ASSETS", upload: "./public" } },
+      kv: { cache: { name: "tracker-kv", binding: "KV" } },
+      d1: { main: { name: "tracker-db", binding: "DB", migrations: "./migrations" } },
+      queues: { orders: { name: "orders", binding: "ORDERS", onMessage: async () => undefined } },
+      durableObjects: { counter: { binding: "COUNTER", className: "Counter" } },
       ...overrides?.pluginConfigs
     }
   });
@@ -198,7 +199,7 @@ describe("deploy plugin (integration)", () => {
       expect(kinds).toContain("do");
     });
 
-    it("manifests name from global config (deploy-test-worker)", async () => {
+    it("manifests name from global config, stage-qualified (deploy-test-worker-test)", async () => {
       const app = createTestApp();
 
       await app.deploy.run();
@@ -206,7 +207,8 @@ describe("deploy plugin (integration)", () => {
       const [[, manifest]] = (writeWranglerConfig as ReturnType<typeof vi.fn>).mock.calls as [
         [string, ExternalManifest]
       ];
-      expect(manifest.name).toBe("deploy-test-worker");
+      // stage "test" → the worker name is stage-suffixed via stageName (production keeps the base).
+      expect(manifest.name).toBe("deploy-test-worker-test");
     });
 
     it("calls provisionResource for each resource in the manifest", async () => {
@@ -222,7 +224,7 @@ describe("deploy plugin (integration)", () => {
       const callerManifest: ExternalManifest = {
         name: "universal-worker",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "kv", binding: "CACHE" }]
+        resources: [{ kind: "kv", name: "tracker-cache", binding: "CACHE" }]
       };
 
       await app.deploy.run({ manifest: callerManifest });
@@ -231,7 +233,7 @@ describe("deploy plugin (integration)", () => {
         [string, ExternalManifest]
       ];
       expect(manifest.name).toBe("universal-worker");
-      expect(manifest.resources).toEqual([{ kind: "kv", binding: "CACHE" }]);
+      expect(manifest.resources).toEqual([{ kind: "kv", name: "tracker-cache", binding: "CACHE" }]);
     });
 
     it("calls runWrangler deploy at the end of the pipeline", async () => {

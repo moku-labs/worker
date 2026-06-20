@@ -47,33 +47,41 @@ const makeKvFake = (initial: Record<string, string> = {}) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Creates a mock Context for direct createKvApi testing.
+ * Creates a mock Context for direct createKvApi testing. The config is the keyed-map shape
+ * (`{ <key>: { name, binding } }`); a single entry is the implicit default.
  * ctx.require(bindingsPlugin) delegates to an in-memory KV fake.
  *
  * @param kvFake - The in-memory KV fake to resolve via require.
  * @param binding - The binding name stored in config (default "KV").
+ * @param key - The instance key under which the namespace is configured (default "cache").
+ * @param name - The base Cloudflare namespace name stored in config (default "tracker-cache").
  * @returns A mock Context compatible with createKvApi.
  */
-const makeMockCtx = (kvFake: ReturnType<typeof makeKvFake>, binding = "KV"): Context => {
+const makeMockCtx = (
+  kvFake: ReturnType<typeof makeKvFake>,
+  binding = "KV",
+  key = "cache",
+  name = "tracker-cache"
+): Context => {
   // Stub bindings API: require<T>(env, name) returns kvFake when name === binding
   const stubBindingsApi = {
-    require: <T>(env: WorkerEnv, name: string): T => {
+    require: <T>(env: WorkerEnv, lookup: string): T => {
       // Prefer env-supplied value (integration-style testing)
-      if (env[name] !== undefined) {
-        return env[name] as T;
+      if (env[lookup] !== undefined) {
+        return env[lookup] as T;
       }
-      if (name === binding) {
+      if (lookup === binding) {
         return kvFake as unknown as T;
       }
       throw new Error(
-        `[moku-worker] binding "${name}" is not bound.\n  Declare it in wrangler config.`
+        `[moku-worker] binding "${lookup}" is not bound.\n  Declare it in wrangler config.`
       );
     },
-    has: (env: WorkerEnv, name: string): boolean => env[name] !== undefined
+    has: (env: WorkerEnv, lookup: string): boolean => env[lookup] !== undefined
   };
 
   const ctx = {
-    config: { binding },
+    config: { [key]: { name, binding } },
     state: {} as Record<string, never>,
     emit: vi.fn() as Context["emit"],
     require: (_plugin: typeof bindingsPlugin) => stubBindingsApi,
@@ -88,7 +96,7 @@ const makeMockCtx = (kvFake: ReturnType<typeof makeKvFake>, binding = "KV"): Con
 // ---------------------------------------------------------------------------
 
 /**
- * Builds a KvApi instance backed by an in-memory KV fake.
+ * Builds a KvApi instance backed by an in-memory KV fake (single-instance keyed-map config).
  *
  * @param kvFake - The KV fake to use.
  * @param binding - The binding name (default "KV").
@@ -96,6 +104,33 @@ const makeMockCtx = (kvFake: ReturnType<typeof makeKvFake>, binding = "KV"): Con
  */
 const makeApi = (kvFake: ReturnType<typeof makeKvFake>, binding = "KV"): KvApi =>
   createKvApi(makeMockCtx(kvFake, binding));
+
+/**
+ * Build a ctx with two configured instances whose bindings resolve to distinct fakes,
+ * so `use(key)` can be shown to pick the right namespace.
+ *
+ * @param cacheFake - The fake the CACHE binding resolves to.
+ * @param sessionsFake - The fake the SESSIONS binding resolves to.
+ * @returns A Context wiring the two fakes by binding name.
+ */
+const twoInstanceCtx = (
+  cacheFake: ReturnType<typeof makeKvFake>,
+  sessionsFake: ReturnType<typeof makeKvFake>
+): Context =>
+  ({
+    config: {
+      cache: { name: "tracker-cache", binding: "CACHE", default: true },
+      sessions: { name: "tracker-sessions", binding: "SESSIONS" }
+    },
+    state: {} as Record<string, never>,
+    emit: vi.fn() as Context["emit"],
+    require: (_plugin: typeof bindingsPlugin) => ({
+      require: <T>(_env: WorkerEnv, name: string): T =>
+        (name === "SESSIONS" ? sessionsFake : cacheFake) as unknown as T,
+      has: (_env: WorkerEnv, _name: string) => true
+    }),
+    has: vi.fn(() => true)
+  }) as unknown as Context;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -225,23 +260,46 @@ describe("kv plugin — unit", () => {
   // ─── deployManifest ───────────────────────────────────────────────────────
 
   describe("deployManifest", () => {
-    it("returns { kind: 'kv', binding: 'KV' } with the default binding", () => {
+    it("returns one [{ kind: 'kv', name, binding }] entry for the default instance", () => {
       const api = makeApi(makeKvFake());
 
-      expect(api.deployManifest()).toEqual({ kind: "kv", binding: "KV" });
+      expect(api.deployManifest()).toEqual([{ kind: "kv", name: "tracker-cache", binding: "KV" }]);
     });
 
     it("reflects the overridden binding name (SESSIONS)", () => {
       const api = makeApi(makeKvFake(), "SESSIONS");
 
-      expect(api.deployManifest()).toEqual({ kind: "kv", binding: "SESSIONS" });
+      expect(api.deployManifest()).toEqual([
+        { kind: "kv", name: "tracker-cache", binding: "SESSIONS" }
+      ]);
+    });
+
+    it("returns one entry per configured instance (keyed map)", () => {
+      const ctx = {
+        config: {
+          cache: { name: "tracker-cache", binding: "CACHE", default: true },
+          sessions: { name: "tracker-sessions", binding: "SESSIONS" }
+        },
+        state: {} as Record<string, never>,
+        emit: vi.fn() as Context["emit"],
+        require: (_plugin: typeof bindingsPlugin) => ({
+          require: <T>(_env: WorkerEnv, _name: string): T => makeKvFake() as unknown as T,
+          has: (_env: WorkerEnv, _name: string) => true
+        }),
+        has: vi.fn(() => true)
+      } as unknown as Context;
+
+      expect(createKvApi(ctx).deployManifest()).toEqual([
+        { kind: "kv", name: "tracker-cache", binding: "CACHE" },
+        { kind: "kv", name: "tracker-sessions", binding: "SESSIONS" }
+      ]);
     });
 
     it("kind is always the literal 'kv' (not a generic string)", () => {
       const api = makeApi(makeKvFake(), "CACHE");
-      const manifest = api.deployManifest();
+      const [entry] = api.deployManifest();
 
-      expect(manifest.kind).toBe("kv");
+      expect(entry?.kind).toBe("kv");
     });
   });
 
@@ -254,7 +312,7 @@ describe("kv plugin — unit", () => {
 
       // Build a ctx whose require routes based on the env passed at call time
       const ctx = {
-        config: { binding: "KV" },
+        config: { cache: { name: "tracker-cache", binding: "KV" } },
         state: {} as Record<string, never>,
         emit: vi.fn() as Context["emit"],
         require: (_plugin: typeof bindingsPlugin) => ({
@@ -277,6 +335,34 @@ describe("kv plugin — unit", () => {
 
       expect(v1).toBe("from-kv1");
       expect(v2).toBe("from-kv2");
+    });
+  });
+
+  // ─── use(key) — named instance selection ──────────────────────────────────
+
+  describe("use(key)", () => {
+    it("use('sessions') reads from the named instance's binding", async () => {
+      const api = createKvApi(
+        twoInstanceCtx(makeKvFake({ k: "from-cache" }), makeKvFake({ k: "from-sessions" }))
+      );
+
+      expect(await api.use("sessions").get({}, "k")).toBe("from-sessions");
+    });
+
+    it("the default surface reads from the instance flagged default: true", async () => {
+      const api = createKvApi(
+        twoInstanceCtx(makeKvFake({ k: "from-cache" }), makeKvFake({ k: "from-sessions" }))
+      );
+
+      expect(await api.get({}, "k")).toBe("from-cache");
+    });
+
+    it("rejects with a [moku-worker] error naming the missing key when use(key) is unconfigured", async () => {
+      const api = createKvApi(twoInstanceCtx(makeKvFake(), makeKvFake()));
+
+      await expect(api.use("nope").get({}, "k")).rejects.toThrow(
+        '[moku-worker] No kv instance "nope"'
+      );
     });
   });
 
@@ -304,17 +390,20 @@ describe("kv plugin — unit", () => {
       expectTypeOf(api.delete(env, "k")).toEqualTypeOf<Promise<void>>();
     });
 
-    it("deployManifest returns { kind: 'kv'; binding: string }", () => {
+    it("deployManifest returns Array<{ kind: 'kv'; name: string; binding: string }>", () => {
       const api = makeApi(makeKvFake());
 
-      expectTypeOf(api.deployManifest()).toEqualTypeOf<{ kind: "kv"; binding: string }>();
+      expectTypeOf(api.deployManifest()).toEqualTypeOf<
+        Array<{ kind: "kv"; name: string; binding: string }>
+      >();
     });
 
-    it("KvApi exposes get, put, delete, list, deployManifest", () => {
+    it("KvApi exposes get, put, delete, list, use, deployManifest", () => {
       expectTypeOf<KvApi>().toHaveProperty("get");
       expectTypeOf<KvApi>().toHaveProperty("put");
       expectTypeOf<KvApi>().toHaveProperty("delete");
       expectTypeOf<KvApi>().toHaveProperty("list");
+      expectTypeOf<KvApi>().toHaveProperty("use");
       expectTypeOf<KvApi>().toHaveProperty("deployManifest");
     });
 

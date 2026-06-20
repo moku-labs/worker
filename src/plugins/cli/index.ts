@@ -2,9 +2,10 @@
  * cli plugin — Standard tier (node-only).
  *
  * Developer-facing CLI surface: `app.cli.dev()` / `app.cli.deploy()`, both thin
- * passthroughs to the deploy plugin. Subscribes to the GLOBAL deploy:phase /
- * provision:resource / deploy:complete events to print a live progress TUI via ctx.log.
- * Emits no events of its own. Excluded from the ./worker runtime bundle (HC11).
+ * passthroughs to the deploy plugin. Subscribes to the GLOBAL deploy:phase / dev:* /
+ * deploy:complete events to print a live progress TUI via ctx.log (the infra plan + per-resource
+ * result are branded panels rendered by the deploy plugin). Emits no events of its own. Excluded
+ * from the ./worker runtime bundle (HC11).
  *
  * @see README.md
  */

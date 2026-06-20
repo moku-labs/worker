@@ -8,6 +8,7 @@ import type { deployPlugin } from "../../../deploy";
 import type {
   AuthStatus,
   InfraPlan,
+  PermissionGroup,
   ProvisionResult,
   TokenRequirement,
   WebBuild
@@ -32,13 +33,14 @@ const makeDeployStub = () => ({
     .mockResolvedValue({ account: "", accountId: "", exists: [], missing: [] }),
   provisionInfra: vi
     .fn<(plan: InfraPlan) => Promise<ProvisionResult>>()
-    .mockResolvedValue({ created: [], skipped: [], ids: {} }),
+    .mockResolvedValue({ created: [], skipped: [], failed: [], ids: {} }),
   verifyAuth: vi
     .fn<() => Promise<AuthStatus>>()
     .mockResolvedValue({ ok: true, account: "Play Co", accountId: "acc-1", scopes: [] }),
   requiredToken: vi
     .fn<() => TokenRequirement>()
     .mockReturnValue({ base: "Edit Cloudflare Workers", required: [], toAdd: [] }),
+  ciToken: vi.fn<() => PermissionGroup[]>().mockReturnValue([]),
   tokenInstructions: vi.fn<() => string>().mockReturnValue("token instructions\nline 2"),
   wrangler: vi.fn<(args: string[]) => Promise<void>>().mockResolvedValue(undefined)
 });
@@ -154,13 +156,15 @@ describe("createCliApi", () => {
       expect(deployStub.run).toHaveBeenCalledWith({ ci: true });
     });
 
-    it("calls run(undefined) when no opts are passed (guided default)", async () => {
+    it("calls run({}) when no opts are passed (guided default; opts spread, no --stage)", async () => {
       const { ctx, deployStub } = makeMockCtx();
       const api = createCliApi(ctx);
 
       await api.deploy();
 
-      expect(deployStub.run).toHaveBeenCalledWith(undefined);
+      // deploy() forwards `{ ...opts, ...(stage ? { stage } : {}) }`; with no opts and no --stage
+      // in argv that collapses to an empty object (not `undefined`).
+      expect(deployStub.run).toHaveBeenCalledWith({});
     });
 
     it("forwards { ci: false } verbatim to run", async () => {
@@ -205,13 +209,14 @@ describe("createCliApi", () => {
   // ─── auth ─────────────────────────────────────────────────────────────────
 
   describe("auth", () => {
-    it("auth('setup') prints deploy.tokenInstructions() without verifying", async () => {
+    it("auth('setup') renders the branded token guidance (LOCAL + CI) without verifying", async () => {
       const { ctx, deployStub } = makeMockCtx();
       const api = createCliApi(ctx);
 
       await api.auth("setup");
 
-      expect(deployStub.tokenInstructions).toHaveBeenCalled();
+      expect(deployStub.requiredToken).toHaveBeenCalled();
+      expect(deployStub.ciToken).toHaveBeenCalled();
       expect(deployStub.verifyAuth).not.toHaveBeenCalled();
     });
 

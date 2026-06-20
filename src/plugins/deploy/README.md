@@ -76,12 +76,13 @@ run(opts?: {
 
 Runs the full deploy pipeline. The phases execute, and emit, in this order:
 
-1. `deploy:phase { phase: "detect" }` — assemble the manifest.
-2. `deploy:phase { phase: "provision" }` — then, per resource, `await` provisioning and emit `provision:resource { kind, name }`.
-3. `deploy:phase { phase: "wrangler-config" }` — write the wrangler config file.
-4. `deploy:phase { phase: "upload", detail: "<n> files" }` — **only** when an R2 resource has an `upload` directory; `n` is the uploaded file count.
-5. `deploy:phase { phase: "deploy" }` — run `wrangler deploy`.
-6. `deploy:complete { url }` — the parsed deployed URL.
+1. `deploy:phase { phase: "auth" }` — verify the `.env` token (guided on a TTY; see below).
+2. `deploy:phase { phase: "detect" }` — assemble the manifest.
+3. `deploy:phase { phase: "provision" }` — then, per resource, `await` provisioning and emit `provision:resource { kind, name }`.
+4. `deploy:phase { phase: "wrangler-config" }` — write the wrangler config file.
+5. `deploy:phase { phase: "upload", detail: "<n> files" }` — **only** when an R2 resource has an `upload` directory; `n` is the uploaded file count.
+6. `deploy:phase { phase: "deploy" }` — run `wrangler deploy`.
+7. `deploy:complete { url }` — the parsed deployed URL.
 
 **Manifest source.** When `opts.manifest` is omitted, the manifest is built from each *present* resource plugin's `deployManifest()` via `ctx.require`, gated by `ctx.has(name)` so absent plugins are skipped. When `opts.manifest` is supplied, it is used **verbatim** (the universal / non-moku path) and no `deployManifest()` calls are made.
 
@@ -91,9 +92,14 @@ Runs the full deploy pipeline. The phases execute, and emit, in this order:
 | `opts.webBuild` | `WebBuild` | Build the web site first (e.g. `() => webApp.cli.build()`). When supplied, an extra `deploy:phase { phase: "build", detail: "web" }` runs right after the auth preflight, before provisioning — so the generated assets exist before the R2 upload and `wrangler deploy`. Wired in from the consumer's app-side script (falls back to `ctx.config.webBuild`). |
 | `opts.manifest` | `ExternalManifest` | Caller-supplied manifest; bypasses `deployManifest()` assembly. |
 
-**Returns:** resolves once `wrangler deploy` completes and `deploy:complete` is emitted.
+**Returns:** resolves once `wrangler deploy` completes and `deploy:complete` is emitted — or once a guided run is aborted (see below), which resolves after emitting `deploy:phase { phase: "aborted" }`.
 
-**Throws:** propagates the `Error` from the wrangler subprocess (`[moku-worker] wrangler exited with code <n>` or `[moku-worker] Failed to spawn wrangler`) when provisioning, upload, or deploy fails.
+**Guided recovery (TTY).** On an interactive terminal (not `ci`, stdout is a TTY) every failure point is *guided* rather than thrown:
+
+- **Auth.** A missing/invalid `CLOUDFLARE_API_TOKEN` surfaces the reason, then offers a guided setup: it renders a **branded panel** of exactly which token to create (dashboard URL, the `"Edit Cloudflare Workers"` template, and which permissions to add — derived from your manifest, so D1/Queues are flagged) and **scaffolds a `.env.local`** (same guidance baked in as comments) for you to paste the token + account id into — never clobbering an existing one. Because the env is snapshotted at app start, a freshly-pasted token only takes effect on a **new** run — the prompt points you there and the deploy aborts cleanly. The same panel renders for the `auth setup` command (which also shows the reduced CI token).
+- **Build / infra / upload / `wrangler deploy`.** A failure renders the error + a one-line hint, then offers **Retry?**. Provisioning re-plans each attempt, so a partially-created plan stays idempotent. Declining a retry aborts cleanly (the error is shown once, not re-rendered).
+
+**Throws:** only in `ci` / non-interactive runs (fail-fast). The first failure — auth, infra preflight, provisioning, upload, or the wrangler subprocess (`[moku-worker] wrangler exited with code <n>` / `[moku-worker] Failed to spawn wrangler`) — propagates to the caller (the `cli` plugin renders it as a branded `✗` + non-zero exit).
 
 ```typescript
 // Moku path — manifest assembled from each resource plugin's deployManifest()
@@ -212,7 +218,9 @@ Notes on the generated config:
 | `provision:resource` | `{ kind: "kv" \| "r2" \| "d1" \| "queue" \| "do"; name: string }` | Once per provisioned resource. |
 | `deploy:complete` | `{ url: string }` | After `wrangler deploy` succeeds. |
 
-The plugin **listens to nothing** (no hooks). `emit` is fire-and-forget observability only — all work that must complete (provision, upload, `wrangler deploy`) is `await`ed through the api, never driven through `emit`. The plugin only ever emits its own three events; it never emits another plugin's event via a cast.
+The plugin **listens to nothing** (no hooks). `emit` is fire-and-forget observability only — all work that must complete (provision, upload, `wrangler deploy`) is `await`ed through the api, never driven through `emit`. It never emits another plugin's event via a cast.
+
+**Provision rendering = branded panels.** The infra plan (what will be created vs already exists) and the provision result (created `✓` / skipped `~` / failed `✗`, with a summary — each failure's **full reason** ANSI-stripped, word-wrapped and printed below the box so it stays readable) are rendered by the deploy plugin as branded **boxes** (see `infra/render.ts`) — both interactively and in CI. The `provision:plan` / `provision:resource` / `provision:skip` events are still emitted (a consumer can hook them), but the `cli` plugin no longer renders them as flat `›` lines, so the panels are the single, un-duplicated provision view. Provisioning is **resilient**: one resource that fails to create (e.g. an invalid R2 bucket name) is captured in the result's `failed` list and shown — it never aborts the rest. On a TTY the run then offers to retry the failed resources; in CI it fails fast.
 
 ## Usage
 

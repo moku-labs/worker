@@ -16,28 +16,37 @@ vi.mock("../../../runner", () => ({
 import { runWrangler } from "../../../runner";
 
 describe("provisionD1", () => {
-  it("calls runWrangler with d1 create args", async () => {
-    await provisionD1({ kind: "d1", binding: "DB" }, false);
+  it("calls runWrangler with d1 create args (by resource name)", async () => {
+    await provisionD1({ kind: "d1", name: "tracker-db", binding: "DB" }, false);
 
-    expect(runWrangler).toHaveBeenCalledWith(expect.arrayContaining(["d1", "create", "DB"]));
+    expect(runWrangler).toHaveBeenCalledWith(
+      expect.arrayContaining(["d1", "create", "tracker-db"])
+    );
   });
 
   it("captures the created database id from wrangler output", async () => {
-    await expect(provisionD1({ kind: "d1", binding: "DB" }, false)).resolves.toEqual({
+    await expect(
+      provisionD1({ kind: "d1", name: "tracker-db", binding: "DB" }, false)
+    ).resolves.toEqual({
       id: "uuid-1234"
     });
   });
 
-  it("applies migrations when a migrations dir is provided", async () => {
-    await provisionD1({ kind: "d1", binding: "DB", migrations: "./migrations" }, false);
+  it("applies migrations (by resource name) when a migrations dir is provided", async () => {
+    await provisionD1(
+      { kind: "d1", name: "tracker-db", binding: "DB", migrations: "./migrations" },
+      false
+    );
 
     expect(runWrangler).toHaveBeenCalledWith(
-      expect.arrayContaining(["d1", "migrations", "apply", "DB", "--local"])
+      expect.arrayContaining(["d1", "migrations", "apply", "tracker-db", "--local"])
     );
   });
 
   it("passes ci flag through (does not throw in ci mode)", async () => {
-    await expect(provisionD1({ kind: "d1", binding: "DB" }, true)).resolves.toEqual({
+    await expect(
+      provisionD1({ kind: "d1", name: "tracker-db", binding: "DB" }, true)
+    ).resolves.toEqual({
       id: "uuid-1234"
     });
   });

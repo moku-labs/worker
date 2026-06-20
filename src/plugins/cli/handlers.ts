@@ -1,5 +1,5 @@
 /**
- * @file cli plugin — hook handler factory (the three deploy-event TUI formatters).
+ * @file cli plugin — hook handler factory (the deploy/dev-event TUI formatters).
  */
 
 import type { LogApi } from "@moku-labs/common";
@@ -24,16 +24,15 @@ export type CliCtx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
   readonly log: LogApi;
 };
 
-/** The hook map cli registers on the global deploy events. */
+/**
+ * The hook map cli registers on the global deploy events. The infra plan + per-resource result are
+ * NOT here — the deploy plugin renders those as branded panels (see infra/render.ts), so the
+ * provision:plan / provision:resource / provision:skip events stay available to consumers without
+ * the cli drawing duplicate flat lines under the panels.
+ */
 export type CliHooks = {
   /** Log one clean line per pipeline phase. */
   "deploy:phase": (payload: WorkerEvents["deploy:phase"]) => void;
-  /** Log the infra preflight summary (existing vs to-create, in account). */
-  "provision:plan": (payload: WorkerEvents["provision:plan"]) => void;
-  /** Log one clean line per provisioned resource. */
-  "provision:resource": (payload: WorkerEvents["provision:resource"]) => void;
-  /** Log one clean line per already-existing resource (skipped). */
-  "provision:skip": (payload: WorkerEvents["provision:skip"]) => void;
   /** Log one clean line per dev-session phase (build / serve / rebuild / …). */
   "dev:phase": (payload: WorkerEvents["dev:phase"]) => void;
   /** Log the per-change site rebuild result. */
@@ -52,12 +51,12 @@ export type CliHooks = {
  * never block the deploy pipeline (fire-and-forget, spec/07 §3,§4).
  *
  * @param ctx - CLI plugin context with injected log core API.
- * @returns Hook map for the three global deploy events.
+ * @returns Hook map for the deploy/dev phase + completion events (provision detail is panel-rendered).
  * @example
  * ```ts
  * const hooks = createCliHooks(ctx);
  * hooks["deploy:phase"]({ phase: "detect" }); // logs "detect" → renders "  › detect"
- * hooks["provision:resource"]({ kind: "kv", name: "KV" }); // logs "kv KV" → "  › kv KV"
+ * hooks["dev:phase"]({ phase: "serve", detail: "http://localhost:8787" }); // "serve · …"
  * hooks["deploy:complete"]({ url: "https://x.workers.dev" }); // "deployed → https://x.workers.dev"
  * ```
  */
@@ -80,45 +79,6 @@ export const createCliHooks = (ctx: CliCtx): CliHooks => {
      */
     "deploy:phase"(p: WorkerEvents["deploy:phase"]): void {
       ctx.log.info(p.detail ? `${p.phase} · ${p.detail}` : p.phase);
-    },
-
-    /**
-     * Log the infra preflight summary: "infra · N exist, M to create · account".
-     *
-     * @param p - The provision:plan event payload.
-     * @example
-     * ```ts
-     * handler({ exists: 2, missing: 1, account: "Play Co" }); // "infra · 2 exist, 1 to create · Play Co"
-     * ```
-     */
-    "provision:plan"(p: WorkerEvents["provision:plan"]): void {
-      ctx.log.info(`infra · ${p.exists} exist, ${p.missing} to create · ${p.account}`);
-    },
-
-    /**
-     * Log one clean line per provisioned resource: "kind name".
-     *
-     * @param p - The provision:resource event payload.
-     * @example
-     * ```ts
-     * handler({ kind: "kv", name: "KV" }); // "kv KV"
-     * ```
-     */
-    "provision:resource"(p: WorkerEvents["provision:resource"]): void {
-      ctx.log.info(`${p.kind} ${p.name}`);
-    },
-
-    /**
-     * Log one clean line per already-existing resource (skipped): "kind name (exists)".
-     *
-     * @param p - The provision:skip event payload.
-     * @example
-     * ```ts
-     * handler({ kind: "kv", name: "KV" }); // "kv KV (exists)"
-     * ```
-     */
-    "provision:skip"(p: WorkerEvents["provision:skip"]): void {
-      ctx.log.info(`${p.kind} ${p.name} (exists)`);
     },
 
     /**

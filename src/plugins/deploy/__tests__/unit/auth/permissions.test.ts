@@ -23,8 +23,8 @@ describe("requiredToken", () => {
   it("requires nothing to add when only kv/r2 are present (covered by the stock template)", () => {
     const { toAdd } = requiredToken(
       manifest([
-        { kind: "kv", binding: "KV" },
-        { kind: "r2", bucket: "ASSETS" }
+        { kind: "kv", name: "cache", binding: "KV" },
+        { kind: "r2", name: "assets", binding: "ASSETS" }
       ])
     );
 
@@ -32,21 +32,25 @@ describe("requiredToken", () => {
   });
 
   it("flags D1 as a permission to add (not in the stock template)", () => {
-    const { required, toAdd } = requiredToken(manifest([{ kind: "d1", binding: "DB" }]));
+    const { required, toAdd } = requiredToken(
+      manifest([{ kind: "d1", name: "db", binding: "DB" }])
+    );
 
     expect(required.map(permission => permission.group)).toContain("Account · D1");
     expect(toAdd.map(permission => permission.group)).toContain("Account · D1");
   });
 
   it("flags Queues as a permission to add", () => {
-    const { toAdd } = requiredToken(manifest([{ kind: "queue", producers: ["orders"] }]));
+    const { toAdd } = requiredToken(
+      manifest([{ kind: "queue", name: "orders", binding: "ORDERS" }])
+    );
 
     expect(toAdd.map(permission => permission.group)).toContain("Account · Queues");
   });
 
   it("requires nothing extra for durable objects (covered by Workers Scripts)", () => {
     const { required } = requiredToken(
-      manifest([{ kind: "do", bindings: { counter: "COUNTER" } }])
+      manifest([{ kind: "do", binding: "COUNTER", className: "Counter" }])
     );
 
     // Only the two ALWAYS groups — DO ships with the script.
@@ -56,8 +60,8 @@ describe("requiredToken", () => {
   it("dedupes a permission when multiple resources of the same kind exist", () => {
     const { required } = requiredToken(
       manifest([
-        { kind: "kv", binding: "A" },
-        { kind: "kv", binding: "B" }
+        { kind: "kv", name: "a", binding: "A" },
+        { kind: "kv", name: "b", binding: "B" }
       ])
     );
 
@@ -68,9 +72,9 @@ describe("requiredToken", () => {
   it("collects D1 + Queues in toAdd for a full app", () => {
     const { toAdd } = requiredToken(
       manifest([
-        { kind: "kv", binding: "KV" },
-        { kind: "d1", binding: "DB" },
-        { kind: "queue", producers: ["q"] }
+        { kind: "kv", name: "cache", binding: "KV" },
+        { kind: "d1", name: "db", binding: "DB" },
+        { kind: "queue", name: "q", binding: "Q" }
       ])
     );
 
@@ -92,9 +96,9 @@ describe("ciToken (reduced automation token)", () => {
     const byGroup = Object.fromEntries(
       ciToken(
         manifest([
-          { kind: "kv", binding: "KV" },
-          { kind: "d1", binding: "DB" },
-          { kind: "queue", producers: ["q"] }
+          { kind: "kv", name: "cache", binding: "KV" },
+          { kind: "d1", name: "db", binding: "DB" },
+          { kind: "queue", name: "q", binding: "Q" }
         ])
       ).map(permission => [permission.group, permission.scope])
     );
@@ -105,7 +109,7 @@ describe("ciToken (reduced automation token)", () => {
   });
 
   it("keeps R2 at Edit (asset upload writes objects)", () => {
-    const r2 = ciToken(manifest([{ kind: "r2", bucket: "ASSETS" }])).find(
+    const r2 = ciToken(manifest([{ kind: "r2", name: "assets", binding: "ASSETS" }])).find(
       permission => permission.group === "Account · Workers R2 Storage"
     );
 
@@ -113,7 +117,7 @@ describe("ciToken (reduced automation token)", () => {
   });
 
   it("omits Account Settings — CI pins CLOUDFLARE_ACCOUNT_ID (no account lookup)", () => {
-    const groups = ciToken(manifest([{ kind: "kv", binding: "KV" }])).map(
+    const groups = ciToken(manifest([{ kind: "kv", name: "cache", binding: "KV" }])).map(
       permission => permission.group
     );
 
@@ -121,6 +125,8 @@ describe("ciToken (reduced automation token)", () => {
   });
 
   it("needs nothing extra for durable objects (ship with the script)", () => {
-    expect(ciToken(manifest([{ kind: "do", bindings: { counter: "COUNTER" } }]))).toHaveLength(1);
+    expect(
+      ciToken(manifest([{ kind: "do", binding: "COUNTER", className: "Counter" }]))
+    ).toHaveLength(1);
   });
 });

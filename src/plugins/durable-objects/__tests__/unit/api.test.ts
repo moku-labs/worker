@@ -6,6 +6,7 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import type { bindingsPlugin } from "../../../bindings";
 import { createDoApi } from "../../api";
+import type { Config } from "../../types";
 
 // ---------------------------------------------------------------------------
 // Fake types
@@ -51,24 +52,21 @@ const makeFakeBindings = (): FakeBindingsApi => ({
 
 // ---------------------------------------------------------------------------
 // Structural mock context factory
-// The api needs config.bindings and ctx.require(bindingsPlugin) — nothing else.
+// The api needs the keyed-map config and ctx.require(bindingsPlugin) — nothing else.
 // We use a structural type, not PluginCtx (which only has config/state/emit).
 // ---------------------------------------------------------------------------
 
 type MockCtx = {
-  config: { bindings: Record<string, string> };
+  config: Config;
   state: Record<string, never>;
   emit: ReturnType<typeof vi.fn>;
   require: (plugin: typeof bindingsPlugin) => FakeBindingsApi;
 };
 
-const createMockCtx = (overrides?: {
-  bindings?: Record<string, string>;
-  bindingsApi?: FakeBindingsApi;
-}): MockCtx => {
+const createMockCtx = (overrides?: { config?: Config; bindingsApi?: FakeBindingsApi }): MockCtx => {
   const bindingsApi = overrides?.bindingsApi ?? makeFakeBindings();
   return {
-    config: { bindings: overrides?.bindings ?? {} },
+    config: overrides?.config ?? {},
     state: {},
     emit: vi.fn(),
     require: (_plugin: typeof bindingsPlugin) => bindingsApi
@@ -80,42 +78,47 @@ const createMockCtx = (overrides?: {
 // ---------------------------------------------------------------------------
 
 describe("createDoApi", () => {
-  // ─── get: logical name → binding mapping ──────────────────────────────────
+  // ─── get: logical key → instance binding ──────────────────────────────────
 
-  describe("get: logical name → configured binding", () => {
-    it("maps logicalName to config.bindings[logicalName] and resolves that binding", () => {
-      const counterNs = makeFakeNamespace();
-      const env = { COUNTER: counterNs };
-      const ctx = createMockCtx({ bindings: { counter: "COUNTER" } });
+  describe("get: logical key → configured instance binding", () => {
+    it("selects the instance by key and resolves env.<binding>", () => {
+      const boardNs = makeFakeNamespace();
+      const env = { BOARD: boardNs };
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
-      const stub = api.get(env, "counter", "room-1");
+      const stub = api.get(env, "board", "room-1");
 
       expect(stub).toBeDefined();
       expect((stub as unknown as FakeStub).id.name).toBe("room-1");
     });
 
-    it("resolves via the CF binding name (COUNTER), not the logical name (counter)", () => {
-      const counterNs = makeFakeNamespace();
-      // Only "COUNTER" is in env — if we resolved by "counter", it would throw
-      const env = { COUNTER: counterNs };
-      const ctx = createMockCtx({ bindings: { counter: "COUNTER" } });
+    it("resolves via the instance binding (BOARD), not the logical key (board)", () => {
+      const boardNs = makeFakeNamespace();
+      // Only "BOARD" is in env — if we resolved by "board", it would throw
+      const env = { BOARD: boardNs };
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
-      const stub = api.get(env, "counter", "room-2");
-      // Successful resolution proves it looked up COUNTER, not counter
+      const stub = api.get(env, "board", "room-2");
+      // Successful resolution proves it looked up BOARD, not board
       expect((stub as unknown as FakeStub).id.name).toBe("room-2");
     });
 
-    it("falls back to logicalName as the binding name when it is absent from config.bindings", () => {
-      const myDoNs = makeFakeNamespace();
-      // The logical name "MY_DO" is not in config.bindings, so falls back to itself
-      const env = { MY_DO: myDoNs };
-      const ctx = createMockCtx({ bindings: {} });
+    it("throws a branded error when the logical key is not configured", () => {
+      const env = { BOARD: makeFakeNamespace() };
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
-      const stub = api.get(env, "MY_DO", "room-3");
-      expect((stub as unknown as FakeStub).id.name).toBe("room-3");
+      expect(() => api.get(env, "missing", "room-3")).toThrow(
+        '[moku-worker] No durableObjects instance "missing".'
+      );
     });
   });
 
@@ -126,12 +129,14 @@ describe("createDoApi", () => {
       const idFromName = vi.fn((name: string): FakeId => ({ name }));
       const get = vi.fn((id: FakeId): FakeStub => ({ id }));
       const fakeNs = { idFromName, get } as unknown as DurableObjectNamespace;
-      const env = { COUNTER: fakeNs };
+      const env = { BOARD: fakeNs };
 
-      const ctx = createMockCtx({ bindings: { counter: "COUNTER" } });
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
-      const stub = api.get(env, "counter", "room-42");
+      const stub = api.get(env, "board", "room-42");
 
       expect(idFromName).toHaveBeenCalledWith("room-42");
       expect(get).toHaveBeenCalledWith({ name: "room-42" });
@@ -144,13 +149,36 @@ describe("createDoApi", () => {
         idFromName: (name: string) => ({ name }),
         get: () => expectedStub
       } as unknown as DurableObjectNamespace;
-      const env = { COUNTER: fakeNs };
+      const env = { BOARD: fakeNs };
 
-      const ctx = createMockCtx({ bindings: { counter: "COUNTER" } });
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
-      const result = api.get(env, "counter", "room-99");
+      const result = api.get(env, "board", "room-99");
       expect(result).toBe(expectedStub as unknown as DurableObjectStub);
+    });
+  });
+
+  // ─── get: default instance resolution ─────────────────────────────────────
+
+  describe("get: multi-instance selection by key", () => {
+    it("selects the right instance among several by its key", () => {
+      const boardNs = makeFakeNamespace();
+      const chatNs = makeFakeNamespace();
+      const env = { BOARD: boardNs, CHAT: chatNs };
+      const ctx = createMockCtx({
+        config: {
+          board: { binding: "BOARD", className: "BoardChannel" },
+          chat: { binding: "CHAT", className: "ChatRoom" }
+        }
+      });
+      const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
+
+      const stub = api.get(env, "chat", "room-7");
+
+      expect((stub as unknown as FakeStub).id.name).toBe("room-7");
     });
   });
 
@@ -160,8 +188,8 @@ describe("createDoApi", () => {
     it("resolves namespace from the provided env on each call (different env = different ns)", () => {
       const ns1 = makeFakeNamespace();
       const ns2 = makeFakeNamespace();
-      const env1 = { COUNTER: ns1 };
-      const env2 = { COUNTER: ns2 };
+      const env1 = { BOARD: ns1 };
+      const env2 = { BOARD: ns2 };
 
       const requireCallArgs: Array<[Record<string, unknown>, string]> = [];
       const trackingBindings: FakeBindingsApi = {
@@ -177,13 +205,13 @@ describe("createDoApi", () => {
       };
 
       const ctx = createMockCtx({
-        bindings: { counter: "COUNTER" },
+        config: { board: { binding: "BOARD", className: "BoardChannel" } },
         bindingsApi: trackingBindings
       });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
-      api.get(env1, "counter", "room-a");
-      api.get(env2, "counter", "room-b");
+      api.get(env1, "board", "room-a");
+      api.get(env2, "board", "room-b");
 
       expect(requireCallArgs).toHaveLength(2);
       expect(requireCallArgs[0]?.[0]).toBe(env1);
@@ -195,12 +223,14 @@ describe("createDoApi", () => {
 
   describe("get: missing binding surfaces error", () => {
     it("throws when the binding is not present on env", () => {
-      const env = {}; // COUNTER not present
-      const ctx = createMockCtx({ bindings: { counter: "COUNTER" } });
+      const env = {}; // BOARD not present
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
-      expect(() => api.get(env, "counter", "room")).toThrow(
-        '[moku-worker] binding "COUNTER" is not bound.'
+      expect(() => api.get(env, "board", "room")).toThrow(
+        '[moku-worker] binding "BOARD" is not bound.'
       );
     });
   });
@@ -208,37 +238,53 @@ describe("createDoApi", () => {
   // ─── deployManifest ───────────────────────────────────────────────────────
 
   describe("deployManifest", () => {
-    it("returns { kind: 'do', bindings: {} } when config.bindings is empty (default)", () => {
-      const ctx = createMockCtx({ bindings: {} });
+    it("returns [] when config is empty (default)", () => {
+      const ctx = createMockCtx({ config: {} });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
       const manifest = api.deployManifest();
 
-      expect(manifest).toEqual({ kind: "do", bindings: {} });
+      expect(manifest).toEqual([]);
     });
 
-    it("returns the correct bindings when overridden from default", () => {
-      const ctx = createMockCtx({ bindings: { counter: "COUNTER" } });
+    it("returns one { kind: 'do', binding, className } entry per configured instance", () => {
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
       const manifest = api.deployManifest();
 
-      expect(manifest).toEqual({ kind: "do", bindings: { counter: "COUNTER" } });
+      expect(manifest).toEqual([{ kind: "do", binding: "BOARD", className: "BoardChannel" }]);
     });
 
-    it("manifest changes when config.bindings differ between two ctx instances", () => {
-      const ctxEmpty = createMockCtx({ bindings: {} });
-      const ctxFull = createMockCtx({ bindings: { chat: "CHAT", counter: "COUNTER" } });
+    it("decouples className from the logical key (key 'board' → class 'BoardChannel')", () => {
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
+      const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
-      const manifestEmpty = createDoApi(
-        ctxEmpty as Parameters<typeof createDoApi>[0]
-      ).deployManifest();
-      const manifestFull = createDoApi(
-        ctxFull as Parameters<typeof createDoApi>[0]
-      ).deployManifest();
+      const [entry] = api.deployManifest();
 
-      expect(manifestEmpty).toEqual({ kind: "do", bindings: {} });
-      expect(manifestFull).toEqual({ kind: "do", bindings: { chat: "CHAT", counter: "COUNTER" } });
+      expect(entry?.className).toBe("BoardChannel");
+      expect(entry?.binding).toBe("BOARD");
+    });
+
+    it("emits one entry per instance for multi-instance configs", () => {
+      const ctx = createMockCtx({
+        config: {
+          board: { binding: "BOARD", className: "BoardChannel" },
+          chat: { binding: "CHAT", className: "ChatRoom" }
+        }
+      });
+      const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
+
+      const manifest = api.deployManifest();
+
+      expect(manifest).toEqual([
+        { kind: "do", binding: "BOARD", className: "BoardChannel" },
+        { kind: "do", binding: "CHAT", className: "ChatRoom" }
+      ]);
     });
   });
 
@@ -250,42 +296,52 @@ describe("createDoApi", () => {
         idFromName: (name: string) => ({ name }),
         get: (id: unknown) => ({ id })
       } as unknown as DurableObjectNamespace;
-      const env = { COUNTER: fakeNs };
+      const env = { BOARD: fakeNs };
 
-      const ctx = createMockCtx({ bindings: { counter: "COUNTER" } });
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
-      const stub = api.get(env, "counter", "room");
+      const stub = api.get(env, "board", "room");
       expect(stub).not.toBeInstanceOf(Promise);
     });
 
-    it("deployManifest().kind is the literal type 'do' (not a generic string)", () => {
-      const ctx = createMockCtx({ bindings: { counter: "COUNTER" } });
+    it("deployManifest() entries' kind is the literal type 'do' (not a generic string)", () => {
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
       const manifest = api.deployManifest();
-      // Runtime assertion: kind is the string "do"
-      expect(manifest.kind).toBe("do");
-      // Type assertion: kind is the literal type "do"
-      expectTypeOf(manifest.kind).toEqualTypeOf<"do">();
+      // Runtime assertion: every entry's kind is the string "do"
+      expect(manifest[0]?.kind).toBe("do");
+      // Type assertion: the array element type is the do descriptor
+      expectTypeOf(manifest).toEqualTypeOf<
+        Array<{ kind: "do"; binding: string; className: string }>
+      >();
     });
 
     it("get takes env as the first argument (WorkerEnv = Record<string, unknown>)", () => {
-      const ctx = createMockCtx({ bindings: { counter: "COUNTER" } });
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
       expectTypeOf(api.get).toBeFunction();
       expectTypeOf(api.get).parameter(0).toEqualTypeOf<Record<string, unknown>>();
     });
 
-    it("@ts-expect-error: get('counter', 'room') without env as first arg is a type error", () => {
-      const ctx = createMockCtx({ bindings: { counter: "COUNTER" } });
+    it("@ts-expect-error: get('board', 'room') without env as first arg is a type error", () => {
+      const ctx = createMockCtx({
+        config: { board: { binding: "BOARD", className: "BoardChannel" } }
+      });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
       // Wrap in a non-invoked arrow to keep compile-time check without runtime execution.
       const _typeCheckOnly = () => {
         // @ts-expect-error — env is mandatory first argument; two-arg form is rejected
-        api.get("counter", "room");
+        api.get("board", "room");
       };
 
       expect(_typeCheckOnly).toBeDefined();

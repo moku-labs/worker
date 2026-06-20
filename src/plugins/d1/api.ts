@@ -3,139 +3,156 @@
  */
 
 import type { WorkerEnv } from "../../config";
+import { defaultInstanceKey, pickInstance } from "../../instances";
 import { bindingsPlugin } from "../bindings";
-import type { D1Ctx, DeployManifest } from "./types";
+import type { D1Ctx } from "./types";
 
 /**
- * Create the d1 api. Each method resolves the D1Database off the request
- * `env` via the bindings plugin, then forwards to the native D1 call. The
- * binding is never cached, so concurrent requests stay isolated (SB4).
+ * Create the d1 api over a keyed map of database instances. The default-database methods and
+ * `use(key)` both resolve the `D1Database` off the REQUEST-SUPPLIED env on every call — env is
+ * threaded, never stored (SB4), so concurrent requests stay isolated — and the instance key is
+ * resolved lazily by binding-getter so an unconfigured-but-present plugin only errors when actually
+ * called.
  *
  * The return is intentionally NOT annotated `: Api`. Annotating it would
  * collapse the per-method call-site generic `<T>` on `query`/`first` to
  * `unknown`; instead the implementation forwards `<T>` to `all<T>()` /
  * `first<T>()` and `types.ts#Api` remains the public-surface source of truth.
  *
- * @param {D1Ctx} ctx - Plugin context (own config + require).
- * @returns {object} The d1 public api (query, first, run, batch, prepare, deployManifest).
+ * @param {D1Ctx} ctx - Plugin context (keyed-map config + require).
+ * @returns {object} The d1 public api (query, first, run, batch, prepare, use, deployManifest).
  * @example
  * ```typescript
  * const api = createD1Api(ctx);
  * const { results } = await api.query<Product>(env, "SELECT * FROM products");
+ * await api.use("analytics").run(env, "INSERT INTO events (name) VALUES (?)", "click");
  * ```
  */
 export const createD1Api = (ctx: D1Ctx) => {
-  // Resolve the request-scoped D1Database from `env`. Private to this closure.
-  // Throws via the bindings resolver if the configured binding is absent.
-  // eslint-disable-next-line jsdoc/require-jsdoc -- private closure, not a public export
-  const db = (env: WorkerEnv): D1Database =>
-    ctx.require(bindingsPlugin).require<D1Database>(env, ctx.config.binding);
+  const bindings = ctx.require(bindingsPlugin);
+
+  // The query/first/run/batch/prepare surface bound to one database, resolved lazily by binding-getter
+  // so the default key (and a `use(key)` lookup) is resolved at call time, not at createApp time.
+  // Throws via the bindings resolver if the configured binding is absent from the request env.
+  // eslint-disable-next-line jsdoc/require-jsdoc -- internal closure
+  const surface = (binding: () => string) => {
+    // eslint-disable-next-line jsdoc/require-jsdoc -- internal closure
+    const db = (env: WorkerEnv): D1Database => bindings.require<D1Database>(env, binding());
+    return {
+      /**
+       * Run a statement against this database and return all rows.
+       *
+       * @param env - The per-request Cloudflare env.
+       * @param sql - SQL with `?` placeholders.
+       * @param params - Bind parameters for the placeholders.
+       * @returns All rows in a D1 result.
+       * @example
+       * ```typescript
+       * const { results } = await api.query<Product>(env, "SELECT * FROM products");
+       * ```
+       */
+      query: <T = unknown>(env: WorkerEnv, sql: string, ...params: unknown[]) =>
+        db(env)
+          .prepare(sql)
+          .bind(...params)
+          .all<T>(),
+      /**
+       * Run a statement against this database and return the first row, or null when none.
+       *
+       * @param env - The per-request Cloudflare env.
+       * @param sql - SQL with `?` placeholders.
+       * @param params - Bind parameters for the placeholders.
+       * @returns The first row, or null if none.
+       * @example
+       * ```typescript
+       * const product = await api.first<Product>(env, "SELECT * FROM products WHERE id = ?", 1);
+       * ```
+       */
+      first: <T = unknown>(env: WorkerEnv, sql: string, ...params: unknown[]) =>
+        db(env)
+          .prepare(sql)
+          .bind(...params)
+          .first<T>(),
+      /**
+       * Run a write/DDL statement against this database and return its result meta.
+       *
+       * @param env - The per-request Cloudflare env.
+       * @param sql - SQL with `?` placeholders.
+       * @param params - Bind parameters for the placeholders.
+       * @returns Result carrying `.meta`.
+       * @example
+       * ```typescript
+       * await api.run(env, "INSERT INTO events (name) VALUES (?)", "click");
+       * ```
+       */
+      run: (env: WorkerEnv, sql: string, ...params: unknown[]) =>
+        db(env)
+          .prepare(sql)
+          .bind(...params)
+          .run(),
+      /**
+       * Execute caller-built prepared statements atomically in one round-trip.
+       *
+       * @param env - The per-request Cloudflare env.
+       * @param stmts - Caller-built prepared statements.
+       * @returns One result per statement, order preserved.
+       * @example
+       * ```typescript
+       * await api.batch(env, [api.prepare(env).prepare("INSERT INTO t (id) VALUES (1)")]);
+       * ```
+       */
+      batch: (env: WorkerEnv, stmts: D1PreparedStatement[]) => db(env).batch(stmts),
+      /**
+       * Resolve the request `D1Database` so callers can build statements for `batch()`.
+       *
+       * @param env - The per-request Cloudflare env.
+       * @returns The request-resolved database handle.
+       * @example
+       * ```typescript
+       * const stmt = api.prepare(env).prepare("SELECT * FROM products");
+       * ```
+       */
+      prepare: (env: WorkerEnv) => db(env)
+    };
+  };
+
+  // eslint-disable-next-line jsdoc/require-jsdoc -- internal closure
+  const defaultBinding = (): string =>
+    pickInstance(ctx.config, defaultInstanceKey(ctx.config, "d1"), "d1").binding;
 
   return {
+    ...surface(defaultBinding),
     /**
-     * Run a statement and return all rows. Forwards the call-site generic to
-     * `all<T>()` so the result type is not widened to `unknown`.
+     * Select a specific D1 database instance by its config key.
      *
-     * @param {WorkerEnv} env - Per-request Cloudflare bindings object.
-     * @param {string} sql - SQL text with `?` placeholders.
-     * @param {unknown[]} params - Bind parameters, in placeholder order.
-     * @returns {Promise<D1Result<T>>} All rows (`.results` is `T[]`).
+     * @param key - The instance key (as configured under `pluginConfigs.d1`).
+     * @returns The SQL surface bound to that database.
      * @example
      * ```typescript
-     * const { results } = await api.query<Product>(env, "SELECT * FROM products WHERE active = ?", 1);
+     * await api.use("analytics").run(env, "INSERT INTO events (name) VALUES (?)", "click");
      * ```
      */
-    query: <T = unknown>(env: WorkerEnv, sql: string, ...params: unknown[]) =>
-      db(env)
-        .prepare(sql)
-        .bind(...params)
-        .all<T>(),
-
+    use: (key: string) => surface(() => pickInstance(ctx.config, key, "d1").binding),
     /**
-     * Run a statement and return the first row, or `null` if there are none.
-     * Forwards the call-site generic to `first<T>()`.
+     * Return this plugin's deploy metadata — one descriptor per configured database.
      *
-     * @param {WorkerEnv} env - Per-request Cloudflare bindings object.
-     * @param {string} sql - SQL text with `?` placeholders.
-     * @param {unknown[]} params - Bind parameters, in placeholder order.
-     * @returns {Promise<T | null>} The first row, or `null` if none matched.
+     * @returns One d1 deploy descriptor per instance.
      * @example
      * ```typescript
-     * const row = await api.first<Product>(env, "SELECT * FROM products WHERE id = ?", id);
+     * const manifest = api.deployManifest(); // [{ kind: "d1", name: "tracker-db", binding: "DB" }]
      * ```
      */
-    first: <T = unknown>(env: WorkerEnv, sql: string, ...params: unknown[]) =>
-      db(env)
-        .prepare(sql)
-        .bind(...params)
-        .first<T>(),
-
-    /**
-     * Run a write/DDL statement (INSERT/UPDATE/DELETE/DDL) and return the
-     * D1 result carrying `.meta` (e.g. `rows_written`, `last_row_id`).
-     *
-     * @param {WorkerEnv} env - Per-request Cloudflare bindings object.
-     * @param {string} sql - SQL text with `?` placeholders.
-     * @param {unknown[]} params - Bind parameters, in placeholder order.
-     * @returns {Promise<D1Result>} Result carrying `.meta`.
-     * @example
-     * ```typescript
-     * const res = await api.run(env, "INSERT INTO products (name) VALUES (?)", name);
-     * const id = res.meta.last_row_id;
-     * ```
-     */
-    run: (env: WorkerEnv, sql: string, ...params: unknown[]) =>
-      db(env)
-        .prepare(sql)
-        .bind(...params)
-        .run(),
-
-    /**
-     * Execute caller-built prepared statements atomically in one round-trip,
-     * returning one result per statement in order.
-     *
-     * @param {WorkerEnv} env - Per-request Cloudflare bindings object.
-     * @param {D1PreparedStatement[]} stmts - Statements built from prepare(env).
-     * @returns {Promise<D1Result[]>} One result per statement, order preserved.
-     * @example
-     * ```typescript
-     * const handle = api.prepare(env);
-     * await api.batch(env, [handle.prepare("INSERT INTO a VALUES (1)").bind()]);
-     * ```
-     */
-    batch: (env: WorkerEnv, stmts: D1PreparedStatement[]) => db(env).batch(stmts),
-
-    /**
-     * Resolve the request-scoped D1Database so callers can build prepared
-     * statements for batch(). Issues no query itself.
-     *
-     * @param {WorkerEnv} env - Per-request Cloudflare bindings object.
-     * @returns {D1Database} The request-resolved database handle.
-     * @example
-     * ```typescript
-     * const handle = api.prepare(env);
-     * const stmt = handle.prepare("SELECT * FROM t").bind();
-     * ```
-     */
-    prepare: (env: WorkerEnv) => db(env),
-
-    /**
-     * Return this plugin's deploy metadata for the deploy plugin to read.
-     * Build-time only — takes no `env`. The return is typed `DeployManifest`
-     * (from types.ts), which pins `kind` to the literal `"d1"` without an
-     * inline `as` assertion.
-     *
-     * @returns {DeployManifest} Deploy manifest entry `{ kind: "d1", binding, migrations }`.
-     * @example
-     * ```typescript
-     * const m = api.deployManifest();
-     * // => { kind: "d1", binding: "DB", migrations: "./migrations" }
-     * ```
-     */
-    deployManifest: (): DeployManifest => ({
-      kind: "d1",
-      binding: ctx.config.binding,
-      migrations: ctx.config.migrations
-    })
+    deployManifest: () =>
+      Object.values(ctx.config).map(instance => {
+        const entry: { kind: "d1"; name: string; binding: string; migrations?: string } = {
+          kind: "d1",
+          name: instance.name,
+          binding: instance.binding
+        };
+        if (instance.migrations !== undefined) {
+          entry.migrations = instance.migrations;
+        }
+        return entry;
+      })
   };
 };

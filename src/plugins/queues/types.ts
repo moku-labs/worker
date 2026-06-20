@@ -98,9 +98,16 @@ export type Api = QueueProducerApi & {
    * Return this plugin's deploy metadata (one entry per configured instance), read by the deploy
    * plugin. Build-time only — takes no env.
    *
-   * @returns One queue deploy descriptor per configured instance.
+   * @returns One queue deploy descriptor per configured instance. `consumer: true` marks an instance
+   *   that declares an `onMessage` handler — the deploy plugin registers those as wrangler
+   *   `consumers` so this Worker actually receives the queue's messages.
    */
-  deployManifest(): Array<{ kind: "queue"; name: string; binding: string }>;
+  deployManifest(): Array<{
+    kind: "queue";
+    name: string;
+    binding: string;
+    consumer?: boolean;
+  }>;
 };
 
 /**

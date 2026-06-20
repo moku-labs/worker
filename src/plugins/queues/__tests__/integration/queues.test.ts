@@ -272,7 +272,7 @@ describe("queues plugin (integration)", () => {
       const app = createTestApp();
 
       expectTypeOf(app.queues.deployManifest()).toEqualTypeOf<
-        Array<{ kind: "queue"; name: string; binding: string }>
+        Array<{ kind: "queue"; name: string; binding: string; consumer?: boolean }>
       >();
     });
 

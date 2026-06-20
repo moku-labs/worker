@@ -139,6 +139,42 @@ describe("writeWranglerConfig", () => {
       expect(queues?.producers).toContainEqual({ queue: "orders", binding: "ORDERS" });
     });
 
+    it("registers a `consumers` entry for queues flagged consumer: true (and not for others)", async () => {
+      const manifest: ExternalManifest = {
+        name: "w",
+        compatibilityDate: "2026-06-17",
+        resources: [
+          { kind: "queue", name: "tracker-activity", binding: "ACTIVITY_QUEUE", consumer: true },
+          { kind: "queue", name: "outbound", binding: "OUTBOUND" }
+        ]
+      };
+
+      await writeWranglerConfig(configPath(), manifest);
+
+      const config = readConfig();
+      const queues = config.queues as {
+        producers?: Array<{ queue: string }>;
+        consumers?: Array<{ queue: string }>;
+      };
+      // Every queue is a producer; only the onMessage-backed one is also a consumer.
+      expect(queues?.producers).toHaveLength(2);
+      expect(queues?.consumers).toEqual([{ queue: "tracker-activity" }]);
+    });
+
+    it("omits `consumers` when no queue is flagged as a consumer", async () => {
+      const manifest: ExternalManifest = {
+        name: "w",
+        compatibilityDate: "2026-06-17",
+        resources: [{ kind: "queue", name: "orders", binding: "ORDERS" }]
+      };
+
+      await writeWranglerConfig(configPath(), manifest);
+
+      const config = readConfig();
+      const queues = config.queues as { consumers?: unknown };
+      expect(queues?.consumers).toBeUndefined();
+    });
+
     it("writes durable_objects for do resources", async () => {
       const manifest: ExternalManifest = {
         name: "w",
@@ -294,18 +330,24 @@ describe("writeWranglerConfig", () => {
       );
     });
 
-    it("writes an empty id when none is captured (e.g. the universal path)", async () => {
+    it("omits the id when none is captured so local dev validates (wrangler rejects an empty id)", async () => {
       const manifest: ExternalManifest = {
         name: "w",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "kv", name: "tracker-sessions", binding: "SESSIONS" }]
+        resources: [
+          { kind: "kv", name: "tracker-sessions", binding: "SESSIONS" },
+          { kind: "d1", name: "tracker-db", binding: "DB" }
+        ]
       };
 
       await writeWranglerConfig(configPath(), manifest);
 
       const config = readConfig();
-      const kvs = config.kv_namespaces as Array<{ binding: string; id: string }>;
-      expect(kvs[0]?.id).toBe("");
+      const kvs = config.kv_namespaces as Array<{ binding: string; id?: string }>;
+      expect(kvs[0]).toEqual({ binding: "SESSIONS" });
+      expect(kvs[0]?.id).toBeUndefined();
+      const d1s = config.d1_databases as Array<{ binding: string; database_id?: string }>;
+      expect(d1s[0]?.database_id).toBeUndefined();
     });
   });
 

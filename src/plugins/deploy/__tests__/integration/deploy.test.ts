@@ -56,10 +56,8 @@ vi.mock("../../auth/verify", () => ({
     .mockResolvedValue({ ok: true, account: "test", accountId: "acct-test", scopes: [] })
 }));
 
-vi.mock("../../dev/runner", async importActual => ({
-  // Keep the real d1MigrationBindings (run()'s remote-migrate step uses it); only mock the
-  // long-lived dev watch loop so the integration test never blocks.
-  ...(await importActual<typeof import("../../dev/runner")>()),
+vi.mock("../../dev/runner", () => ({
+  // Stub the long-lived dev watch loop + its deps so the integration test never blocks.
   runDev: vi.fn().mockResolvedValue(undefined),
   realDevDeps: vi.fn(() => ({}))
 }));

@@ -414,7 +414,6 @@ describe("createDeployApi", () => {
         "detect",
         "provision",
         "wrangler-config",
-        "migrate",
         "upload",
         "deploy"
       ]);
@@ -1217,44 +1216,6 @@ describe("createDeployApi", () => {
 
       // Default mock stage is "test" → the r2 bucket name "assets" is suffixed → "assets-test".
       expect(uploadDirToR2).toHaveBeenCalledWith("assets-test", "./public");
-    });
-  });
-
-  // ───────── remote migrate ────────────────────────────────────────────────────
-
-  describe("remote migrate", () => {
-    it("applies remote d1 migrations (per binding) after writing the config", async () => {
-      const ctx = createMockCtx({ has: name => name === "d1" });
-      const api = createDeployApi(ctx);
-
-      await api.run();
-
-      expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", {
-        phase: "migrate",
-        detail: "d1 (remote)"
-      });
-      expect(runWranglerInherit).toHaveBeenCalledWith([
-        "d1",
-        "migrations",
-        "apply",
-        "DB",
-        "--remote"
-      ]);
-    });
-
-    it("skips the migrate step when no d1 instance declares migrations", async () => {
-      const ctx = createMockCtx({ has: name => name === "kv" }); // no d1
-      const api = createDeployApi(ctx);
-
-      await api.run();
-
-      expect(runWranglerInherit).not.toHaveBeenCalledWith(
-        expect.arrayContaining(["migrations", "apply"])
-      );
-      const phases = ((ctx.emit as ReturnType<typeof vi.fn>).mock.calls as Array<[string, unknown]>)
-        .filter(([event]) => event === "deploy:phase")
-        .map(([, payload]) => (payload as { phase: string }).phase);
-      expect(phases).not.toContain("migrate");
     });
   });
 

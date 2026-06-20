@@ -21,7 +21,7 @@ import { ciToken as deriveCiToken, requiredToken as deriveRequiredToken } from "
 import { renderAuthSetup } from "./auth/render";
 import { envLocalScaffold, tokenInstructions as renderTokenInstructions } from "./auth/setup";
 import { verifyAuth as runVerifyAuth } from "./auth/verify";
-import { d1MigrationBindings, realDevDeps, runDev } from "./dev/runner";
+import { realDevDeps, runDev } from "./dev/runner";
 import { planInfra } from "./infra/plan";
 import { renderPlan, renderProvisionResult, resourceName } from "./infra/render";
 import { stageName } from "./naming";
@@ -136,7 +136,6 @@ const ABORTED = Symbol("deploy:aborted");
 const HINTS = {
   build: "Web build failed — fix the error above, then retry.",
   provision: "Verify your token's account scopes and Cloudflare's status, then retry.",
-  migrate: "Remote D1 migration failed — check your token's D1 scope, then retry.",
   upload: "R2 upload failed — check the bucket and your token's R2 scope, then retry.",
   deploy: "wrangler deploy failed — review the output above, then retry."
 } as const;
@@ -423,36 +422,6 @@ const guidedUpload = async (
 };
 
 /**
- * Apply pending REMOTE D1 migrations once the database is provisioned and the config has its real id,
- * so the deployed Worker has its schema (otherwise the first query 500s with "no such table"). A
- * no-op when no d1 instance declares migrations. wrangler's own confirm prompt is the gate on a TTY;
- * off a TTY (CI) it applies non-interactively. Each binding runs with interactive retry.
- *
- * @param ctx - The deploy plugin context.
- * @param deps - Interactivity + the confirm prompt.
- * @returns True to continue the pipeline; false when the user declined a migration retry (abort).
- * @example
- * ```ts
- * if (!(await guidedMigrate(ctx, deps))) return emitAborted(ctx);
- * ```
- */
-const guidedMigrate = async (ctx: Ctx, deps: GuidedDeps): Promise<boolean> => {
-  const bindings = d1MigrationBindings(ctx);
-  if (bindings.length === 0) return true;
-
-  ctx.emit("deploy:phase", { phase: "migrate", detail: "d1 (remote)" });
-  for (const binding of bindings) {
-    const result = await guidedStep(
-      () => runWranglerInherit(["d1", "migrations", "apply", binding, "--remote"]),
-      HINTS.migrate,
-      deps
-    );
-    if (result === ABORTED) return false;
-  }
-  return true;
-};
-
-/**
  * The final deploy step: confirm the target (guided only), run `wrangler deploy` with interactive
  * retry, then emit deploy:complete. Resolves false when the target gate or a deploy retry is declined.
  *
@@ -571,10 +540,6 @@ export const createDeployApi = (ctx: Ctx) => ({
       provisioned.ids,
       wranglerExtra(ctx.config)
     );
-
-    // Apply pending remote D1 migrations now the database exists and the config carries its id, so
-    // the deployed Worker has its schema — a fresh deploy otherwise 500s on the first D1 query.
-    if (!(await guidedMigrate(ctx, deps))) return emitAborted(ctx);
 
     // Upload the R2 directory when a bucket declares an upload source.
     if (!(await guidedUpload(ctx, manifest, deps))) return emitAborted(ctx);

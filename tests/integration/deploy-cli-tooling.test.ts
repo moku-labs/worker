@@ -62,10 +62,8 @@ vi.mock("../../src/plugins/deploy/auth/verify", () => ({
     .mockResolvedValue({ ok: true, account: "test", accountId: "acct-test", scopes: [] })
 }));
 
-vi.mock("../../src/plugins/deploy/dev/runner", async importActual => ({
-  // Keep the real d1MigrationBindings (run()'s remote-migrate step calls it); only mock the
-  // long-lived dev watch loop so the integration test never blocks.
-  ...(await importActual<typeof import("../../src/plugins/deploy/dev/runner")>()),
+vi.mock("../../src/plugins/deploy/dev/runner", () => ({
+  // Stub the long-lived dev watch loop + its deps so the integration test never blocks.
   runDev: vi.fn().mockResolvedValue(undefined),
   realDevDeps: vi.fn(() => ({}))
 }));
@@ -278,7 +276,6 @@ describe("deploy + cli tooling (root integration)", () => {
         "detect",
         "provision",
         "wrangler-config",
-        "migrate",
         "upload",
         "deploy"
       ]);

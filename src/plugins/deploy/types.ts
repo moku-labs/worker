@@ -31,6 +31,28 @@ export type Config = {
    */
   configFile: string;
   /**
+   * The Worker entry module → wrangler `main` (e.g. "src/cloudflare/worker.ts"). Required for any
+   * real Worker deploy (its absence is wrangler's "Missing entry-point" error).
+   */
+  entry?: string;
+  /**
+   * Enable Node.js compat → `compatibility_flags: ["nodejs_compat"]`. Needed when the Worker bundle
+   * pulls in Node-flavored code (e.g. composing the deploy/cli tooling into the runtime app).
+   */
+  nodeCompat?: boolean;
+  /**
+   * Static assets served via `env.<binding>` → the wrangler `assets` block. `spa: true` sets
+   * `not_found_handling: "single-page-application"` so client-routed deep links resolve to index.html.
+   */
+  assets?: { binding: string; directory: string; spa?: boolean };
+  /**
+   * Escape hatch — extra top-level wrangler keys merged into the generated config for anything the
+   * typed fields above don't cover (`vars`, `routes`, `observability`, `triggers`, …). The
+   * deploy-managed resource keys (name, compatibility_date, kv_namespaces, r2_buckets, d1_databases,
+   * queues, durable_objects, and the auto-derived Durable Object `migrations`) always win over these.
+   */
+  wrangler?: Record<string, unknown>;
+  /**
    * Standing CI/automated default for `run()`. When true (or when stdout is non-TTY) the deploy
    * never prompts and auto-confirms every gate; `run({ ci })` overrides it per call. CF credentials
    * are read from the env (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID) via `ctx.env`. Default false.
@@ -53,13 +75,19 @@ export type Config = {
   debounceMs: number;
 };
 
-/** Discriminated union of resource descriptors returned by each plugin's deployManifest(). */
+/**
+ * Discriminated union of per-INSTANCE resource descriptors. Each resource plugin's `deployManifest()`
+ * returns an ARRAY of these (one per configured instance). `name` is the base Cloudflare resource
+ * name (stage-suffixed downstream via {@link stageName}); `binding` is the stable env var. Durable
+ * Objects carry no provisioned `name` — they ship with the Worker script — and declare the exported
+ * `className` instead.
+ */
 export type ResourceManifest =
-  | { kind: "r2"; bucket: string; upload?: string }
-  | { kind: "kv"; binding: string }
-  | { kind: "d1"; binding: string; migrations?: string }
-  | { kind: "queue"; producers: string[] }
-  | { kind: "do"; bindings: Record<string, string> };
+  | { kind: "r2"; name: string; binding: string; upload?: string }
+  | { kind: "kv"; name: string; binding: string }
+  | { kind: "d1"; name: string; binding: string; migrations?: string }
+  | { kind: "queue"; name: string; binding: string }
+  | { kind: "do"; binding: string; className: string };
 
 /**
  * The whole deploy manifest the pipeline consumes (assembled, or caller-supplied for the
@@ -112,14 +140,29 @@ export type InfraPlan = {
 };
 
 /**
- * Outcome of acting on an {@link InfraPlan}: the resources just created, those skipped because
- * they already existed, and the merged id map (binding → Cloudflare id) for the config writer.
+ * A resource that failed to provision, with the (branded) error message captured so the guided flow
+ * can show WHICH resource failed and why — instead of aborting the whole run on the first failure.
+ */
+export type ProvisionFailure = {
+  /** The resource descriptor that failed to create. */
+  resource: ResourceManifest;
+  /** The captured error message (e.g. the branded wrangler failure). */
+  error: string;
+};
+
+/**
+ * Outcome of acting on an {@link InfraPlan}: the resources just created, those skipped because they
+ * already existed, those that FAILED to create, and the merged id map (binding → Cloudflare id) for
+ * the config writer. Provisioning is resilient — a single resource failure is captured here, not
+ * thrown, so the guided flow can report a clear per-resource result.
  */
 export type ProvisionResult = {
   /** Resources created during this run. */
   created: ProvisionedRef[];
   /** Resources skipped because they already existed. */
   skipped: ProvisionedRef[];
+  /** Resources that failed to create (captured, not thrown). */
+  failed: ProvisionFailure[];
   /** Merged binding → Cloudflare id map (existing + created) for writeWranglerConfig. */
   ids: Record<string, string>;
 };
@@ -258,6 +301,19 @@ export type Api = {
    * ```
    */
   requiredToken(): TokenRequirement;
+
+  /**
+   * Derive the REDUCED Cloudflare API token permission groups for CI/automation redeploys from the
+   * manifest — read-mostly (data resources drop to `Read`; the idempotent preflight only lists),
+   * manifest-scoped. Pure: no network. Used by the branded `auth setup` renderer.
+   *
+   * @returns The CI token permission groups.
+   * @example
+   * ```ts
+   * const groups = app.deploy.ciToken();
+   * ```
+   */
+  ciToken(): PermissionGroup[];
 
   /**
    * Render copy-pasteable `auth setup` guidance from the derived token requirement: the permission

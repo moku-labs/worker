@@ -11,10 +11,12 @@ import { createPlugin } from "../../config";
 import { bindingsPlugin } from "../bindings";
 import { createKvApi } from "./api";
 
-export type { KvApi } from "./api";
+export type { Config, KvApi, KvInstance, KvNamespaceApi } from "./api";
 
-/** Typed default — no inline `as` cast in `config` (R6 / spec/11 §Part 2). */
-const defaultConfig = { binding: "KV" };
+import type { Config } from "./api";
+
+/** Typed default — empty keyed map; the consumer declares instances under `pluginConfigs.kv`. */
+const defaultConfig: Config = {};
 
 /**
  * Micro tier — thin env-first wrapper over a Cloudflare KV namespace.

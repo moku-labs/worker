@@ -142,17 +142,24 @@ export const realDevDeps = (): DevDeps => ({
 });
 
 /**
- * The d1 binding to migrate locally, when a d1 plugin is present in the app.
+ * The d1 bindings to migrate locally — one per configured d1 instance that declares a migrations
+ * directory (empty when no d1 plugin is present, or none declares migrations).
  *
  * @param ctx - The deploy plugin context.
- * @returns The d1 binding name, or undefined when no d1 plugin is present.
+ * @returns The d1 binding names with migrations (e.g. `["DB"]`).
  * @example
  * ```ts
- * const binding = d1Binding(ctx); // "DB" | undefined
+ * const bindings = d1MigrationBindings(ctx); // ["DB"]
  * ```
  */
-const d1Binding = (ctx: Ctx): string | undefined =>
-  ctx.has("d1") ? ctx.require(d1Plugin).deployManifest().binding : undefined;
+const d1MigrationBindings = (ctx: Ctx): string[] =>
+  ctx.has("d1")
+    ? ctx
+        .require(d1Plugin)
+        .deployManifest()
+        .filter(manifest => manifest.migrations !== undefined)
+        .map(manifest => manifest.binding)
+    : [];
 
 /**
  * Rebuild the site once and announce the result. A failed build keeps the session alive (it just
@@ -211,11 +218,13 @@ export const runDev = async (
   ctx.emit("dev:phase", { phase: "build", detail: "site" });
   await deps.build(ctx, webBuild);
 
-  // Apply local D1 migrations when configured and a d1 plugin is present.
-  const binding = d1Binding(ctx);
-  if (ctx.config.migrateLocal && binding !== undefined) {
+  // Apply local D1 migrations when configured — once per d1 instance that declares migrations.
+  const migrationBindings = ctx.config.migrateLocal ? d1MigrationBindings(ctx) : [];
+  if (migrationBindings.length > 0) {
     ctx.emit("dev:phase", { phase: "migrate", detail: "d1 (local)" });
-    await deps.runWrangler(["d1", "migrations", "apply", binding, "--local"]);
+    for (const binding of migrationBindings) {
+      await deps.runWrangler(["d1", "migrations", "apply", binding, "--local"]);
+    }
   }
 
   // Spawn wrangler dev ONCE; it stays up across site rebuilds (its asset server live-reloads).

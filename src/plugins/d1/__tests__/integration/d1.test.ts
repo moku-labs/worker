@@ -72,7 +72,7 @@ const createTestApp = (bindingName = "DB") => {
 
   const app = createApp({
     pluginConfigs: {
-      d1: { binding: bindingName, migrations: "./migrations" }
+      d1: { main: { name: "tracker-db", binding: bindingName, migrations: "./migrations" } }
     }
   });
 
@@ -92,7 +92,16 @@ describe("d1 plugin (integration)", () => {
       expect(typeof app.d1.run).toBe("function");
       expect(typeof app.d1.batch).toBe("function");
       expect(typeof app.d1.prepare).toBe("function");
+      expect(typeof app.d1.use).toBe("function");
       expect(typeof app.d1.deployManifest).toBe("function");
+    });
+
+    it("app.d1.use(key) returns a surface bound to the named instance", () => {
+      const { app, env, fakeD1 } = createTestApp("DB");
+
+      const db = app.d1.use("main").prepare(env);
+
+      expect(db).toBe(fakeD1);
     });
 
     it("bindingsPlugin mounts on app.bindings", () => {
@@ -220,15 +229,17 @@ describe("d1 plugin (integration)", () => {
   // ── deployManifest ────────────────────────────────────────────────────────
 
   describe("deployManifest", () => {
-    it("returns configured binding and migrations", () => {
+    it("returns one entry per configured instance with name, binding and migrations", () => {
       const { app } = createTestApp("DB");
 
       const manifest = app.d1.deployManifest();
 
-      expect(manifest).toEqual({ kind: "d1", binding: "DB", migrations: "./migrations" });
+      expect(manifest).toEqual([
+        { kind: "d1", name: "tracker-db", binding: "DB", migrations: "./migrations" }
+      ]);
     });
 
-    it("returns default config when no pluginConfigs provided", () => {
+    it("returns an empty array when no instances are configured (default empty map)", () => {
       const { createApp: createAppDefault } = coreConfig.createCore(coreConfig, {
         plugins: [bindingsPlugin, d1Plugin]
       });
@@ -236,7 +247,7 @@ describe("d1 plugin (integration)", () => {
 
       const manifest = app.d1.deployManifest();
 
-      expect(manifest).toEqual({ kind: "d1", binding: "DB", migrations: "" });
+      expect(manifest).toEqual([]);
     });
   });
 

@@ -24,11 +24,11 @@ type R2Manifest = Extract<ResourceManifest, { kind: "r2" }>;
  * @returns Resolves once the bucket is created.
  * @example
  * ```ts
- * await provisionR2({ kind: "r2", bucket: "ASSETS" }, false);
+ * await provisionR2({ kind: "r2", name: "tracker-files", binding: "FILES" }, false);
  * ```
  */
 export const provisionR2 = async (manifest: R2Manifest, _ci: boolean): Promise<void> => {
-  await runWrangler(["r2", "bucket", "create", manifest.bucket]);
+  await runWrangler(["r2", "bucket", "create", manifest.name]);
 };
 
 /**

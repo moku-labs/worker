@@ -6,39 +6,46 @@ import type { WorkerEnv, WorkerEvents } from "../../config";
 import type { BindingsApi, bindingsPlugin } from "../bindings";
 
 /**
- * d1 plugin configuration.
+ * A single D1 database instance: its base Cloudflare name + the env binding it resolves off, plus
+ * optional deploy-time migrations metadata.
  *
  * @example
  * ```ts
- * { binding: "DB", migrations: "./migrations" }
+ * { name: "tracker-db", binding: "DB", migrations: "db/migrations" }
  * ```
  */
-export type Config = {
-  /** D1 binding name resolved off the per-request env. */
+export type D1Instance = {
+  /** Base Cloudflare D1 database name (stage-suffixed at deploy). */
+  name: string;
+  /** Env binding name the database resolves off the per-request `env` (e.g. `env.DB`). */
   binding: string;
-  /** Migrations directory; deploy-time metadata only. */
-  migrations: string;
+  /** Migrations directory; deploy-time metadata only. Omit when there are none. */
+  migrations?: string;
+  /** Marks this instance the default when more than one is configured. */
+  default?: boolean;
 };
 
 /**
- * Deploy metadata entry for a D1 database, read by the deploy plugin.
+ * d1 plugin config — a keyed map of D1 database instances. The key is the stable logical id used by
+ * `app.d1.use("key")`; a single entry (or one flagged `default: true`) is the implicit default.
  *
  * @example
  * ```ts
- * { kind: "d1", binding: "DB", migrations: "./migrations" }
+ * { main: { name: "tracker-db", binding: "DB", migrations: "db/migrations" } }
  * ```
  */
-export type DeployManifest = {
-  /** Discriminant identifying this as a D1 resource. */
-  kind: "d1";
-  /** D1 binding name. */
-  binding: string;
-  /** Migrations directory (or "" if none). */
-  migrations: string;
-};
+export type Config = Record<string, D1Instance>;
 
-/** Public api surface of the d1 plugin (thin typed wrappers over prepare().bind()). */
-export type Api = {
+/**
+ * The SQL surface for one D1 database (the thin typed wrappers bound to a single instance).
+ *
+ * @example
+ * ```ts
+ * const { results } = await app.d1.query<Product>(env, "SELECT * FROM products");
+ * await app.d1.use("analytics").run(env, "INSERT INTO events (name) VALUES (?)", "click");
+ * ```
+ */
+export type D1DatabaseApi = {
   /**
    * Run a statement and return all rows.
    *
@@ -81,12 +88,33 @@ export type Api = {
    * @returns The request-resolved database handle.
    */
   prepare: (env: WorkerEnv) => D1Database;
+};
+
+/**
+ * The app.d1 surface — the default database's methods, a `use(key)` selector for the others, plus
+ * deploy metadata.
+ *
+ * @example
+ * ```ts
+ * const { results } = await app.d1.query<Product>(env, "SELECT * FROM products"); // default db
+ * await app.d1.use("analytics").run(env, "INSERT INTO events (name) VALUES (?)", "click");
+ * ```
+ */
+export type Api = D1DatabaseApi & {
   /**
-   * Return this plugin's deploy metadata (read by the deploy plugin).
+   * Select a specific D1 database instance by its config key.
    *
-   * @returns Deploy manifest entry `{ kind: "d1", binding, migrations }`.
+   * @param key - The instance key (as configured under `pluginConfigs.d1`).
+   * @returns The SQL surface bound to that database.
    */
-  deployManifest: () => DeployManifest;
+  use(key: string): D1DatabaseApi;
+  /**
+   * Return this plugin's deploy metadata (one entry per configured database), read by the deploy
+   * plugin. Build-time only — takes no `env`.
+   *
+   * @returns One d1 deploy descriptor per configured instance.
+   */
+  deployManifest(): Array<{ kind: "d1"; name: string; binding: string; migrations?: string }>;
 };
 
 /**

@@ -20,10 +20,16 @@ vi.mock("../../runner", () => ({
   runWranglerInherit: vi.fn().mockResolvedValue(undefined)
 }));
 
-vi.mock("../../wrangler-config", () => ({
-  writeWranglerConfig: vi.fn().mockResolvedValue(undefined),
-  scaffoldWranglerAndCi: vi.fn().mockResolvedValue(undefined)
-}));
+// Only the fs-bound writers are stubbed; wranglerExtra (pure) runs for real so the `extra` arg
+// threaded into writeWranglerConfig is the genuinely-derived passthrough.
+vi.mock("../../wrangler-config", async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    writeWranglerConfig: vi.fn().mockResolvedValue(undefined),
+    scaffoldWranglerAndCi: vi.fn().mockResolvedValue(undefined)
+  };
+});
 
 vi.mock("../../providers", () => ({
   provisionResource: vi.fn().mockResolvedValue({})
@@ -51,6 +57,11 @@ vi.mock("../../auth/verify", () => ({
     .mockResolvedValue({ ok: true, account: "Play Co", accountId: "acc-1", scopes: [] })
 }));
 
+// .env.local scaffolder is fs-bound; mocked. envLocalScaffold (pure) runs for real.
+vi.mock("../../auth/env-file", () => ({
+  ensureEnvLocal: vi.fn().mockResolvedValue({ created: true, path: "/cwd/.env.local" })
+}));
+
 // dev() delegates to runDev; mock it so the long-lived watch loop never runs in unit tests.
 vi.mock("../../dev/runner", () => ({
   runDev: vi.fn().mockResolvedValue(undefined),
@@ -60,7 +71,40 @@ vi.mock("../../dev/runner", () => ({
 // TTY defaults to interactive so the guided path is exercisable; overridden per test.
 vi.mock("../../tty", () => ({ stdoutIsTty: vi.fn(() => true) }));
 
-// Branded prompts mocked — confirm defaults to "yes"; overridden per guided test.
+// A capturing brand-console stub factory — every render method is a spy so the guided-recovery
+// output (error / hint / `auth setup` instructions) is assertable. Hoisted via vi.hoisted so the
+// vi.mock factory below can reference it without tripping vitest's TDZ for top-level consts.
+const { makeUi } = vi.hoisted(() => ({
+  makeUi: () => ({
+    line: vi.fn(),
+    lockup: vi.fn(),
+    heading: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    check: vi.fn(),
+    railLine: vi.fn(() => ""),
+    box: vi.fn(),
+    // Identity palette so the branded renderer (renderAuthSetup) can colorize without throwing.
+    palette: {
+      enabled: false,
+      paint: (_code: unknown, text: string) => text,
+      bold: (text: string) => text,
+      dim: (text: string) => text,
+      green: (text: string) => text,
+      yellow: (text: string) => text,
+      red: (text: string) => text,
+      cyan: (text: string) => text,
+      pink: (text: string) => text
+    } as never,
+    color: false,
+    width: 66
+  })
+}));
+
+// Branded prompts mocked — confirm defaults to "yes"; overridden per guided test. The branded
+// console is stubbed too so the guided-recovery render path is asserted on spies instead of
+// writing real lines to the test runner's stdout.
 vi.mock("@moku-labs/common/cli", async importOriginal => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
@@ -68,7 +112,8 @@ vi.mock("@moku-labs/common/cli", async importOriginal => {
     createBrandPrompts: vi.fn(() => ({
       confirm: vi.fn().mockResolvedValue(true),
       select: vi.fn()
-    }))
+    })),
+    createBrandConsole: vi.fn(() => makeUi())
   };
 });
 
@@ -76,8 +121,9 @@ vi.mock("@moku-labs/common/cli", async importOriginal => {
 // Imports after mocking
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { createBrandPrompts } from "@moku-labs/common/cli";
+import { createBrandConsole, createBrandPrompts } from "@moku-labs/common/cli";
 import { beforeEach } from "vitest";
+import { ensureEnvLocal } from "../../auth/env-file";
 import { verifyAuth } from "../../auth/verify";
 import { runDev } from "../../dev/runner";
 import { planInfra } from "../../infra/plan";
@@ -103,7 +149,9 @@ const makeStorageApi = (uploadDir = "./public") => ({
   list: vi.fn(),
   deployManifest: vi
     .fn()
-    .mockReturnValue({ kind: "r2" as const, bucket: "ASSETS", upload: uploadDir })
+    .mockReturnValue([
+      { kind: "r2" as const, name: "assets", binding: "ASSETS", upload: uploadDir }
+    ])
 });
 
 const makeKvApi = () => ({
@@ -111,7 +159,7 @@ const makeKvApi = () => ({
   put: vi.fn(),
   delete: vi.fn(),
   list: vi.fn(),
-  deployManifest: vi.fn().mockReturnValue({ kind: "kv" as const, binding: "KV" })
+  deployManifest: vi.fn().mockReturnValue([{ kind: "kv" as const, name: "cache", binding: "KV" }])
 });
 
 const makeD1Api = () => ({
@@ -122,19 +170,25 @@ const makeD1Api = () => ({
   prepare: vi.fn(),
   deployManifest: vi
     .fn()
-    .mockReturnValue({ kind: "d1" as const, binding: "DB", migrations: "./migrations" })
+    .mockReturnValue([
+      { kind: "d1" as const, name: "db", binding: "DB", migrations: "./migrations" }
+    ])
 });
 
 const makeQueuesApi = () => ({
   send: vi.fn(),
   sendBatch: vi.fn(),
   consume: vi.fn(),
-  deployManifest: vi.fn().mockReturnValue({ kind: "queue" as const, producers: ["orders"] })
+  deployManifest: vi
+    .fn()
+    .mockReturnValue([{ kind: "queue" as const, name: "orders", binding: "ORDERS" }])
 });
 
 const makeDoApi = () => ({
   get: vi.fn(),
-  deployManifest: vi.fn().mockReturnValue({ kind: "do" as const, bindings: { counter: "COUNTER" } })
+  deployManifest: vi
+    .fn()
+    .mockReturnValue([{ kind: "do" as const, binding: "COUNTER", className: "Counter" }])
 });
 
 type PluginArg =
@@ -198,6 +252,18 @@ const createMockCtx = (overrides?: {
   };
 };
 
+/** Cast a capturing UI stub to the BrandConsole shape for createBrandConsole.mockReturnValueOnce. */
+const asConsole = (ui: ReturnType<typeof makeUi>): ReturnType<typeof createBrandConsole> =>
+  ui as unknown as ReturnType<typeof createBrandConsole>;
+
+/** Stub the next createBrandPrompts() with a controlled confirm (the guided-recovery prompt). */
+const stubPrompts = (confirm: (question: string) => Promise<boolean>): void => {
+  vi.mocked(createBrandPrompts).mockReturnValueOnce({
+    confirm,
+    select: vi.fn<(question: string, choices: readonly string[]) => Promise<number>>()
+  });
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -207,7 +273,10 @@ describe("createDeployApi", () => {
 
   describe("run — manifest assembly", () => {
     it("assembles manifest from each plugin's deployManifest() when has() returns true", async () => {
-      const ctx = createMockCtx();
+      // production stage → resource names stay bare (no `-stage` suffix).
+      const ctx = createMockCtx({
+        global: { name: "test-worker", compatibilityDate: "2026-06-17", stage: "production" }
+      });
       const api = createDeployApi(ctx);
 
       await api.run();
@@ -216,17 +285,26 @@ describe("createDeployApi", () => {
       const [[, manifest]] = (writeWranglerConfig as ReturnType<typeof vi.fn>).mock.calls as [
         [string, ExternalManifest]
       ];
-      expect(manifest.resources).toContainEqual({ kind: "kv", binding: "KV" });
+      expect(manifest.resources).toContainEqual({ kind: "kv", name: "cache", binding: "KV" });
       expect(manifest.resources).toContainEqual(
-        expect.objectContaining({ kind: "r2", bucket: "ASSETS" })
+        expect.objectContaining({ kind: "r2", name: "assets", binding: "ASSETS" })
       );
       expect(manifest.resources).toContainEqual({
         kind: "d1",
+        name: "db",
         binding: "DB",
         migrations: "./migrations"
       });
-      expect(manifest.resources).toContainEqual({ kind: "queue", producers: ["orders"] });
-      expect(manifest.resources).toContainEqual({ kind: "do", bindings: { counter: "COUNTER" } });
+      expect(manifest.resources).toContainEqual({
+        kind: "queue",
+        name: "orders",
+        binding: "ORDERS"
+      });
+      expect(manifest.resources).toContainEqual({
+        kind: "do",
+        binding: "COUNTER",
+        className: "Counter"
+      });
     });
 
     it("uses ctx.global.name and ctx.global.compatibilityDate in the assembled manifest", async () => {
@@ -264,7 +342,7 @@ describe("createDeployApi", () => {
       const callerManifest: ExternalManifest = {
         name: "legacy-worker",
         compatibilityDate: "2026-06-17",
-        resources: [{ kind: "kv", binding: "CACHE" }]
+        resources: [{ kind: "kv", name: "legacy-cache", binding: "CACHE" }]
       };
 
       await api.run({ manifest: callerManifest });
@@ -273,7 +351,7 @@ describe("createDeployApi", () => {
         [string, ExternalManifest]
       ];
       expect(manifest.name).toBe("legacy-worker");
-      expect(manifest.resources).toEqual([{ kind: "kv", binding: "CACHE" }]);
+      expect(manifest.resources).toEqual([{ kind: "kv", name: "legacy-cache", binding: "CACHE" }]);
     });
 
     it("does NOT call deployManifest() when opts.manifest is provided (universal path)", async () => {
@@ -409,13 +487,17 @@ describe("createDeployApi", () => {
       expect(provisionEmits.length).toBe(5);
     });
 
-    it("emits provision:resource with correct kind and name for kv", async () => {
+    it("emits provision:resource with correct kind and stage-suffixed name for kv", async () => {
       const ctx = createMockCtx({ has: name => name === "kv" });
       const api = createDeployApi(ctx);
 
       await api.run();
 
-      expect(ctx.emit).toHaveBeenCalledWith("provision:resource", { kind: "kv", name: "KV" });
+      // Default mock stage is "test", so the kv resource name "cache" is suffixed → "cache-test".
+      expect(ctx.emit).toHaveBeenCalledWith("provision:resource", {
+        kind: "kv",
+        name: "cache-test"
+      });
     });
 
     it("emits deploy:complete with url after wrangler deploy", async () => {
@@ -433,7 +515,11 @@ describe("createDeployApi", () => {
 
       await api.run();
 
-      expect(provisionResource).toHaveBeenCalledWith({ kind: "kv", binding: "KV" }, false);
+      // Default mock stage is "test" → the kv resource name is stage-suffixed before provisioning.
+      expect(provisionResource).toHaveBeenCalledWith(
+        { kind: "kv", name: "cache-test", binding: "KV" },
+        false
+      );
     });
 
     it("calls writeWranglerConfig with the configFile from ctx.config", async () => {
@@ -445,8 +531,23 @@ describe("createDeployApi", () => {
       expect(writeWranglerConfig).toHaveBeenCalledWith(
         "my-wrangler.jsonc",
         expect.any(Object),
-        expect.any(Object)
+        expect.any(Object),
+        {} // wranglerExtra(ctx.config) — no entry/nodeCompat/assets/wrangler set → empty extra
       );
+    });
+
+    it("passes ctx.config.wrangler through to writeWranglerConfig (the passthrough)", async () => {
+      const base = createMockCtx({ has: () => false });
+      const wrangler = { main: "src/cloudflare/worker.ts", compatibility_flags: ["nodejs_compat"] };
+      const ctx: Ctx = { ...base, config: { ...base.config, wrangler } };
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      const calls = (writeWranglerConfig as ReturnType<typeof vi.fn>).mock.calls as Array<
+        [string, ExternalManifest, Record<string, string>, Record<string, unknown>]
+      >;
+      expect(calls.at(-1)?.[3]).toEqual(wrangler);
     });
 
     it("threads the captured provision id into writeWranglerConfig", async () => {
@@ -518,7 +619,7 @@ describe("createDeployApi", () => {
       vi.mocked(planInfra).mockResolvedValueOnce({
         account: "acct",
         accountId: "acct",
-        exists: [{ resource: { kind: "kv", binding: "KV" }, id: "ns-existing" }],
+        exists: [{ resource: { kind: "kv", name: "cache", binding: "KV" }, id: "ns-existing" }],
         missing: []
       });
       const api = createDeployApi(ctx);
@@ -526,7 +627,8 @@ describe("createDeployApi", () => {
       await api.run();
 
       expect(provisionResource).not.toHaveBeenCalled();
-      expect(ctx.emit).toHaveBeenCalledWith("provision:skip", { kind: "kv", name: "KV" });
+      // The skip event carries the resource name (resourceName), keyed by the plan's verbatim entry.
+      expect(ctx.emit).toHaveBeenCalledWith("provision:skip", { kind: "kv", name: "cache" });
       const calls = (writeWranglerConfig as ReturnType<typeof vi.fn>).mock.calls as Array<
         [string, ExternalManifest, Record<string, string>]
       >;
@@ -551,11 +653,14 @@ describe("createDeployApi", () => {
         account: "acct",
         accountId: "acct",
         exists: [],
-        missing: [{ kind: "kv", binding: "KV" }]
+        missing: [{ kind: "kv", name: "cache", binding: "KV" }]
       });
 
-      expect(provisionResource).toHaveBeenCalledWith({ kind: "kv", binding: "KV" }, false);
-      expect(result.created).toEqual([{ resource: { kind: "kv", binding: "KV" } }]);
+      expect(provisionResource).toHaveBeenCalledWith(
+        { kind: "kv", name: "cache", binding: "KV" },
+        false
+      );
+      expect(result.created).toEqual([{ resource: { kind: "kv", name: "cache", binding: "KV" } }]);
     });
   });
 
@@ -698,6 +803,252 @@ describe("createDeployApi", () => {
     });
   });
 
+  // ───────── guided recovery — auth (ask + guide the user through `auth setup`) ─
+
+  describe("guided recovery — auth", () => {
+    it("walks through token setup, prints the guidance, and scaffolds .env.local when missing (TTY)", async () => {
+      const ui = makeUi();
+      vi.mocked(createBrandConsole).mockReturnValueOnce(asConsole(ui));
+      vi.mocked(verifyAuth).mockRejectedValueOnce(
+        new Error("[moku-worker] CLOUDFLARE_API_TOKEN is not set. Run `auth setup` ...")
+      );
+      const confirm = vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(true);
+      stubPrompts(confirm);
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(confirm).toHaveBeenCalledWith("Set up Cloudflare credentials now? (guided)");
+      expect(ui.heading).toHaveBeenCalledWith("Cloudflare API token");
+      expect(ui.box).toHaveBeenCalled(); // the branded LOCAL token panel
+      expect(ensureEnvLocal).toHaveBeenCalledWith(
+        process.cwd(),
+        expect.stringContaining("CLOUDFLARE_API_TOKEN=")
+      );
+      expect(ui.info).toHaveBeenCalledWith(
+        "Created /cwd/.env.local — paste your token + account id there, then run `deploy` again."
+      );
+      expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", { phase: "aborted" });
+      expect(runWrangler).not.toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+
+    it("does not scaffold an existing .env.local — tells the user to fill it in", async () => {
+      const ui = makeUi();
+      vi.mocked(createBrandConsole).mockReturnValueOnce(asConsole(ui));
+      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[moku-worker] token missing"));
+      vi.mocked(ensureEnvLocal).mockResolvedValueOnce({ created: false, path: "/cwd/.env.local" });
+      const confirm = vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(true);
+      stubPrompts(confirm);
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(ui.info).toHaveBeenCalledWith(
+        "/cwd/.env.local already exists — fill in CLOUDFLARE_API_TOKEN there, then run `deploy` again."
+      );
+      expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", { phase: "aborted" });
+    });
+
+    it("skips the guidance + scaffold but still points at .env.local when setup is declined", async () => {
+      const ui = makeUi();
+      vi.mocked(createBrandConsole).mockReturnValueOnce(asConsole(ui));
+      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[moku-worker] token missing"));
+      const confirm = vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(false);
+      stubPrompts(confirm);
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(ui.heading).not.toHaveBeenCalled();
+      expect(ensureEnvLocal).not.toHaveBeenCalled();
+      expect(ui.info).toHaveBeenCalledWith(
+        "Set CLOUDFLARE_API_TOKEN in .env.local, then run `deploy` again."
+      );
+      expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", { phase: "aborted" });
+      expect(provisionResource).not.toHaveBeenCalled();
+    });
+
+    it("fails fast (throws, no prompt) when auth fails in CI mode", async () => {
+      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[moku-worker] token missing"));
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await expect(api.run({ ci: true })).rejects.toThrow("token missing");
+      expect(createBrandPrompts).not.toHaveBeenCalled();
+    });
+
+    it("fails fast when auth fails off a TTY (even when not ci)", async () => {
+      vi.mocked(stdoutIsTty).mockReturnValueOnce(false);
+      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[moku-worker] token missing"));
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await expect(api.run()).rejects.toThrow("token missing");
+      expect(createBrandPrompts).not.toHaveBeenCalled();
+    });
+  });
+
+  // ───────── guided recovery — retryable steps (build / infra / upload / deploy) ─
+
+  describe("guided recovery — retryable steps", () => {
+    it("retries `wrangler deploy` when it fails and the user confirms, then completes", async () => {
+      vi.mocked(runWrangler)
+        .mockRejectedValueOnce(new Error("[moku-worker] wrangler exited with code 1."))
+        .mockResolvedValueOnce("https://retry.workers.dev");
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(runWrangler).toHaveBeenCalledTimes(2);
+      expect(ctx.emit).toHaveBeenCalledWith("deploy:complete", {
+        url: "https://retry.workers.dev"
+      });
+    });
+
+    it("aborts (no deploy:complete) when the user declines a `wrangler deploy` retry", async () => {
+      // Once — the call rejects exactly once (retry is declined), and a non-Once reject would
+      // bleed past clearAllMocks (which clears calls, not implementations) into later tests.
+      vi.mocked(runWrangler).mockRejectedValueOnce(
+        new Error("[moku-worker] wrangler exited with code 1.")
+      );
+      const confirm = vi
+        .fn<(question: string) => Promise<boolean>>()
+        .mockResolvedValueOnce(true) // deploy-target gate
+        .mockResolvedValue(false); // Retry? → no
+      vi.mocked(createBrandPrompts).mockReturnValueOnce({
+        confirm: confirm as unknown as (question: string) => Promise<boolean>,
+        select: vi.fn<(question: string, choices: readonly string[]) => Promise<number>>()
+      });
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(runWrangler).toHaveBeenCalledTimes(1);
+      expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", { phase: "aborted" });
+      const completeEmit = (ctx.emit as ReturnType<typeof vi.fn>).mock.calls.find(
+        ([event]) => event === "deploy:complete"
+      );
+      expect(completeEmit).toBeUndefined();
+    });
+
+    it("fails fast (throws) when `wrangler deploy` fails in CI mode", async () => {
+      vi.mocked(runWrangler).mockRejectedValueOnce(
+        new Error("[moku-worker] wrangler exited with code 1.")
+      );
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+
+      await expect(api.run({ ci: true })).rejects.toThrow("wrangler exited");
+    });
+
+    it("re-plans and retries provisioning when the infra preflight fails, then deploys", async () => {
+      vi.mocked(planInfra).mockRejectedValueOnce(
+        new Error("[moku-worker] Cloudflare listing failed")
+      );
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(planInfra).toHaveBeenCalledTimes(2); // first attempt threw, retry re-planned
+      expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+
+    it("aborts (no deploy) when the user declines an R2 upload retry", async () => {
+      vi.mocked(uploadDirToR2).mockRejectedValueOnce(new Error("[moku-worker] R2 upload failed"));
+      const confirm = vi
+        .fn<(question: string) => Promise<boolean>>()
+        .mockResolvedValueOnce(true) // create-missing gate
+        .mockResolvedValue(false); // Retry? → no
+      stubPrompts(confirm);
+      const ctx = createMockCtx({ has: name => name === "storage" });
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(uploadDirToR2).toHaveBeenCalledTimes(1);
+      expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", { phase: "aborted" });
+      expect(runWrangler).not.toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+
+    it("retries a failed web build when confirmed, then proceeds", async () => {
+      const webBuild = vi
+        .fn<WebBuild>()
+        .mockRejectedValueOnce(new Error("build boom"))
+        .mockResolvedValueOnce({ files: 3 });
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+
+      await api.run({ webBuild });
+
+      expect(webBuild).toHaveBeenCalledTimes(2);
+      expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+  });
+
+  // ───────── guided provision — branded panels + per-resource failure handling ─
+
+  describe("guided provision panels", () => {
+    it("renders the infra plan panel and the provision result panel", async () => {
+      const ui = makeUi();
+      vi.mocked(createBrandConsole).mockReturnValueOnce(asConsole(ui));
+      const ctx = createMockCtx({ has: name => name === "kv" });
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(ui.heading).toHaveBeenCalledWith("Infra plan");
+      expect(ui.heading).toHaveBeenCalledWith("Provisioned");
+      expect(ui.box).toHaveBeenCalledTimes(2); // plan panel + result panel
+    });
+
+    it("captures a resource failure (no throw) and aborts when the retry is declined", async () => {
+      vi.mocked(provisionResource).mockRejectedValueOnce(
+        new Error("[moku-worker] wrangler exited with code 1.\n  ✘ [ERROR] bucket name invalid")
+      );
+      const confirm = vi
+        .fn<(question: string) => Promise<boolean>>()
+        .mockResolvedValueOnce(true) // create-missing gate
+        .mockResolvedValue(false); // Retry the failed resource(s)? → no
+      stubPrompts(confirm);
+      const ctx = createMockCtx({ has: name => name === "kv" });
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(provisionResource).toHaveBeenCalledTimes(1);
+      expect(confirm).toHaveBeenCalledWith("Retry the failed resource(s)?");
+      expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", { phase: "aborted" });
+      expect(runWrangler).not.toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+
+    it("retries only the still-failed resource and proceeds once it succeeds", async () => {
+      vi.mocked(provisionResource)
+        .mockRejectedValueOnce(new Error("[moku-worker] transient")) // first attempt fails
+        .mockResolvedValue({}); // retry succeeds
+      const ctx = createMockCtx({ has: name => name === "kv" });
+      const api = createDeployApi(ctx);
+
+      await api.run(); // default confirm → yes to gate, yes to retry
+
+      expect(provisionResource).toHaveBeenCalledTimes(2);
+      expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+
+    it("fails fast (throws) when a resource fails to provision in CI mode", async () => {
+      vi.mocked(provisionResource).mockRejectedValueOnce(new Error("[moku-worker] boom"));
+      const ctx = createMockCtx({ has: name => name === "kv" });
+      const api = createDeployApi(ctx);
+
+      await expect(api.run({ ci: true })).rejects.toThrow("failed to provision");
+    });
+  });
+
   // ───────── dev ─────────────────────────────────────────────────────────────
 
   describe("dev", () => {
@@ -754,13 +1105,14 @@ describe("createDeployApi", () => {
   // ───────── upload ──────────────────────────────────────────────────────────
 
   describe("upload", () => {
-    it("calls uploadDirToR2 with bucket name and upload dir", async () => {
+    it("calls uploadDirToR2 with the stage-suffixed bucket name and upload dir", async () => {
       const ctx = createMockCtx({ has: name => name === "storage" });
       const api = createDeployApi(ctx);
 
       await api.run();
 
-      expect(uploadDirToR2).toHaveBeenCalledWith("ASSETS", "./public");
+      // Default mock stage is "test" → the r2 bucket name "assets" is suffixed → "assets-test".
+      expect(uploadDirToR2).toHaveBeenCalledWith("assets-test", "./public");
     });
   });
 
@@ -820,44 +1172,40 @@ describe("createDeployApi", () => {
     it("ResourceManifest is exhaustively narrowable by kind", () => {
       // A function param typed as the full union is NOT narrowed to one variant,
       // so every case stays reachable and each branch's narrowing is type-checked.
+      // Each per-instance variant carries `name` + `binding` (DOs carry `binding` + `className`).
       // eslint-disable-next-line unicorn/consistent-function-scoping -- type-only exhaustiveness helper, co-located with its test
       const narrow = (resource: ResourceManifest): void => {
         switch (resource.kind) {
-          case "kv": {
-            expectTypeOf(resource.binding).toEqualTypeOf<string>();
-            break;
-          }
-          case "r2": {
-            expectTypeOf(resource.bucket).toEqualTypeOf<string>();
-            break;
-          }
-          case "d1": {
-            expectTypeOf(resource.binding).toEqualTypeOf<string>();
-            break;
-          }
+          // The per-instance variants share a `name` + `binding` shape; one fall-through block
+          // narrows `resource` to their union and type-checks both common fields.
+          case "kv":
+          case "r2":
+          case "d1":
           case "queue": {
-            expectTypeOf(resource.producers).toEqualTypeOf<string[]>();
+            expectTypeOf(resource.name).toEqualTypeOf<string>();
+            expectTypeOf(resource.binding).toEqualTypeOf<string>();
             break;
           }
           case "do": {
-            expectTypeOf(resource.bindings).toEqualTypeOf<Record<string, string>>();
+            expectTypeOf(resource.binding).toEqualTypeOf<string>();
+            expectTypeOf(resource.className).toEqualTypeOf<string>();
             break;
           }
           // No default
         }
       };
 
-      expect(() => narrow({ kind: "kv", binding: "KV" })).not.toThrow();
+      expect(() => narrow({ kind: "kv", name: "cache", binding: "KV" })).not.toThrow();
     });
 
-    it("ctx.require(storagePlugin) exposes deployManifest returning { kind:'r2' }", () => {
+    it("ctx.require(storagePlugin) exposes deployManifest returning an array of { kind:'r2' }", () => {
       const ctx = createMockCtx();
       const storageApi = ctx.require(storagePlugin);
 
-      expectTypeOf(storageApi.deployManifest).returns.toMatchTypeOf<{
-        kind: "r2";
-        bucket: string;
-      }>();
+      // deployManifest() returns one entry PER configured instance → an array.
+      expectTypeOf(storageApi.deployManifest).returns.toMatchTypeOf<
+        Array<{ kind: "r2"; name: string; binding: string }>
+      >();
     });
 
     it("api surface matches the Api type", () => {

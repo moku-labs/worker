@@ -13,11 +13,10 @@ import { bindingsPlugin } from "../bindings";
 import { createD1Api } from "./api";
 import type { Config } from "./types";
 
-/**
- * Default d1 config. Declared as a typed const (not an inline object) so the
- * shape is checked against `Config` with no inline `as` assertion (R6, spec/11 §Part 2).
- */
-const defaultConfig: Config = { binding: "DB", migrations: "" };
+export type { Api, Config, D1DatabaseApi, D1Instance } from "./types";
+
+/** Typed default — empty keyed map; the consumer declares instances under `pluginConfigs.d1`. */
+const defaultConfig: Config = {};
 
 /**
  * Standard tier — Cloudflare D1 SQL access (thin typed wrappers, not an ORM).

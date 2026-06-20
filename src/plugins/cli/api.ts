@@ -5,8 +5,9 @@ import { createBrandConsole } from "@moku-labs/common/cli";
 import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEvents } from "../../config";
 import { deployPlugin } from "../deploy";
+import { renderAuthSetup } from "../deploy/auth/render";
 import type { Api as DeployApi, WebBuild } from "../deploy/types";
-import { parsePortArg } from "./args";
+import { parsePortArg, parseStageArg } from "./args";
 import type { Api, Config } from "./types";
 
 /**
@@ -49,6 +50,7 @@ export const createCliApi = (ctx: CliCtx): Api => ({
    *
    * @param opts - Optional local dev options.
    * @param opts.port - Local dev port to bind. Overrides the `--port` flag and the default.
+   * @param opts.stage - Stage for the generated wrangler config; falls back to `--stage` then the app stage.
    * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
    * @returns Resolves when the dev session ends.
    * @example
@@ -56,15 +58,18 @@ export const createCliApi = (ctx: CliCtx): Api => ({
    * await api.dev({ webBuild: () => web.cli.build() }); // port from --port or 8787
    * ```
    */
-  async dev(opts?: { port?: number; webBuild?: WebBuild }): Promise<void> {
+  async dev(opts?: { port?: number; stage?: string; webBuild?: WebBuild }): Promise<void> {
     const ui = createBrandConsole();
     ui.lockup({ wordmark: "moku worker", label: "dev session" });
 
     const port = opts?.port ?? parsePortArg(process.argv) ?? ctx.config.port;
+    const stage = opts?.stage ?? parseStageArg(process.argv);
     try {
-      await ctx
-        .require(deployPlugin)
-        .dev(opts?.webBuild ? { port, webBuild: opts.webBuild } : { port });
+      await ctx.require(deployPlugin).dev({
+        port,
+        ...(stage === undefined ? {} : { stage }),
+        ...(opts?.webBuild ? { webBuild: opts.webBuild } : {})
+      });
       ui.check(true, "dev session stopped cleanly");
     } catch (error) {
       ui.error(error instanceof Error ? error.message : String(error));
@@ -80,17 +85,19 @@ export const createCliApi = (ctx: CliCtx): Api => ({
    *
    * @param opts - Optional deploy options.
    * @param opts.ci - Automated mode: never prompts, auto-confirms. Omit/false → guided on a TTY.
+   * @param opts.stage - Target stage (resource-name suffix); falls back to `--stage` then the app stage.
    * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
    * @returns Resolves once the deploy completes (or after a failure is rendered).
    * @example
    * ```ts
-   * await api.deploy({ webBuild: () => web.cli.build() });           // guided
-   * await api.deploy({ ci: true, webBuild: () => web.cli.build() }); // CI
+   * await api.deploy({ webBuild: () => web.cli.build() });            // guided, app stage
+   * await api.deploy({ ci: true, webBuild: () => web.cli.build() });  // CI; `--stage dev` honored
    * ```
    */
-  async deploy(opts?: { ci?: boolean; webBuild?: WebBuild }): Promise<void> {
+  async deploy(opts?: { ci?: boolean; stage?: string; webBuild?: WebBuild }): Promise<void> {
+    const stage = opts?.stage ?? parseStageArg(process.argv);
     try {
-      await ctx.require(deployPlugin).run(opts);
+      await ctx.require(deployPlugin).run({ ...opts, ...(stage === undefined ? {} : { stage }) });
     } catch (error) {
       createBrandConsole().error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;
@@ -114,9 +121,7 @@ export const createCliApi = (ctx: CliCtx): Api => ({
     const ui = createBrandConsole();
 
     if (sub === "setup") {
-      for (const line of deploy.tokenInstructions().split("\n")) {
-        ui.line(line);
-      }
+      renderAuthSetup(ui, deploy.requiredToken(), { ci: deploy.ciToken() });
       return;
     }
 

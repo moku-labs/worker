@@ -15,8 +15,15 @@ import { bindingsPlugin } from "../bindings";
 import { createStorageApi } from "./api";
 import type { StorageConfig } from "./types";
 
-/** Typed-const default — no inline `as` cast (R6; spec/11 §Part 2). */
-const defaultConfig: StorageConfig = { upload: "", bucket: "ASSETS" };
+export type {
+  R2Instance,
+  StorageApi,
+  StorageBucketApi,
+  StorageConfig
+} from "./types";
+
+/** Typed default — empty keyed map; the consumer declares instances under `pluginConfigs.storage`. */
+const defaultConfig: StorageConfig = {};
 
 /**
  * Complex tier — Cloudflare R2 object storage behind a provider adapter seam.

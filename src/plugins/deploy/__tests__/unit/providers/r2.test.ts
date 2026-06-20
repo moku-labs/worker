@@ -37,20 +37,24 @@ afterEach(async () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("provisionR2", () => {
-  it("calls runWrangler with r2 bucket create args", async () => {
-    await provisionR2({ kind: "r2", bucket: "ASSETS" }, false);
+  it("calls runWrangler with r2 bucket create args (by resource name)", async () => {
+    await provisionR2({ kind: "r2", name: "tracker-files", binding: "ASSETS" }, false);
 
     expect(runWrangler).toHaveBeenCalledWith(
-      expect.arrayContaining(["r2", "bucket", "create", "ASSETS"])
+      expect.arrayContaining(["r2", "bucket", "create", "tracker-files"])
     );
   });
 
   it("resolves without throwing", async () => {
-    await expect(provisionR2({ kind: "r2", bucket: "ASSETS" }, false)).resolves.toBeUndefined();
+    await expect(
+      provisionR2({ kind: "r2", name: "tracker-files", binding: "ASSETS" }, false)
+    ).resolves.toBeUndefined();
   });
 
   it("passes ci flag through (does not throw in ci mode)", async () => {
-    await expect(provisionR2({ kind: "r2", bucket: "BUCKET" }, true)).resolves.toBeUndefined();
+    await expect(
+      provisionR2({ kind: "r2", name: "tracker-bucket", binding: "BUCKET" }, true)
+    ).resolves.toBeUndefined();
   });
 });
 

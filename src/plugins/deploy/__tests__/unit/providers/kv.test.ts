@@ -14,22 +14,26 @@ vi.mock("../../../runner", () => ({
 import { runWrangler } from "../../../runner";
 
 describe("provisionKv", () => {
-  it("calls runWrangler with kv namespace create args", async () => {
-    await provisionKv({ kind: "kv", binding: "CACHE" }, false);
+  it("calls runWrangler with kv namespace create args (by resource name)", async () => {
+    await provisionKv({ kind: "kv", name: "tracker-cache", binding: "CACHE" }, false);
 
     expect(runWrangler).toHaveBeenCalledWith(
-      expect.arrayContaining(["kv", "namespace", "create", "CACHE"])
+      expect.arrayContaining(["kv", "namespace", "create", "tracker-cache"])
     );
   });
 
   it("captures the created namespace id from wrangler output", async () => {
-    await expect(provisionKv({ kind: "kv", binding: "CACHE" }, false)).resolves.toEqual({
+    await expect(
+      provisionKv({ kind: "kv", name: "tracker-cache", binding: "CACHE" }, false)
+    ).resolves.toEqual({
       id: "ns-abc123"
     });
   });
 
   it("passes ci flag through (does not throw in ci mode)", async () => {
-    await expect(provisionKv({ kind: "kv", binding: "KV" }, true)).resolves.toEqual({
+    await expect(
+      provisionKv({ kind: "kv", name: "tracker-kv", binding: "KV" }, true)
+    ).resolves.toEqual({
       id: "ns-abc123"
     });
   });

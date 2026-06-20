@@ -28,19 +28,18 @@ const checkExisting = (
 ): { exists: boolean; id?: string } => {
   switch (resource.kind) {
     case "kv": {
-      const id = existing.kv.get(resource.binding);
+      const id = existing.kv.get(resource.name);
       return id === undefined ? { exists: false } : { exists: true, id };
     }
     case "d1": {
-      const id = existing.d1.get(resource.binding);
+      const id = existing.d1.get(resource.name);
       return id === undefined ? { exists: false } : { exists: true, id };
     }
     case "r2": {
-      return { exists: existing.r2.has(resource.bucket) };
+      return { exists: existing.r2.has(resource.name) };
     }
     case "queue": {
-      // A queue resource counts as existing only when every declared producer already exists.
-      return { exists: resource.producers.every(producer => existing.queue.has(producer)) };
+      return { exists: existing.queue.has(resource.name) };
     }
     case "do": {
       return { exists: false };

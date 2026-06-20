@@ -59,20 +59,41 @@ const makeFakeKv = (initial: Record<string, string> = {}) => {
 
 /**
  * Creates a test app with bindingsPlugin ordered before kvPlugin, as required
- * by the kv depends:[bindingsPlugin] declaration. pluginConfigs.kv.binding
- * defaults to "SESSIONS" to exercise config override.
+ * by the kv depends:[bindingsPlugin] declaration. The kv config is the keyed-map
+ * shape (`{ cache: { name, binding } }`); the single entry is the implicit default.
+ * The binding defaults to "SESSIONS" to exercise config override.
  *
  * @param binding - The KV binding name to use (default "SESSIONS").
+ * @param name - The base Cloudflare namespace name (default "tracker-cache").
  * @returns The created app instance.
  */
-const createTestApp = (binding = "SESSIONS") => {
+const createTestApp = (binding = "SESSIONS", name = "tracker-cache") => {
   const { createApp } = testCoreConfig.createCore(testCoreConfig, {
     plugins: [bindingsPlugin, kvPlugin]
   });
 
   return createApp({
     pluginConfigs: {
-      kv: { binding }
+      kv: { cache: { name, binding } }
+    }
+  });
+};
+
+/**
+ * Build an app with two kv instances, one flagged `default: true`.
+ *
+ * @returns The created app instance with `cache` (default) and `sessions` namespaces.
+ */
+const createMultiApp = () => {
+  const { createApp } = testCoreConfig.createCore(testCoreConfig, {
+    plugins: [bindingsPlugin, kvPlugin]
+  });
+  return createApp({
+    pluginConfigs: {
+      kv: {
+        cache: { name: "tracker-cache", binding: "CACHE", default: true },
+        sessions: { name: "tracker-sessions", binding: "SESSIONS" }
+      }
     }
   });
 };
@@ -194,19 +215,21 @@ describe("kv plugin (integration)", () => {
   // ─── deployManifest ───────────────────────────────────────────────────────
 
   describe("deployManifest", () => {
-    it("returns { kind: 'kv', binding: 'SESSIONS' } when binding is overridden", () => {
+    it("returns one [{ kind, name, binding }] entry reflecting the configured instance", () => {
       const app = createTestApp("SESSIONS");
 
-      expect(app.kv.deployManifest()).toEqual({ kind: "kv", binding: "SESSIONS" });
+      expect(app.kv.deployManifest()).toEqual([
+        { kind: "kv", name: "tracker-cache", binding: "SESSIONS" }
+      ]);
     });
 
-    it("returns { kind: 'kv', binding: 'KV' } when no override (default)", () => {
+    it("returns an empty array when no kv instances are configured (default config)", () => {
       const { createApp } = testCoreConfig.createCore(testCoreConfig, {
         plugins: [bindingsPlugin, kvPlugin]
       });
       const app = createApp();
 
-      expect(app.kv.deployManifest()).toEqual({ kind: "kv", binding: "KV" });
+      expect(app.kv.deployManifest()).toEqual([]);
     });
   });
 
@@ -247,6 +270,39 @@ describe("kv plugin (integration)", () => {
     });
   });
 
+  // ─── multiple instances + use(key) ─────────────────────────────────────────
+
+  describe("multiple instances", () => {
+    it("use('sessions') resolves the named instance's binding off the request env", async () => {
+      const app = createMultiApp();
+      const env: WorkerEnv = {
+        CACHE: makeFakeKv({ k: "from-cache" }),
+        SESSIONS: makeFakeKv({ k: "from-sessions" })
+      };
+
+      expect(await app.kv.use("sessions").get(env, "k")).toBe("from-sessions");
+    });
+
+    it("the default surface resolves the instance flagged default: true (CACHE)", async () => {
+      const app = createMultiApp();
+      const env: WorkerEnv = {
+        CACHE: makeFakeKv({ k: "from-cache" }),
+        SESSIONS: makeFakeKv({ k: "from-sessions" })
+      };
+
+      expect(await app.kv.get(env, "k")).toBe("from-cache");
+    });
+
+    it("deployManifest returns one entry per instance", () => {
+      const app = createMultiApp();
+
+      expect(app.kv.deployManifest()).toEqual([
+        { kind: "kv", name: "tracker-cache", binding: "CACHE" },
+        { kind: "kv", name: "tracker-sessions", binding: "SESSIONS" }
+      ]);
+    });
+  });
+
   // ─── types ────────────────────────────────────────────────────────────────
 
   describe("types: app.kv surface", () => {
@@ -271,10 +327,12 @@ describe("kv plugin (integration)", () => {
       expectTypeOf(app.kv.delete(env, "k")).toEqualTypeOf<Promise<void>>();
     });
 
-    it("deployManifest returns { kind: 'kv'; binding: string }", () => {
+    it("deployManifest returns Array<{ kind: 'kv'; name: string; binding: string }>", () => {
       const app = createTestApp();
 
-      expectTypeOf(app.kv.deployManifest()).toEqualTypeOf<{ kind: "kv"; binding: string }>();
+      expectTypeOf(app.kv.deployManifest()).toEqualTypeOf<
+        Array<{ kind: "kv"; name: string; binding: string }>
+      >();
     });
 
     it("@ts-expect-error: emitting a kv-specific event is impossible (no kv events)", () => {

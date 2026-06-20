@@ -46,24 +46,26 @@ describe("planInfra", () => {
 
     const plan = await planInfra(
       makeCtx("acc-123"),
-      manifest([{ kind: "kv", binding: "SESSIONS" }])
+      manifest([{ kind: "kv", name: "tracker-sessions", binding: "SESSIONS" }])
     );
 
-    expect(plan.missing).toEqual([{ kind: "kv", binding: "SESSIONS" }]);
+    expect(plan.missing).toEqual([{ kind: "kv", name: "tracker-sessions", binding: "SESSIONS" }]);
     expect(plan.exists).toEqual([]);
   });
 
-  it("classifies an existing kv resource as existing and captures its id", async () => {
+  it("classifies an existing kv resource (matched by name) as existing and captures its id", async () => {
     const existing = emptyExisting();
-    existing.kv.set("SESSIONS", "ns-123");
+    existing.kv.set("tracker-sessions", "ns-123");
     vi.mocked(listExisting).mockResolvedValue(existing);
 
     const plan = await planInfra(
       makeCtx("acc-123"),
-      manifest([{ kind: "kv", binding: "SESSIONS" }])
+      manifest([{ kind: "kv", name: "tracker-sessions", binding: "SESSIONS" }])
     );
 
-    expect(plan.exists).toEqual([{ resource: { kind: "kv", binding: "SESSIONS" }, id: "ns-123" }]);
+    expect(plan.exists).toEqual([
+      { resource: { kind: "kv", name: "tracker-sessions", binding: "SESSIONS" }, id: "ns-123" }
+    ]);
     expect(plan.missing).toEqual([]);
   });
 
@@ -72,42 +74,41 @@ describe("planInfra", () => {
 
     const plan = await planInfra(
       makeCtx("acc-123"),
-      manifest([{ kind: "do", bindings: { counter: "COUNTER" } }])
+      manifest([{ kind: "do", binding: "COUNTER", className: "Counter" }])
     );
 
-    expect(plan.missing).toEqual([{ kind: "do", bindings: { counter: "COUNTER" } }]);
+    expect(plan.missing).toEqual([{ kind: "do", binding: "COUNTER", className: "Counter" }]);
   });
 
-  it("treats a queue as existing only when every producer already exists", async () => {
+  it("treats a queue as existing only when its name already exists", async () => {
     const existing = emptyExisting();
-    existing.queue.add("orders");
     vi.mocked(listExisting).mockResolvedValue(existing);
 
     const partial = await planInfra(
       makeCtx("acc-123"),
-      manifest([{ kind: "queue", producers: ["orders", "refunds"] }])
+      manifest([{ kind: "queue", name: "orders", binding: "ORDERS" }])
     );
     expect(partial.missing).toHaveLength(1);
 
-    existing.queue.add("refunds");
+    existing.queue.add("orders");
     const full = await planInfra(
       makeCtx("acc-123"),
-      manifest([{ kind: "queue", producers: ["orders", "refunds"] }])
+      manifest([{ kind: "queue", name: "orders", binding: "ORDERS" }])
     );
     expect(full.exists).toHaveLength(1);
   });
 
   it("emits provision:plan with the counts and account", async () => {
     const existing = emptyExisting();
-    existing.kv.set("A", "id-a");
+    existing.kv.set("cache-a", "id-a");
     vi.mocked(listExisting).mockResolvedValue(existing);
     const ctx = makeCtx("acc-123");
 
     await planInfra(
       ctx,
       manifest([
-        { kind: "kv", binding: "A" },
-        { kind: "kv", binding: "B" }
+        { kind: "kv", name: "cache-a", binding: "A" },
+        { kind: "kv", name: "cache-b", binding: "B" }
       ])
     );
 
@@ -132,9 +133,9 @@ describe("planInfra", () => {
     await planInfra(
       makeCtx("acc-123"),
       manifest([
-        { kind: "kv", binding: "SESSIONS" },
-        { kind: "d1", binding: "DB" },
-        { kind: "do", bindings: { counter: "COUNTER" } }
+        { kind: "kv", name: "tracker-sessions", binding: "SESSIONS" },
+        { kind: "d1", name: "tracker-db", binding: "DB" },
+        { kind: "do", binding: "COUNTER", className: "Counter" }
       ])
     );
 

@@ -6,50 +6,55 @@ import type { WorkerEnv, WorkerEvents } from "../../config";
 import type { BindingsApi, bindingsPlugin } from "../bindings";
 
 /**
- * durableObjects plugin configuration. Flat; complete default so omission never yields undefined.
+ * A single Durable Object instance: the env binding it resolves off plus the EXPORTED class it
+ * addresses. DOs are not provisioned (they ship with the Worker script), so there is no base
+ * Cloudflare `name` — `binding` is the env var and `className` is the class the consumer exports from
+ * `worker.ts`, decoupled from the logical key.
  *
  * @example
  * ```ts
- * { bindings: { counter: "COUNTER" } }
+ * { binding: "BOARD", className: "BoardChannel" }
  * ```
  */
-export type Config = {
-  /** Logical name -> Cloudflare DO binding name. A missing logical name falls back to itself. Default {}. */
-  bindings: Record<string, string>;
+export type DoInstance = {
+  /** Env binding name the namespace resolves off the per-request `env` (e.g. `env.BOARD`). */
+  binding: string;
+  /** The EXPORTED Durable Object class name (e.g. `"BoardChannel"`), used in the wrangler config. */
+  className: string;
+  /** Marks this instance the default when more than one is configured. */
+  default?: boolean;
 };
 
 /**
- * Deploy metadata entry for Durable Objects, read by the deploy plugin.
+ * durableObjects plugin config — a keyed map of Durable Object instances. The key is the stable
+ * logical name passed to `app.durableObjects.get(env, key, id)`; a single entry (or one flagged
+ * `default: true`) is the implicit default.
  *
  * @example
  * ```ts
- * { kind: "do", bindings: { counter: "COUNTER" } }
+ * { board: { binding: "BOARD", className: "BoardChannel" } }
  * ```
  */
-export type DeployManifest = {
-  /** Discriminant identifying this as a Durable Objects resource. */
-  kind: "do";
-  /** Logical name -> Cloudflare DO binding name. */
-  bindings: Record<string, string>;
-};
+export type Config = Record<string, DoInstance>;
 
 /** Public api surface of the durableObjects plugin. */
 export type Api = {
   /**
-   * Resolve a DurableObjectStub off the request env (logical name -> configured binding).
+   * Resolve a DurableObjectStub off the request env (logical key -> configured binding).
    *
    * @param env - Per-request Cloudflare bindings.
-   * @param logicalName - Logical DO name used in code.
+   * @param logicalName - Logical DO key (selects the configured instance).
    * @param idName - Stable id name passed to idFromName.
    * @returns The addressed Durable Object stub.
    */
   get(env: WorkerEnv, logicalName: string, idName: string): DurableObjectStub;
   /**
-   * Return this plugin's deploy metadata (read by the deploy plugin).
+   * Return this plugin's deploy metadata — one entry per configured instance (read by the deploy
+   * plugin).
    *
-   * @returns Deploy manifest entry `{ kind: "do", bindings }`.
+   * @returns One do deploy descriptor per configured instance.
    */
-  deployManifest(): DeployManifest;
+  deployManifest(): Array<{ kind: "do"; binding: string; className: string }>;
 };
 
 /**

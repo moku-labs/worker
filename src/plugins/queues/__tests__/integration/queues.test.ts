@@ -3,6 +3,7 @@ import type { WorkerEnv } from "../../../../config";
 import { coreConfig, createPlugin } from "../../../../config";
 import { bindingsPlugin } from "../../../bindings";
 import { queuesPlugin } from "../../index";
+import type { Config } from "../../types";
 
 // ---------------------------------------------------------------------------
 // Helpers — fake Queue + MessageBatch + ExecutionContext
@@ -45,22 +46,24 @@ const makeExec = (): ExecutionContext =>
 // createTestApp — uses framework createCore so all plugins wire correctly
 // ---------------------------------------------------------------------------
 
-const createTestApp = (
-  onMessage?: (message: Message, env: WorkerEnv) => Promise<void>,
-  producers: string[] = ["jobs"]
-) => {
+/** Single-instance keyed-map config used when `createTestApp` is called without one. */
+const DEFAULT_QUEUES_CONFIG: Config = {
+  jobs: { name: "jobs", binding: "JOBS", onMessage: async () => {} }
+};
+
+/**
+ * Builds a test app over bindings + queues with the supplied keyed-map config. A single-instance
+ * default config (`jobs`) is used when none is given.
+ *
+ * @param queues - The keyed-map queues config to mount under `pluginConfigs.queues`.
+ * @returns The created app instance.
+ */
+const createTestApp = (queues: Config = DEFAULT_QUEUES_CONFIG) => {
   const { createApp } = coreConfig.createCore(coreConfig, {
     plugins: [bindingsPlugin, queuesPlugin]
   });
 
-  return createApp({
-    pluginConfigs: {
-      queues: {
-        producers,
-        onMessage: onMessage ?? (async () => {})
-      }
-    }
-  });
+  return createApp({ pluginConfigs: { queues } });
 };
 
 // ---------------------------------------------------------------------------
@@ -77,11 +80,12 @@ describe("queues plugin (integration)", () => {
       expect(app.queues).toBeDefined();
     });
 
-    it("exposes send, sendBatch, consume, deployManifest", () => {
+    it("exposes send, sendBatch, use, consume, deployManifest", () => {
       const app = createTestApp();
 
       expect(typeof app.queues.send).toBe("function");
       expect(typeof app.queues.sendBatch).toBe("function");
+      expect(typeof app.queues.use).toBe("function");
       expect(typeof app.queues.consume).toBe("function");
       expect(typeof app.queues.deployManifest).toBe("function");
     });
@@ -97,43 +101,85 @@ describe("queues plugin (integration)", () => {
     });
   });
 
-  // ─── Runtime: send ───────────────────────────────────────────────────
+  // ─── Runtime: send (default + use) ────────────────────────────────────
 
   describe("runtime: send", () => {
-    it("delegates to Queue.send via bindings", async () => {
+    it("delegates to the default instance's Queue.send via bindings", async () => {
       const fakeQueue = makeFakeQueue();
       const env = makeEnv({ JOBS: fakeQueue });
       const app = createTestApp();
 
-      await app.queues.send(env, "JOBS", { task: "process" });
+      await app.queues.send(env, { task: "process" });
 
       expect(fakeQueue.send).toHaveBeenCalledTimes(1);
       expect(fakeQueue.send).toHaveBeenCalledWith({ task: "process" });
     });
+
+    it("use(key).send targets the named instance among many", async () => {
+      const ordersQ = makeFakeQueue();
+      const jobsQ = makeFakeQueue();
+      const env = makeEnv({ ORDERS: ordersQ, JOBS: jobsQ });
+      const app = createTestApp({
+        orders: { name: "orders", binding: "ORDERS", default: true, onMessage: async () => {} },
+        jobs: { name: "jobs", binding: "JOBS", onMessage: async () => {} }
+      });
+
+      await app.queues.use("jobs").send(env, { id: 7 });
+
+      expect(jobsQ.send).toHaveBeenCalledWith({ id: 7 });
+      expect(ordersQ.send).not.toHaveBeenCalled();
+    });
   });
 
-  // ─── Runtime: consume + Worker queue() delegation shape ───────────────
+  // ─── Runtime: consume routing ─────────────────────────────────────────
 
   describe("runtime: consume", () => {
-    it("matches the Worker queue() delegation shape", async () => {
+    it("single instance → routes every message to its onMessage (Worker queue() shape)", async () => {
       const onMessage = vi.fn().mockResolvedValue(undefined);
-      const app = createTestApp(onMessage);
+      const app = createTestApp({ jobs: { name: "jobs", binding: "JOBS", onMessage } });
 
       const msgs = [makeMessage("m1"), makeMessage("m2")];
       const batch = makeBatch("jobs", msgs);
-      const exec = makeExec();
 
       // This is exactly how the Worker entry delegates: app.queues.consume(batch, env, exec)
-      await app.queues.consume(batch, makeEnv({}), exec);
+      await app.queues.consume(batch, makeEnv({}), makeExec());
 
       expect(onMessage).toHaveBeenCalledTimes(2);
       expect(onMessage).toHaveBeenNthCalledWith(1, msgs[0], expect.any(Object));
       expect(onMessage).toHaveBeenNthCalledWith(2, msgs[1], expect.any(Object));
     });
 
+    it("multi instance → routes by exact name and by stage-suffixed name", async () => {
+      const activityHandler = vi.fn().mockResolvedValue(undefined);
+      const ordersHandler = vi.fn().mockResolvedValue(undefined);
+      const app = createTestApp({
+        activity: {
+          name: "tracker-activity",
+          binding: "ACTIVITY",
+          default: true,
+          onMessage: activityHandler
+        },
+        orders: { name: "tracker-orders", binding: "ORDERS", onMessage: ordersHandler }
+      });
+
+      await app.queues.consume(
+        makeBatch("tracker-orders", [makeMessage("o1")]),
+        makeEnv({}),
+        makeExec()
+      );
+      await app.queues.consume(
+        makeBatch("tracker-activity-dev", [makeMessage("a1")]),
+        makeEnv({}),
+        makeExec()
+      );
+
+      expect(ordersHandler).toHaveBeenCalledTimes(1);
+      expect(activityHandler).toHaveBeenCalledTimes(1);
+    });
+
     it("works without calling app.start() or app.stop() (request-scoped Worker)", async () => {
       const onMessage = vi.fn().mockResolvedValue(undefined);
-      const app = createTestApp(onMessage);
+      const app = createTestApp({ jobs: { name: "jobs", binding: "JOBS", onMessage } });
 
       const batch = makeBatch("jobs", [makeMessage("x")]);
 
@@ -164,7 +210,7 @@ describe("queues plugin (integration)", () => {
       const app = createAppWithObserver({
         plugins: [observerPlugin],
         pluginConfigs: {
-          queues: { producers: ["jobs"], onMessage: async () => {} }
+          queues: { jobs: { name: "jobs", binding: "JOBS", onMessage: async () => {} } }
         }
       });
 
@@ -182,13 +228,16 @@ describe("queues plugin (integration)", () => {
   // ─── Runtime: deployManifest ─────────────────────────────────────────
 
   describe("runtime: deployManifest", () => {
-    it("returns { kind: 'queue', producers } from config", () => {
-      const app = createTestApp(undefined, ["orders", "notifications"]);
-
-      expect(app.queues.deployManifest()).toEqual({
-        kind: "queue",
-        producers: ["orders", "notifications"]
+    it("returns one { kind: 'queue', name, binding } entry per configured instance", () => {
+      const app = createTestApp({
+        orders: { name: "tracker-orders", binding: "ORDERS", default: true },
+        notifications: { name: "tracker-notifications", binding: "NOTIFICATIONS" }
       });
+
+      expect(app.queues.deployManifest()).toEqual([
+        { kind: "queue", name: "tracker-orders", binding: "ORDERS" },
+        { kind: "queue", name: "tracker-notifications", binding: "NOTIFICATIONS" }
+      ]);
     });
   });
 
@@ -199,7 +248,7 @@ describe("queues plugin (integration)", () => {
       const app = createTestApp();
 
       expectTypeOf(app.queues.send).toEqualTypeOf<
-        (env: WorkerEnv, q: string, body: unknown) => Promise<void>
+        (env: WorkerEnv, body: unknown) => Promise<void>
       >();
     });
 
@@ -207,7 +256,7 @@ describe("queues plugin (integration)", () => {
       const app = createTestApp();
 
       expectTypeOf(app.queues.sendBatch).toEqualTypeOf<
-        (env: WorkerEnv, q: string, bodies: unknown[]) => Promise<void>
+        (env: WorkerEnv, bodies: unknown[]) => Promise<void>
       >();
     });
 
@@ -215,15 +264,15 @@ describe("queues plugin (integration)", () => {
       const app = createTestApp();
 
       expectTypeOf(app.queues.consume).toEqualTypeOf<
-        (batch: MessageBatch, env: WorkerEnv, exec: ExecutionContext) => Promise<void>
+        (batch: MessageBatch, env: WorkerEnv, ctx: ExecutionContext) => Promise<void>
       >();
     });
 
-    it("deployManifest returns { kind: 'queue'; producers: string[] }", () => {
+    it("deployManifest returns Array<{ kind: 'queue'; name: string; binding: string }>", () => {
       const app = createTestApp();
 
-      expectTypeOf(app.queues.deployManifest).toEqualTypeOf<
-        () => { kind: "queue"; producers: string[] }
+      expectTypeOf(app.queues.deployManifest()).toEqualTypeOf<
+        Array<{ kind: "queue"; name: string; binding: string }>
       >();
     });
 

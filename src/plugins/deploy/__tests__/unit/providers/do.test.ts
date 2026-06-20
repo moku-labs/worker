@@ -10,32 +10,29 @@ vi.mock("../../../runner", () => ({
 }));
 
 describe("provisionDurableObject", () => {
-  it("resolves without throwing for a single binding", async () => {
+  it("resolves without throwing for a single instance", async () => {
     await expect(
-      provisionDurableObject({ kind: "do", bindings: { counter: "COUNTER" } }, false)
+      provisionDurableObject({ kind: "do", binding: "COUNTER", className: "Counter" }, false)
     ).resolves.toBeUndefined();
   });
 
-  it("resolves without throwing for multiple bindings", async () => {
+  it("resolves without throwing for another instance", async () => {
     await expect(
-      provisionDurableObject({ kind: "do", bindings: { counter: "COUNTER", room: "ROOM" } }, false)
-    ).resolves.toBeUndefined();
-  });
-
-  it("resolves without throwing for empty bindings", async () => {
-    await expect(
-      provisionDurableObject({ kind: "do", bindings: {} }, false)
+      provisionDurableObject({ kind: "do", binding: "ROOM", className: "Room" }, false)
     ).resolves.toBeUndefined();
   });
 
   it("passes ci flag through", async () => {
     await expect(
-      provisionDurableObject({ kind: "do", bindings: { counter: "COUNTER" } }, true)
+      provisionDurableObject({ kind: "do", binding: "COUNTER", className: "Counter" }, true)
     ).resolves.toBeUndefined();
   });
 
   it("returns void (not a value)", async () => {
-    const result = await provisionDurableObject({ kind: "do", bindings: {} }, false);
+    const result = await provisionDurableObject(
+      { kind: "do", binding: "COUNTER", className: "Counter" },
+      false
+    );
 
     expect(result).toBeUndefined();
   });

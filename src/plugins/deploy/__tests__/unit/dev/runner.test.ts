@@ -19,7 +19,11 @@ const makeCtx = (overrides?: { hasD1?: boolean; migrateLocal?: boolean }): Ctx =
       debounceMs: 120
     },
     has: (name: string) => name === "d1" && (overrides?.hasD1 ?? false),
-    require: () => ({ deployManifest: () => ({ kind: "d1", binding: "DB" }) })
+    require: () => ({
+      deployManifest: () => [
+        { kind: "d1", name: "tracker-db", binding: "DB", migrations: "db/migrations" }
+      ]
+    })
   }) as unknown as Ctx;
 
 type Captured = {

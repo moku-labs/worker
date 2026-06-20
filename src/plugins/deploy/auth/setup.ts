@@ -105,3 +105,49 @@ const ciSection = (groups: PermissionGroup[]): string[] => {
  */
 export const tokenInstructions = (manifest: ExternalManifest): string =>
   [...localSection(requiredToken(manifest)), "", ...ciSection(ciToken(manifest))].join("\n");
+
+/**
+ * Render a ready-to-fill `.env.local` for the guided deploy: the two Cloudflare credential keys
+ * (left blank to paste into) preceded by a comment block derived from the manifest — where to
+ * create the token, which template to start from, exactly which permissions to add, and how to find
+ * the account id. The same guidance {@link tokenInstructions} prints, but PERSISTED in the file the
+ * user edits (so it survives the terminal scrolling away). Pure: no fs, no network.
+ *
+ * @param manifest - The assembled deploy manifest.
+ * @returns The `.env.local` file contents (trailing newline included).
+ * @example
+ * ```ts
+ * await writeFile(".env.local", envLocalScaffold(manifest));
+ * ```
+ */
+export const envLocalScaffold = (manifest: ExternalManifest): string => {
+  const requirement = requiredToken(manifest);
+
+  // Step 3 only asks for additions when the stock template is actually missing something.
+  const addStep =
+    requirement.toAdd.length > 0
+      ? `#   3. Under Permissions, ADD: ${requirement.toAdd
+          .map(permission => `${permission.group.replace("Account · ", "")} -> ${permission.scope}`)
+          .join(", ")}`
+      : `#   3. The "${requirement.base}" template covers everything — no changes needed.`;
+
+  const lines = [
+    "# Cloudflare credentials for the moku deploy — fill in the two values below, then re-run deploy.",
+    "# Local-only: keep this file out of git (.env.local is gitignored by convention).",
+    "#",
+    "# Create the API token:",
+    `#   1. ${TOKENS_URL}  ->  Create Token`,
+    `#   2. Start from the "${requirement.base}" template.`,
+    addStep,
+    "#   4. Account Resources -> Include -> your account.",
+    "#   5. Create the token, copy it, and paste it after CLOUDFLARE_API_TOKEN= below.",
+    "#",
+    "# Account id: open https://dash.cloudflare.com — it is the id in the URL",
+    "# (dash.cloudflare.com/<account-id>) or in the right sidebar of any domain's overview.",
+    "",
+    "CLOUDFLARE_API_TOKEN=",
+    "CLOUDFLARE_ACCOUNT_ID="
+  ];
+
+  return `${lines.join("\n")}\n`;
+};

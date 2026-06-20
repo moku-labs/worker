@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import { bindingsPlugin } from "../../../bindings";
 import { createStorageApi } from "../../api";
-import type { StorageApi, StorageCtx } from "../../types";
+import type { StorageApi, StorageConfig, StorageCtx } from "../../types";
 import { createMemoryProvider } from "../helpers/memory-provider";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -10,39 +10,40 @@ import { createMemoryProvider } from "../helpers/memory-provider";
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Build a fake bindings API whose require<T>() returns a memory-backed provider
- * for the given bucket name.
+ * Mock PluginCtx shape needed by createStorageApi. Defaults to a single `files`
+ * instance whose `binding` (env var) and `name` (CF bucket) are distinct.
+ *
+ * @param config - Optional keyed-map storage config override.
+ * @returns A mock StorageCtx whose require(bindingsPlugin) wraps a memory provider.
  */
-const makeMemoryBindings = (expectedBucket = "ASSETS") => {
+const createMockCtx = (
+  config?: StorageConfig
+): StorageCtx & {
+  require: ReturnType<typeof vi.fn>;
+  _bindingsRequire: ReturnType<typeof vi.fn>;
+} => {
+  const resolved: StorageConfig = config ?? {
+    files: { name: "tracker-files", binding: "FILES" }
+  };
+  // The binding name to honour is the (single / default) instance's binding.
+  const bindingNames = new Set(Object.values(resolved).map(instance => instance.binding));
   const memProvider = createMemoryProvider();
-  return {
-    require: vi.fn(<T>(_env: Record<string, unknown>, name: string): T => {
-      if (name !== expectedBucket) {
-        throw new Error(`[moku-worker] binding "${name}" is not bound.`);
-      }
-      // We return the memProvider cast as T (R2Bucket). In tests this is acceptable
-      // because we immediately narrow back to StorageProvider inside resolveR2Provider.
-      return memProvider as unknown as T;
-    }),
+  const bindingsRequire = vi.fn(<T>(_env: Record<string, unknown>, name: string): T => {
+    if (!bindingNames.has(name)) {
+      throw new Error(`[moku-worker] binding "${name}" is not bound.`);
+    }
+    return memProvider as unknown as T;
+  });
+  const fakeBindings = {
+    require: bindingsRequire,
     has: vi.fn(() => true),
     _memProvider: memProvider
   };
-};
-
-/** Mock PluginCtx shape needed by createStorageApi. */
-const createMockCtx = (overrides?: {
-  bucket?: string;
-  upload?: string;
-}): StorageCtx & { require: ReturnType<typeof vi.fn> } => {
-  const fakeBindings = makeMemoryBindings(overrides?.bucket ?? "ASSETS");
   return {
     // Standard-tier ctx also carries global framework config + `has` (spec/08 §2);
     // both inert here — createStorageApi only reads config and require(bindingsPlugin).
     global: {},
-    config: {
-      bucket: overrides?.bucket ?? "ASSETS",
-      upload: overrides?.upload ?? ""
-    },
+    config: resolved,
     state: {} as Record<string, never>,
     emit: vi.fn() as StorageCtx["emit"],
     has: () => false,
@@ -50,12 +51,17 @@ const createMockCtx = (overrides?: {
     require: vi.fn((plugin: unknown) => {
       if (plugin === bindingsPlugin) return fakeBindings;
       throw new Error("unexpected require");
-    })
-  } as unknown as StorageCtx & { require: ReturnType<typeof vi.fn> };
+    }),
+    // Exposed for assertions: the inner env-resolver (bindings.require(env, name)).
+    _bindingsRequire: bindingsRequire
+  } as unknown as StorageCtx & {
+    require: ReturnType<typeof vi.fn>;
+    _bindingsRequire: ReturnType<typeof vi.fn>;
+  };
 };
 
-/** A minimal fake env carrying the ASSETS binding slot (identity — the memory provider ignores it). */
-const fakeEnv: Record<string, unknown> = { ASSETS: "stub" };
+/** A minimal fake env carrying the FILES binding slot (identity — the memory provider ignores it). */
+const fakeEnv: Record<string, unknown> = { FILES: "stub" };
 
 describe("createStorageApi", () => {
   // ───────── get ─────────────────────────────────────────────────────────────
@@ -162,32 +168,77 @@ describe("createStorageApi", () => {
     });
   });
 
+  // ───────── use(key) — named instance selection ──────────────────────────────
+
+  describe("use", () => {
+    it("resolves a named instance's binding and round-trips through it", async () => {
+      const ctx = createMockCtx({
+        files: { name: "tracker-files", binding: "FILES", default: true },
+        uploads: { name: "tracker-uploads", binding: "UPLOADS" }
+      });
+      const api = createStorageApi(ctx);
+      const env: Record<string, unknown> = { UPLOADS: "stub" };
+
+      await api.use("uploads").put(env, "avatar.png", "data");
+      const body = await api.use("uploads").get(env, "avatar.png");
+
+      expect(body).not.toBeNull();
+    });
+
+    it("throws a [moku-worker] error for an unknown instance key", () => {
+      const ctx = createMockCtx();
+      const api = createStorageApi(ctx);
+      const env: Record<string, unknown> = { FILES: "stub" };
+
+      expect(() => api.use("nope").get(env, "k")).toThrow("[moku-worker]");
+    });
+  });
+
   // ───────── deployManifest ──────────────────────────────────────────────────
 
   describe("deployManifest", () => {
-    it("returns { kind:'r2', bucket, upload } from ctx.config", () => {
-      const ctx = createMockCtx({ bucket: "MEDIA", upload: "./public" });
+    it("returns one r2 descriptor per configured instance", () => {
+      const ctx = createMockCtx({
+        files: { name: "tracker-files", binding: "FILES" }
+      });
       const api = createStorageApi(ctx);
 
       const manifest = api.deployManifest();
 
-      expect(manifest).toEqual({ kind: "r2", bucket: "MEDIA", upload: "./public" });
+      expect(manifest).toEqual([{ kind: "r2", name: "tracker-files", binding: "FILES" }]);
     });
 
-    it("does not call ctx.require (no env access)", () => {
+    it("includes `upload` only when defined on the instance", () => {
+      const ctx = createMockCtx({
+        files: { name: "tracker-files", binding: "FILES" },
+        media: { name: "tracker-media", binding: "MEDIA", upload: "./public" }
+      });
+      const api = createStorageApi(ctx);
+
+      const manifest = api.deployManifest();
+
+      expect(manifest).toEqual([
+        { kind: "r2", name: "tracker-files", binding: "FILES" },
+        { kind: "r2", name: "tracker-media", binding: "MEDIA", upload: "./public" }
+      ]);
+    });
+
+    it("does not resolve any binding off env (build-time only — no env access)", () => {
       const ctx = createMockCtx();
       const api = createStorageApi(ctx);
 
       api.deployManifest();
 
-      expect(ctx.require).not.toHaveBeenCalled();
+      expect(ctx._bindingsRequire).not.toHaveBeenCalled();
     });
 
-    it("kind is always the literal 'r2'", () => {
+    it("every entry's kind is the literal 'r2'", () => {
       const ctx = createMockCtx();
       const api = createStorageApi(ctx);
 
-      expect(api.deployManifest().kind).toBe("r2");
+      for (const entry of api.deployManifest()) {
+        expect(entry.kind).toBe("r2");
+      }
     });
   });
 
@@ -210,12 +261,12 @@ describe("createStorageApi", () => {
       >();
     });
 
-    it("deployManifest returns { kind: 'r2'; bucket: string; upload: string }", () => {
+    it("deployManifest returns an array of { kind:'r2'; name; binding; upload? }", () => {
       const ctx = createMockCtx();
       const api = createStorageApi(ctx);
 
-      expectTypeOf(api.deployManifest).toExtend<
-        () => { kind: "r2"; bucket: string; upload: string }
+      expectTypeOf(api.deployManifest).toEqualTypeOf<
+        () => Array<{ kind: "r2"; name: string; binding: string; upload?: string }>
       >();
     });
 

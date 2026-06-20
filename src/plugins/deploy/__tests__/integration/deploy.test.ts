@@ -48,6 +48,12 @@ vi.mock("../../infra/plan", () => ({
   }))
 }));
 
+vi.mock("../../auth/verify", () => ({
+  verifyAuth: vi
+    .fn()
+    .mockResolvedValue({ ok: true, account: "test", accountId: "acct-test", scopes: [] })
+}));
+
 import { beforeEach } from "vitest";
 import { provisionResource } from "../../providers";
 import { runWrangler } from "../../runner";

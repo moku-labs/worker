@@ -50,10 +50,26 @@ vi.mock("../../auth/verify", () => ({
     .mockResolvedValue({ ok: true, account: "Play Co", accountId: "acc-1", scopes: [] })
 }));
 
+// TTY defaults to interactive so the guided path is exercisable; overridden per test.
+vi.mock("../../tty", () => ({ stdoutIsTty: vi.fn(() => true) }));
+
+// Branded prompts mocked — confirm defaults to "yes"; overridden per guided test.
+vi.mock("@moku-labs/common/cli", async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    createBrandPrompts: vi.fn(() => ({
+      confirm: vi.fn().mockResolvedValue(true),
+      select: vi.fn()
+    }))
+  };
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Imports after mocking
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { createBrandPrompts } from "@moku-labs/common/cli";
 import { beforeEach } from "vitest";
 import { verifyAuth } from "../../auth/verify";
 import { planInfra } from "../../infra/plan";
@@ -281,7 +297,7 @@ describe("createDeployApi", () => {
         .filter(([event]) => event === "deploy:phase")
         .map(([, payload]) => (payload as { phase: string }).phase);
 
-      expect(phases).toEqual(["detect", "provision", "wrangler-config", "deploy"]);
+      expect(phases).toEqual(["auth", "detect", "provision", "wrangler-config", "deploy"]);
     });
 
     it("emits deploy:phase in full order detect → provision → wrangler-config → upload → deploy", async () => {
@@ -297,7 +313,14 @@ describe("createDeployApi", () => {
         .filter(([event]) => event === "deploy:phase")
         .map(([, payload]) => (payload as { phase: string }).phase);
 
-      expect(phases).toEqual(["detect", "provision", "wrangler-config", "upload", "deploy"]);
+      expect(phases).toEqual([
+        "auth",
+        "detect",
+        "provision",
+        "wrangler-config",
+        "upload",
+        "deploy"
+      ]);
     });
 
     it("emits deploy:phase upload with detail when r2 has an upload dir", async () => {
@@ -513,6 +536,91 @@ describe("createDeployApi", () => {
       const api = createDeployApi(ctx);
 
       expect(api.tokenInstructions()).toContain("Cloudflare API token");
+    });
+  });
+
+  // ───────── guided prompts ───────────────────────────────────────────────────
+
+  describe("guided prompts", () => {
+    it("verifies the token before deploying (auth fail-fast)", async () => {
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(verifyAuth).toHaveBeenCalledWith(ctx);
+    });
+
+    it("does NOT prompt when not guided (createBrandPrompts unused)", async () => {
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      expect(createBrandPrompts).not.toHaveBeenCalled();
+      expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+
+    it("prompts and deploys when guided + confirmed", async () => {
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await api.run({ guided: true });
+
+      expect(createBrandPrompts).toHaveBeenCalled();
+      expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+
+    it("aborts at the infra gate when declined (no provision, no deploy)", async () => {
+      const ctx = createMockCtx();
+      vi.mocked(createBrandPrompts).mockReturnValueOnce({
+        confirm: vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(false),
+        select: vi.fn<(question: string, choices: readonly string[]) => Promise<number>>()
+      });
+      const api = createDeployApi(ctx);
+
+      await api.run({ guided: true });
+
+      expect(provisionResource).not.toHaveBeenCalled();
+      expect(runWrangler).not.toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+      expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", { phase: "aborted" });
+    });
+
+    it("aborts at the deploy gate when declined after provisioning", async () => {
+      const ctx = createMockCtx();
+      vi.mocked(createBrandPrompts).mockReturnValueOnce({
+        confirm: vi
+          .fn<(question: string) => Promise<boolean>>()
+          .mockResolvedValueOnce(true)
+          .mockResolvedValue(false),
+        select: vi.fn<(question: string, choices: readonly string[]) => Promise<number>>()
+      });
+      const api = createDeployApi(ctx);
+
+      await api.run({ guided: true });
+
+      expect(provisionResource).toHaveBeenCalled(); // infra confirmed → provisioned
+      expect(runWrangler).not.toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+
+    it("does NOT prompt when guided but --yes (yes overrides guided)", async () => {
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await api.run({ guided: true, yes: true });
+
+      expect(createBrandPrompts).not.toHaveBeenCalled();
+      expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+
+    it("does NOT prompt in ci mode even when guided", async () => {
+      const ctx = createMockCtx({ ci: true });
+      const api = createDeployApi(ctx);
+
+      await api.run({ guided: true });
+
+      expect(createBrandPrompts).not.toHaveBeenCalled();
+      expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
     });
   });
 

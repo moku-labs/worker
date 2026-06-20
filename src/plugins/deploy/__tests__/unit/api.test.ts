@@ -84,6 +84,7 @@ import { planInfra } from "../../infra/plan";
 import { provisionResource } from "../../providers";
 import { uploadDirToR2 } from "../../providers/r2";
 import { runWrangler, runWranglerInherit } from "../../runner";
+import { stdoutIsTty } from "../../tty";
 import { scaffoldWranglerAndCi, writeWranglerConfig } from "../../wrangler-config";
 
 // Clear mocks between tests so call counts don't bleed across assertions.
@@ -614,21 +615,11 @@ describe("createDeployApi", () => {
       expect(verifyAuth).toHaveBeenCalledWith(ctx);
     });
 
-    it("does NOT prompt when not guided (createBrandPrompts unused)", async () => {
+    it("prompts (guided) by default on a TTY and deploys when confirmed", async () => {
       const ctx = createMockCtx();
       const api = createDeployApi(ctx);
 
       await api.run();
-
-      expect(createBrandPrompts).not.toHaveBeenCalled();
-      expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
-    });
-
-    it("prompts and deploys when guided + confirmed", async () => {
-      const ctx = createMockCtx();
-      const api = createDeployApi(ctx);
-
-      await api.run({ guided: true });
 
       expect(createBrandPrompts).toHaveBeenCalled();
       expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
@@ -642,7 +633,7 @@ describe("createDeployApi", () => {
       });
       const api = createDeployApi(ctx);
 
-      await api.run({ guided: true });
+      await api.run();
 
       expect(provisionResource).not.toHaveBeenCalled();
       expect(runWrangler).not.toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
@@ -660,27 +651,47 @@ describe("createDeployApi", () => {
       });
       const api = createDeployApi(ctx);
 
-      await api.run({ guided: true });
+      await api.run();
 
       expect(provisionResource).toHaveBeenCalled(); // infra confirmed → provisioned
       expect(runWrangler).not.toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
     });
 
-    it("does NOT prompt when guided but --yes (yes overrides guided)", async () => {
+    it("does NOT prompt when opts.ci is true (automated path)", async () => {
       const ctx = createMockCtx();
       const api = createDeployApi(ctx);
 
-      await api.run({ guided: true, yes: true });
+      await api.run({ ci: true });
 
       expect(createBrandPrompts).not.toHaveBeenCalled();
       expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
     });
 
-    it("does NOT prompt in ci mode even when guided", async () => {
+    it("does NOT prompt when ctx.config.ci is the standing default", async () => {
       const ctx = createMockCtx({ ci: true });
       const api = createDeployApi(ctx);
 
-      await api.run({ guided: true });
+      await api.run();
+
+      expect(createBrandPrompts).not.toHaveBeenCalled();
+      expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+
+    it("opts.ci=true overrides a non-ci config default", async () => {
+      const ctx = createMockCtx({ ci: false });
+      const api = createDeployApi(ctx);
+
+      await api.run({ ci: true });
+
+      expect(createBrandPrompts).not.toHaveBeenCalled();
+    });
+
+    it("does NOT prompt when stdout is not a TTY (even when not ci)", async () => {
+      vi.mocked(stdoutIsTty).mockReturnValueOnce(false);
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await api.run();
 
       expect(createBrandPrompts).not.toHaveBeenCalled();
       expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);

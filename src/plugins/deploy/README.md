@@ -18,18 +18,18 @@ detect → provision → wrangler-config → upload → deploy
 
 Each stage emits a global `deploy:phase` event; each provisioned resource emits `provision:resource`; the final URL is emitted as `deploy:complete`.
 
-### Node-only — imported from `@moku-labs/worker/cli`, never the runtime
+### Node-only — runs in Node, tree-shaken from the runtime bundle
 
 `deploy` is **not** part of the Cloudflare Workers runtime. It uses `node:child_process` (to spawn `wrangler`) and `node:fs` / `node:fs/promises` (to read and write the wrangler config and walk the upload directory), so it can only run in Node — in `scripts/*.ts` at deploy time, never inside the Cloudflare isolate at request time.
 
-For this reason it lives behind the package's dedicated `./cli` entry and is **excluded from the `.` runtime barrel** (`src/index.ts`). Import it from `@moku-labs/worker/cli`:
+It is exported from the package root (the `@moku-labs/worker/cli` subpath remains as a back-compat alias). Import it from `@moku-labs/worker`:
 
 ```typescript
-import { deployPlugin } from "@moku-labs/worker/cli";
-import type { ExternalManifest, ResourceManifest } from "@moku-labs/worker/cli";
+import { deployPlugin } from "@moku-labs/worker";
+import type { ExternalManifest, ResourceManifest } from "@moku-labs/worker";
 ```
 
-Importing `deployPlugin` from `@moku-labs/worker` will fail — that entry deliberately omits it so Node built-ins never reach the deployed Worker bundle (bundle-safety; design HC11).
+Its `node:*` graph reaches a bundle **only** when a consumer adds `deployPlugin` to `createApp({ plugins })`; because the package is `"sideEffects": false`, a request-time Worker that never adds it tree-shakes it away, keeping the Node built-ins out of the deployed bundle.
 
 ### Where it sits
 
@@ -47,8 +47,7 @@ Configured under `pluginConfigs.deploy`. The config is flat and every field has 
 | `ci` | `boolean` | `false` | CI / non-interactive mode. When `true` (or stdout is non-TTY), the guided flow never prompts. Cloudflare credentials are read from the Node env (`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`), never from plugin config. |
 
 ```typescript
-import { createApp } from "@moku-labs/worker";
-import { deployPlugin } from "@moku-labs/worker/cli";
+import { createApp, deployPlugin } from "@moku-labs/worker";
 
 const app = createApp({
   plugins: [/* resource plugins (kv, d1, storage, queues, durableObjects), */ deployPlugin],
@@ -69,8 +68,7 @@ All methods are mounted on `app.deploy.*` and are invoked from thin Node-side `s
 
 ```typescript
 run(opts?: {
-  guided?: boolean;
-  yes?: boolean;
+  ci?: boolean;
   webBuild?: WebBuild; // () => Promise<void> | Promise<{ files?: number }>
   manifest?: ExternalManifest;
 }): Promise<void>
@@ -89,8 +87,7 @@ Runs the full deploy pipeline. The phases execute, and emit, in this order:
 
 | Option | Type | Description |
 |---|---|---|
-| `opts.guided` | `boolean` | Enable interactive confirmation steps (skipped when `ci` is `true`). |
-| `opts.yes` | `boolean` | Auto-confirm all prompts. |
+| `opts.ci` | `boolean` | CI/automated: never prompts, auto-confirms every gate. Omit/`false` → guided (interactive) whenever stdout is a TTY. Falls back to `ctx.config.ci`. |
 | `opts.webBuild` | `WebBuild` | Build the web site first (e.g. `() => webApp.cli.build()`). When supplied, an extra `deploy:phase { phase: "build", detail: "web" }` runs right after the auth preflight, before provisioning — so the generated assets exist before the R2 upload and `wrangler deploy`. Wired in from the consumer's app-side script (falls back to `ctx.config.webBuild`). |
 | `opts.manifest` | `ExternalManifest` | Caller-supplied manifest; bypasses `deployManifest()` assembly. |
 
@@ -100,7 +97,7 @@ Runs the full deploy pipeline. The phases execute, and emit, in this order:
 
 ```typescript
 // Moku path — manifest assembled from each resource plugin's deployManifest()
-await app.deploy.run({ guided: true });
+await app.deploy.run(); // guided on a TTY; pass { ci: true } for the automated path
 
 // Universal / non-moku path — deploy arbitrary Worker code from a supplied manifest
 await app.deploy.run({
@@ -162,10 +159,10 @@ await app.deploy.init({ ci: true });
 
 ## Manifests
 
-The pipeline consumes a single `ExternalManifest`, assembled from the per-kind `ResourceManifest` descriptors each resource plugin returns from its own `deployManifest()`. Both types are exported from `@moku-labs/worker/cli`.
+The pipeline consumes a single `ExternalManifest`, assembled from the per-kind `ResourceManifest` descriptors each resource plugin returns from its own `deployManifest()`. Both types are exported from `@moku-labs/worker` (also via the `./cli` back-compat alias).
 
 ```typescript
-// @moku-labs/worker/cli
+// @moku-labs/worker
 export type ResourceManifest =
   | { kind: "r2"; bucket: string; upload?: string }
   | { kind: "kv"; binding: string }
@@ -228,10 +225,10 @@ import {
   storagePlugin,
   kvPlugin,
   d1Plugin,
-  queuesPlugin,
-  durableObjectsPlugin
+  deployPlugin,
+  durableObjectsPlugin,
+  queuesPlugin
 } from "@moku-labs/worker";
-import { deployPlugin } from "@moku-labs/worker/cli";
 
 const app = createApp({
   config: {
@@ -262,7 +259,7 @@ const app = createApp({
 await app.deploy.init();
 
 // Aggregate manifests → provision → write wrangler config → upload → wrangler deploy.
-await app.deploy.run({ guided: !process.argv.includes("--ci") });
+await app.deploy.run({ ci: process.argv.includes("--ci") });
 ```
 
 A stateless deploy never calls `app.start()` / `app.stop()` — the pipeline is one-shot and driven entirely by the explicit `app.deploy.*` call.
@@ -285,12 +282,12 @@ hooks: (register) => {
 ## Integration
 
 - **Resource plugins (`storage`, `kv`, `d1`, `queues`, `durableObjects`).** `deploy` depends on all five and reads each one's `deployManifest()` via `ctx.require`, gated by `ctx.has(name)` so plugins absent from `createApp({ plugins })` are skipped. It never reads their `pluginConfigs` — the manifest api is the only contract. See [Manifests](#manifests) for how each descriptor maps to provisioning and the wrangler config.
-- **`cli` plugin.** `cli` declares `depends: [deployPlugin]` and exposes `app.cli.dev()` / `app.cli.deploy()` as thin passthroughs to `app.deploy.dev()` / `app.deploy.run()`, plus hooks that render the three global deploy events as a live TUI. Both `cliPlugin` and `deployPlugin` are exported from `@moku-labs/worker/cli`.
+- **`cli` plugin.** `cli` declares `depends: [deployPlugin]` and exposes `app.cli.dev()` / `app.cli.deploy()` as thin passthroughs to `app.deploy.dev()` / `app.deploy.run()`, plus hooks that render the three global deploy events as a live TUI. Both `cliPlugin` and `deployPlugin` are exported from `@moku-labs/worker` (the `@moku-labs/worker/cli` subpath is a back-compat alias).
 - **`wrangler`.** Invoked as a subprocess (resolved from `node_modules/.bin`) for `kv namespace create`, `r2 bucket create`, `r2 object put`, `d1 create`, `d1 migrations apply`, `queues create`, `dev`, and `deploy`. It is a peer/dev dependency, never bundled.
 
 ## Design notes
 
-- **Node-only — excluded from the runtime barrel (HC11).** `deploy` imports `node:child_process` and `node:fs`, which cannot run in the Cloudflare isolate. It is therefore omitted from `src/index.ts` (the `.` runtime entry exported as `@moku-labs/worker`) and shipped only via the `./cli` entry (`src/cli.ts`). This keeps Node built-ins out of the deployed Worker bundle. Importing it from `@moku-labs/worker` is intentionally impossible.
+- **Node-only — tree-shaken from the runtime, not walled off.** `deploy` imports `node:child_process` and `node:fs`, which cannot run in the Cloudflare isolate. It is exported from `src/index.ts` (`@moku-labs/worker`) alongside `cliPlugin` (the `./cli` entry is now a back-compat alias), but its `node:*` graph reaches a bundle **only** when a consumer lists it in `createApp({ plugins })`. Because the package is `"sideEffects": false`, a request-time Worker that imports `createApp` and never adds `deployPlugin` tree-shakes it away, keeping the Node built-ins out of the deployed bundle.
 - **Manifest, not sibling config (F6).** A plugin can only read `ctx.global` and its own `ctx.config`; `ctx.require` returns a plugin's *api*, never its config. So `deploy` sources every resource descriptor from the producing plugin's `deployManifest()` api — not from `pluginConfigs`. The five `depends` entries make those apis reachable via `ctx.require` and double as a presence gate (`ctx.has`).
 - **Global events, no events block (F2).** `deploy`'s three signals are global `WorkerEvents`, declared once in `src/config.ts`, so observers (the `cli` TUI) hook them without a `depends` purely for visibility. `deploy` declares no `events` block and never emits a foreign plugin's event via a cast — R2 upload progress is surfaced as `deploy:phase { phase: "upload" }`, not as a `storage:*` emit.
 - **No state, no hooks, no lifecycle.** Every invocation (`run` / `dev` / `init`) is a one-shot build-time orchestration over the resource manifests, `ctx.global`, the Node filesystem, and the `wrangler` subprocess. Cloudflare Workers are request-scoped, so there is no long-lived connection to open or close — `createState`, `hooks`, and `onInit`/`onStart`/`onStop` are all omitted.

@@ -25,16 +25,23 @@ const makeCtx = (overrides?: { hasD1?: boolean; migrateLocal?: boolean }): Ctx =
 type Captured = {
   onChange?: (changedPath: string) => unknown;
   close: Mock<() => void>;
-  kill: Mock<() => void>;
+  stop: Mock<() => Promise<void>>;
 };
 
 /** Build injected dev deps plus a `captured` handle exposing the watch callback + teardown spies. */
 const makeDeps = (overrides?: Partial<DevDeps>): { deps: DevDeps; captured: Captured } => {
-  const captured: Captured = { close: vi.fn<() => void>(), kill: vi.fn<() => void>() };
+  const captured: Captured = {
+    close: vi.fn<() => void>(),
+    stop: vi.fn<() => Promise<void>>().mockResolvedValue(undefined)
+  };
   const deps: DevDeps = {
     build: vi.fn().mockResolvedValue({ files: 3 }),
     runWrangler: vi.fn().mockResolvedValue(""),
-    spawnDev: vi.fn(() => ({ kill: captured.kill })),
+    // whenExited never resolves by default, so teardown is driven by untilSignal (the SIGINT path).
+    spawnDev: vi.fn(() => ({
+      stop: captured.stop,
+      whenExited: new Promise<void>(() => undefined)
+    })),
     watch: vi.fn((_globs, _ms, onChange) => {
       captured.onChange = onChange;
       return { close: captured.close };
@@ -65,7 +72,27 @@ describe("runDev", () => {
       ])
     );
     expect(captured.close).toHaveBeenCalled();
-    expect(captured.kill).toHaveBeenCalled();
+    expect(captured.stop).toHaveBeenCalled();
+  });
+
+  it("ends the session when wrangler exits on its own (whenExited wins the race, no SIGINT)", async () => {
+    const stop = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    const close = vi.fn<() => void>();
+    const deps: DevDeps = {
+      build: vi.fn().mockResolvedValue({ files: 1 }),
+      runWrangler: vi.fn().mockResolvedValue(""),
+      // wrangler exits immediately on its own; untilSignal never fires (no Ctrl+C).
+      spawnDev: vi.fn(() => ({ stop, whenExited: Promise.resolve() })),
+      watch: vi.fn(() => ({ close })),
+      untilSignal: () => new Promise<void>(() => undefined),
+      now: vi.fn(() => 0)
+    };
+
+    // Would hang forever without the untilSignal-vs-whenExited race in runDev.
+    await runDev(makeCtx(), {}, deps);
+
+    expect(stop).toHaveBeenCalled();
+    expect(close).toHaveBeenCalled();
   });
 
   it("applies local d1 migrations when a d1 plugin is present and migrateLocal is on", async () => {

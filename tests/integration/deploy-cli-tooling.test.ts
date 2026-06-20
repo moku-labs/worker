@@ -210,7 +210,7 @@ describe("deploy + cli tooling (root integration)", () => {
     it("writes a wrangler config whose manifest reflects all five resource kinds", async () => {
       const app = createToolingApp();
 
-      await app.deploy.run({ yes: true });
+      await app.deploy.run({ ci: true });
 
       expect(writeWranglerConfigMock).toHaveBeenCalledTimes(1);
 
@@ -231,7 +231,7 @@ describe("deploy + cli tooling (root integration)", () => {
     it("the written manifest carries each resource's configured binding/identity", async () => {
       const app = createToolingApp();
 
-      await app.deploy.run({ yes: true });
+      await app.deploy.run({ ci: true });
 
       const { manifest } = firstWranglerConfigCall();
       const byKind = Object.fromEntries(manifest.resources.map(r => [r.kind, r]));
@@ -250,7 +250,7 @@ describe("deploy + cli tooling (root integration)", () => {
     it("emits phases in pipeline order: detect → provision → wrangler-config → upload → deploy", async () => {
       const app = createToolingApp();
 
-      await app.deploy.run({ yes: true });
+      await app.deploy.run({ ci: true });
       await flushEvents();
 
       const phases = recorded
@@ -272,7 +272,7 @@ describe("deploy + cli tooling (root integration)", () => {
     it("the upload phase carries a file-count detail from the mocked R2 upload", async () => {
       const app = createToolingApp();
 
-      await app.deploy.run({ yes: true });
+      await app.deploy.run({ ci: true });
       await flushEvents();
 
       const upload = recorded.find(
@@ -291,7 +291,7 @@ describe("deploy + cli tooling (root integration)", () => {
     it("calls provisionResource once per manifest resource (five total)", async () => {
       const app = createToolingApp();
 
-      await app.deploy.run({ yes: true });
+      await app.deploy.run({ ci: true });
 
       expect(provisionResource).toHaveBeenCalledTimes(5);
     });
@@ -299,7 +299,7 @@ describe("deploy + cli tooling (root integration)", () => {
     it("records provision:resource for every resource with the correct kind + name", async () => {
       const app = createToolingApp();
 
-      await app.deploy.run({ yes: true });
+      await app.deploy.run({ ci: true });
       await flushEvents();
 
       const provisions = recorded
@@ -325,7 +325,7 @@ describe("deploy + cli tooling (root integration)", () => {
     it("records deploy:complete with the url resolved by the mocked runWrangler", async () => {
       const app = createToolingApp();
 
-      await app.deploy.run({ yes: true });
+      await app.deploy.run({ ci: true });
       await flushEvents();
 
       const complete = recorded.find(
@@ -340,7 +340,7 @@ describe("deploy + cli tooling (root integration)", () => {
     it("runs `wrangler deploy --config wrangler.jsonc` at the end of the pipeline", async () => {
       const app = createToolingApp();
 
-      await app.deploy.run({ yes: true });
+      await app.deploy.run({ ci: true });
 
       expect(runWrangler).toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
     });
@@ -352,7 +352,7 @@ describe("deploy + cli tooling (root integration)", () => {
     it("app.cli.deploy() drives deploy.run — provisions, writes config, runs wrangler deploy", async () => {
       const app = createToolingApp();
 
-      await app.cli.deploy({ yes: true });
+      await app.cli.deploy({ ci: true });
 
       // Same node seams the deploy path hits — proves cli forwarded to deploy.run.
       expect(provisionResource).toHaveBeenCalledTimes(5);
@@ -363,7 +363,7 @@ describe("deploy + cli tooling (root integration)", () => {
     it("app.cli.deploy() surfaces the same global deploy events the recorder captures", async () => {
       const app = createToolingApp();
 
-      await app.cli.deploy({ yes: true });
+      await app.cli.deploy({ ci: true });
       await flushEvents();
 
       const events = recorded.map(entry => entry.event);
@@ -381,7 +381,7 @@ describe("deploy + cli tooling (root integration)", () => {
     it("cli's deploy hooks format deploy events into the log trace (detect, deployed → <url>)", async () => {
       const app = createToolingApp();
 
-      await app.cli.deploy({ yes: true });
+      await app.cli.deploy({ ci: true });
       await flushEvents();
 
       // cli registers hook formatters that write one line per event via ctx.log.

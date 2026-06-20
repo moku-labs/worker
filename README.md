@@ -8,7 +8,7 @@
 
 Two design facts shape everything below:
 
-1. **Runtime vs. node-only split.** The request-time surface is imported from `@moku-labs/worker`; the build-time deploy/CLI surface is imported from `@moku-labs/worker/cli`. The `./cli` entry reaches for `node:child_process` and `node:fs`, so it must never enter the deployed Worker bundle — the two entry points enforce that boundary.
+1. **Runtime vs. node-only surface.** Everything ships from `@moku-labs/worker`, including the build-time `deployPlugin`/`cliPlugin` (the `@moku-labs/worker/cli` subpath remains as a back-compat alias). Those two reach for `node:child_process`/`node:fs`, so they enter a bundle **only when a consumer actually lists them in `createApp({ plugins })`** — `"sideEffects": false` tree-shakes them out of any request-time Worker bundle that doesn't.
 2. **Env per request, never stored.** One Cloudflare isolate serves concurrent requests. Bindings (`env`) are threaded as a **call argument** to every plugin method and live only on the call stack — they are never captured in plugin state, so concurrent requests cannot leak each other's bindings.
 
 This framework supplies the **server-side** Cloudflare primitives. Moku Web (`@moku-labs/web`) supplies the request/island layer; the two compose.
@@ -68,7 +68,7 @@ bun add @moku-labs/worker
 | `@moku-labs/core@0.1.4` | The micro-kernel this framework is built on. Installed transitively. |
 | `@moku-labs/common@0.1.1` | Supplies the `log` and `env` core plugins. Installed transitively. |
 | `@cloudflare/workers-types` (dev) | Ambient Cloudflare runtime types (`KVNamespace`, `D1Database`, `R2Bucket`, `Queue`, `DurableObjectNamespace`, `ExecutionContext`, …). Type-only — never bundled. Add to your tsconfig `types`. |
-| `wrangler` (peer/dev) | Required **only** for the node-only deploy/CLI path (`@moku-labs/worker/cli`). Invoked as a subprocess; never bundled. |
+| `wrangler` (peer/dev) | Required **only** when you add the node-only `deployPlugin`/`cliPlugin`. Invoked as a subprocess; never bundled. |
 
 Requires Node `>=24` for the build/deploy tooling and bun `>=1.3.14`.
 
@@ -170,8 +170,8 @@ Plugin **name strings** are bare (`"server"`, `"kv"`, `"durableObjects"`); the *
 | [`storage`](src/plugins/storage/README.md) | R2 object storage behind a provider-adapter seam. | Complex | `@moku-labs/worker` | `get`, `put`, `delete`, `list`, `deployManifest` |
 | [`durableObjects`](src/plugins/durable-objects/README.md) | Resolves DO stubs off `env`; ships `defineDurableObject` base-class helper. | Standard | `@moku-labs/worker` | `get`, `deployManifest`, `defineDurableObject` |
 | [`stage`](src/plugins/stage/README.md) | Deployment-stage / dev-mode detection. Core plugin, flat-injected as `ctx.stage`. | Nano | `@moku-labs/worker` | `isDev`, `isProduction`, `current` |
-| [`deploy`](src/plugins/deploy/README.md) | Build-time deploy orchestrator: detect → provision → wrangler-config → upload → deploy. **Node-only.** | Complex | `@moku-labs/worker/cli` | `run`, `dev`, `init` |
-| [`cli`](src/plugins/cli/README.md) | Developer-facing `dev` / `deploy` verbs + live progress TUI. Thin passthroughs to `deploy`. **Node-only.** | Standard | `@moku-labs/worker/cli` | `dev`, `deploy` |
+| [`deploy`](src/plugins/deploy/README.md) | Build-time deploy orchestrator: detect → provision → wrangler-config → upload → deploy. **Node-only.** | Complex | `@moku-labs/worker` (`./cli` alias) | `run`, `dev`, `init` |
+| [`cli`](src/plugins/cli/README.md) | Developer-facing `dev` / `deploy` verbs + live progress TUI. Thin passthroughs to `deploy`. **Node-only.** | Standard | `@moku-labs/worker` (`./cli` alias) | `dev`, `deploy` |
 
 > The `log` and `env` **core plugins are not authored here** — they come from `@moku-labs/common` and are re-exported (`logPlugin`, `envPlugin`) for completeness. `env` is environment-**variable** access (`get`/`require`/`has`), distinct from `stage` (dev/production detection).
 
@@ -299,20 +299,21 @@ deploy → app.deploy.run
 ### Runtime vs. node-only boundary
 
 ```
-@moku-labs/worker          (.   → src/index.ts)   runtime — ships in the Worker bundle
+@moku-labs/worker          (.   → src/index.ts)   one entry for everything
   createApp, createPlugin
   bindingsPlugin, serverPlugin, kvPlugin, d1Plugin,
   queuesPlugin, storagePlugin, durableObjectsPlugin, stagePlugin
   endpoint, defineDurableObject
   envPlugin, logPlugin
   WorkerConfig, WorkerEvents, WorkerEnv, + type namespaces (Server, D1, Queues, Storage, DurableObjects)
-
-@moku-labs/worker/cli      (./cli → src/cli.ts)   node-only — NEVER in the Worker bundle
-  deployPlugin, cliPlugin
+  deployPlugin, cliPlugin                       node-only — tree-shaken unless you add them
   ExternalManifest, ResourceManifest
+
+@moku-labs/worker/cli      (./cli → src/cli.ts)   back-compat alias for the two node-only plugins
+  deployPlugin, cliPlugin, ExternalManifest, ResourceManifest
 ```
 
-`deploy` and `cli` import `node:child_process` / `node:fs`, which cannot run in the Cloudflare isolate. The `./cli` entry exists to keep those Node built-ins out of the deployed bundle (design constraint HC11). Importing `deployPlugin` from `@moku-labs/worker` is intentionally impossible. The specs reference a `@moku-labs/worker/worker` subpath — it does **not** exist; the real entries are `.` and `./cli`.
+`deploy` and `cli` import `node:child_process` / `node:fs`, which cannot run in the Cloudflare isolate — but they reach a bundle **only** when a consumer lists them in `createApp({ plugins })`. Because the package is `"sideEffects": false`, a request-time Worker that imports `createApp` (and never adds those two) tree-shakes them away, so the Node built-ins stay out of the deployed bundle without a separate entry point. The `./cli` subpath remains as a back-compat alias. The specs reference a `@moku-labs/worker/worker` subpath — it does **not** exist; the real entries are `.` and `./cli`.
 
 ## Development
 

@@ -31,9 +31,9 @@ export type Config = {
    */
   configFile: string;
   /**
-   * CI mode. When true (or when stdout is non-TTY), the guided flow NEVER prompts.
-   * CF credentials are read from the Node env (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID).
-   * Default false.
+   * Standing CI/automated default for `run()`. When true (or when stdout is non-TTY) the deploy
+   * never prompts and auto-confirms every gate; `run({ ci })` overrides it per call. CF credentials
+   * are read from the env (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID) via `ctx.env`. Default false.
    */
   ci: boolean;
   /** Globs watched by `dev()` to trigger a Moku-site rebuild. */
@@ -163,24 +163,19 @@ export type Api = {
   /**
    * Run the full deploy pipeline (detect -> provision -> config -> upload -> deploy).
    *
-   * @param opts - Optional guided/yes flags, a web build hook, or a caller-supplied manifest.
-   * @param opts.guided - Walk through each step interactively.
-   * @param opts.yes - Skip confirmation prompts (non-interactive).
+   * @param opts - Optional ci flag, a web build hook, or a caller-supplied manifest.
+   * @param opts.ci - CI/automated mode: never prompts, auto-confirms every gate. When false (the
+   *   default) and stdout is a TTY, the deploy is guided — each gate is confirmed interactively.
    * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
    * @param opts.manifest - Caller-supplied universal manifest (bypasses auto-detection).
    * @returns Resolves once the deploy completes.
    * @example
    * ```ts
-   * await app.deploy.run({ guided: true, webBuild: () => web.cli.build() });
-   * await app.deploy.run({ manifest: { name: "w", compatibilityDate: "2026-06-17", resources: [] } });
+   * await app.deploy.run({ webBuild: () => web.cli.build() });            // guided on a TTY
+   * await app.deploy.run({ ci: true, webBuild: () => web.cli.build() });  // automated (CI)
    * ```
    */
-  run(opts?: {
-    guided?: boolean;
-    yes?: boolean;
-    webBuild?: WebBuild;
-    manifest?: ExternalManifest;
-  }): Promise<void>;
+  run(opts?: { ci?: boolean; webBuild?: WebBuild; manifest?: ExternalManifest }): Promise<void>;
 
   /**
    * Start a local Cloudflare dev session via `wrangler dev`: cold-build the web site, spawn

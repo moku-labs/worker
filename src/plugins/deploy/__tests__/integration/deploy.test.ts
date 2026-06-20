@@ -276,7 +276,7 @@ describe("deploy plugin (integration)", () => {
       expectTypeOf(app.deploy).toMatchTypeOf<Api>();
     });
 
-    it("app.deploy.run accepts optional opts (guided/yes/manifest)", () => {
+    it("app.deploy.run accepts optional opts (ci/manifest)", () => {
       const app = createTestApp();
 
       // Runtime: verify run is a function
@@ -284,7 +284,7 @@ describe("deploy plugin (integration)", () => {
 
       // Type-level: valid signature must compile (no @ts-expect-error needed)
       expectTypeOf(app.deploy.run).toMatchTypeOf<
-        (opts?: { guided?: boolean; yes?: boolean; manifest?: ExternalManifest }) => Promise<void>
+        (opts?: { ci?: boolean; manifest?: ExternalManifest }) => Promise<void>
       >();
     });
 

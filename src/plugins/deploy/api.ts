@@ -94,13 +94,14 @@ const assembleManifest = (ctx: Ctx): ExternalManifest => ({
  *
  * @param ctx - The deploy plugin context.
  * @param plan - The infra plan from planInfra (existing vs missing).
+ * @param ci - Whether provisioning runs non-interactively (forwarded to each provider).
  * @returns The provisioning result: created, skipped, and the merged binding → id map.
  * @example
  * ```ts
- * const { ids } = await applyPlan(ctx, plan);
+ * const { ids } = await applyPlan(ctx, plan, false);
  * ```
  */
-const applyPlan = async (ctx: Ctx, plan: InfraPlan): Promise<ProvisionResult> => {
+const applyPlan = async (ctx: Ctx, plan: InfraPlan, ci: boolean): Promise<ProvisionResult> => {
   const ids: Record<string, string> = {};
 
   // Reuse the ids of resources that already exist; announce each as skipped.
@@ -114,7 +115,7 @@ const applyPlan = async (ctx: Ctx, plan: InfraPlan): Promise<ProvisionResult> =>
   // Create only the missing resources; capture each new id (kv/d1).
   const created: ProvisionedRef[] = [];
   for (const resource of plan.missing) {
-    const { id } = await provisionResource(resource, ctx.config.ci);
+    const { id } = await provisionResource(resource, ci);
 
     if (id !== undefined && (resource.kind === "kv" || resource.kind === "d1")) {
       ids[resource.binding] = id;
@@ -147,26 +148,27 @@ export const createDeployApi = (ctx: Ctx) => ({
    * it is used verbatim (universal path).
    *
    * @param opts - Optional run options.
-   * @param opts.guided - Enable interactive confirmation steps (only on a TTY, non-CI).
-   * @param opts.yes - Auto-confirm all prompts (non-interactive / CI).
+   * @param opts.ci - CI/automated mode: never prompts, auto-confirms every gate. When false (the
+   *   default) and stdout is a TTY, the deploy is guided — each gate is confirmed interactively.
+   *   Falls back to ctx.config.ci when omitted.
    * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
    * @param opts.manifest - Caller-supplied manifest (bypasses deployManifest() assembly).
    * @returns Resolves once the deploy completes.
    * @example
    * ```ts
-   * await api.run({ guided: true, webBuild: () => web.cli.build() });
-   * await api.run({ manifest: { name: "w", compatibilityDate: "2026-06-17", resources: [] } });
+   * await api.run({ webBuild: () => web.cli.build() }); // guided on a TTY
+   * await api.run({ ci: true, manifest: { name: "w", compatibilityDate: "2026-06-17", resources: [] } });
    * ```
    */
   async run(opts?: {
-    guided?: boolean;
-    yes?: boolean;
+    ci?: boolean;
     webBuild?: WebBuild;
     manifest?: ExternalManifest;
   }): Promise<void> {
-    // Interactive only when guided, on a TTY, not CI, and not auto-confirmed (--yes).
-    const interactive =
-      (opts?.guided ?? false) && !ctx.config.ci && !(opts?.yes ?? false) && stdoutIsTty();
+    // CI — the explicit opt, else the standing config default — is automated: never prompt,
+    // auto-confirm every gate. Otherwise the deploy is guided whenever stdout is a real TTY.
+    const ci = opts?.ci ?? ctx.config.ci;
+    const interactive = !ci && stdoutIsTty();
     const confirm = interactive
       ? createBrandPrompts().confirm
       : async (_question: string): Promise<boolean> => true;
@@ -197,7 +199,7 @@ export const createDeployApi = (ctx: Ctx) => ({
       ctx.emit("deploy:phase", { phase: "aborted" });
       return;
     }
-    const { ids } = await applyPlan(ctx, plan);
+    const { ids } = await applyPlan(ctx, plan, ci);
 
     // Generate/update the wrangler config from the assembled manifest (with the captured ids).
     ctx.emit("deploy:phase", { phase: "wrangler-config" });
@@ -277,7 +279,8 @@ export const createDeployApi = (ctx: Ctx) => ({
    * const { created } = await api.provisionInfra(await api.checkInfra());
    * ```
    */
-  provisionInfra: (plan: InfraPlan): Promise<ProvisionResult> => applyPlan(ctx, plan),
+  provisionInfra: (plan: InfraPlan): Promise<ProvisionResult> =>
+    applyPlan(ctx, plan, ctx.config.ci),
 
   /**
    * Verify the `.env` Cloudflare API token (must be active) and resolve its account; emits

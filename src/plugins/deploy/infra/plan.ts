@@ -11,8 +11,9 @@ import { listExisting, resolveAccount } from "./cloudflare";
 
 /**
  * Decide whether a single declared resource already exists in the account, recovering its id
- * (kv/d1) when it does. Durable Objects are config-only (they ship with the script), so they are
- * always treated as "missing" — provisioning them is a no-op that just records the binding.
+ * (kv/d1) when it does. Durable Objects are config-only — they ship with the Worker (`wrangler
+ * deploy` + the auto-derived DO migration create the namespace), never provisioned via the API — so
+ * they are treated as already EXISTING, and the plan never re-offers to "create" them each deploy.
  *
  * @param resource - The declared resource descriptor.
  * @param existing - The indexed set of resources already in the account.
@@ -42,7 +43,8 @@ const checkExisting = (
       return { exists: existing.queue.has(resource.name) };
     }
     case "do": {
-      return { exists: false };
+      // Created by `wrangler deploy` (the DO migration), never API-provisioned — treat as existing.
+      return { exists: true };
     }
   }
 };

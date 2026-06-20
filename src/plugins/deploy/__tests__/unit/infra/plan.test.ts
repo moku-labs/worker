@@ -69,7 +69,7 @@ describe("planInfra", () => {
     expect(plan.missing).toEqual([]);
   });
 
-  it("treats durable objects as always missing (config-only, no pre-create)", async () => {
+  it("treats durable objects as already existing (they ship with the Worker, never pre-created)", async () => {
     vi.mocked(listExisting).mockResolvedValue(emptyExisting());
 
     const plan = await planInfra(
@@ -77,7 +77,11 @@ describe("planInfra", () => {
       manifest([{ kind: "do", binding: "COUNTER", className: "Counter" }])
     );
 
-    expect(plan.missing).toEqual([{ kind: "do", binding: "COUNTER", className: "Counter" }]);
+    // The DO is never "to create" — it deploys with the Worker, so the plan never re-offers it.
+    expect(plan.missing).toEqual([]);
+    expect(plan.exists).toEqual([
+      { resource: { kind: "do", binding: "COUNTER", className: "Counter" } }
+    ]);
   });
 
   it("treats a queue as existing only when its name already exists", async () => {

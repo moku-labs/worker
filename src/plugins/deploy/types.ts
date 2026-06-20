@@ -248,6 +248,19 @@ export type Api = {
    * ```
    */
   tokenInstructions(): string;
+
+  /**
+   * Run an arbitrary `wrangler` command, streaming its output — the escape hatch for subcommands
+   * Moku does not wrap (kv / d1 / r2 / queues / secret / tail / etc.).
+   *
+   * @param args - The wrangler arguments (e.g. ["kv", "namespace", "list"]).
+   * @returns Resolves once wrangler exits.
+   * @example
+   * ```ts
+   * await app.deploy.wrangler(["kv", "namespace", "list"]);
+   * ```
+   */
+  wrangler(args: string[]): Promise<void>;
 };
 
 // ─── ctx.require composition (mirrors src/plugins/server/types.ts) ───────────────────

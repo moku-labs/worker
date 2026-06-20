@@ -16,7 +16,8 @@ import type { Api, Ctx, ExternalManifest, ResourceManifest } from "../../types";
 // ─────────────────────────────────────────────────────────────────────────────
 
 vi.mock("../../runner", () => ({
-  runWrangler: vi.fn().mockResolvedValue("https://test.workers.dev")
+  runWrangler: vi.fn().mockResolvedValue("https://test.workers.dev"),
+  runWranglerInherit: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock("../../wrangler-config", () => ({
@@ -82,7 +83,7 @@ import { runDev } from "../../dev/runner";
 import { planInfra } from "../../infra/plan";
 import { provisionResource } from "../../providers";
 import { uploadDirToR2 } from "../../providers/r2";
-import { runWrangler } from "../../runner";
+import { runWrangler, runWranglerInherit } from "../../runner";
 import { scaffoldWranglerAndCi, writeWranglerConfig } from "../../wrangler-config";
 
 // Clear mocks between tests so call counts don't bleed across assertions.
@@ -547,6 +548,19 @@ describe("createDeployApi", () => {
       const api = createDeployApi(ctx);
 
       expect(api.tokenInstructions()).toContain("Cloudflare API token");
+    });
+  });
+
+  // ───────── wrangler passthrough ─────────────────────────────────────────────
+
+  describe("wrangler", () => {
+    it("delegates to runWranglerInherit (streaming passthrough)", async () => {
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await api.wrangler(["kv", "namespace", "list"]);
+
+      expect(runWranglerInherit).toHaveBeenCalledWith(["kv", "namespace", "list"]);
     });
   });
 

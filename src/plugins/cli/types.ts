@@ -72,4 +72,28 @@ export type Api = {
    * ```
    */
   doctor(): Promise<void>;
+
+  /**
+   * Print the resolved Cloudflare account for the current `.env` token (delegates to verifyAuth).
+   *
+   * @returns Resolves once the account summary is printed.
+   * @example
+   * ```ts
+   * await app.cli.whoami();
+   * ```
+   */
+  whoami(): Promise<void>;
+
+  /**
+   * Run an arbitrary `wrangler` command through the branded CLI — the escape hatch for subcommands
+   * Moku does not wrap (kv / d1 / r2 / queues / secret / tail / …). Streams wrangler's output.
+   *
+   * @param args - The wrangler arguments (e.g. ["kv", "namespace", "list"]).
+   * @returns Resolves once wrangler exits.
+   * @example
+   * ```ts
+   * await app.cli.wrangler(["kv", "namespace", "list"]);
+   * ```
+   */
+  wrangler(args: string[]): Promise<void>;
 };

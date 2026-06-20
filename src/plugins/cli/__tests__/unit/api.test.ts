@@ -36,7 +36,8 @@ const makeDeployStub = () => ({
   requiredToken: vi
     .fn<() => TokenRequirement>()
     .mockReturnValue({ base: "Edit Cloudflare Workers", required: [], toAdd: [] }),
-  tokenInstructions: vi.fn<() => string>().mockReturnValue("token instructions\nline 2")
+  tokenInstructions: vi.fn<() => string>().mockReturnValue("token instructions\nline 2"),
+  wrangler: vi.fn<(args: string[]) => Promise<void>>().mockResolvedValue(undefined)
 });
 
 // ---------------------------------------------------------------------------
@@ -197,6 +198,37 @@ describe("createCliApi", () => {
       await api.doctor();
 
       expect(deployStub.checkInfra).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── whoami ─────────────────────────────────────────────────────────────────
+
+  describe("whoami", () => {
+    it("verifies via deploy.verifyAuth()", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+
+      await createCliApi(ctx).whoami();
+
+      expect(deployStub.verifyAuth).toHaveBeenCalledOnce();
+    });
+
+    it("handles a verify failure without throwing", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      deployStub.verifyAuth.mockRejectedValueOnce(new Error("no token"));
+
+      await expect(createCliApi(ctx).whoami()).resolves.toBeUndefined();
+    });
+  });
+
+  // ─── wrangler passthrough ─────────────────────────────────────────────────
+
+  describe("wrangler", () => {
+    it("forwards all args to deploy.wrangler", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+
+      await createCliApi(ctx).wrangler(["kv", "namespace", "list"]);
+
+      expect(deployStub.wrangler).toHaveBeenCalledWith(["kv", "namespace", "list"]);
     });
   });
 

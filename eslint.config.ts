@@ -163,7 +163,7 @@ export default [
 
   // 7. Test files: relaxed rules
   {
-    files: ["tests/**/*.ts", "src/plugins/**/__tests__/**/*.ts"],
+    files: ["tests/**/*.ts", "src/**/__tests__/**/*.ts"],
     rules: {
       "jsdoc/require-jsdoc": "off",
       "jsdoc/require-description": "off",

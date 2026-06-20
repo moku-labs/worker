@@ -87,3 +87,33 @@ export const runWrangler = (args: string[]): Promise<string> =>
       resolve(isDeploy ? extractDeployedUrl(stdout) : stdout);
     });
   });
+
+/**
+ * Spawn `wrangler` with the given args, inheriting stdio so its output streams live to the user's
+ * terminal (used by the generic passthrough and long-lived commands like `tail`).
+ *
+ * @param args - Wrangler CLI arguments (e.g. ["kv", "namespace", "list"]).
+ * @returns Resolves once wrangler exits successfully.
+ * @throws {Error} When wrangler cannot be spawned or exits non-zero.
+ * @example
+ * ```ts
+ * await runWranglerInherit(["kv", "namespace", "list"]);
+ * ```
+ */
+export const runWranglerInherit = (args: string[]): Promise<void> => {
+  return new Promise<void>((resolve, reject) => {
+    // eslint-disable-next-line sonarjs/no-os-command-from-path -- wrangler is a pinned peer dep resolved from node_modules/.bin
+    const child = spawn("wrangler", args, { stdio: "inherit" });
+
+    child.on("error", error => {
+      reject(new Error(`[moku-worker] Failed to spawn wrangler.\n  ${error.message}`));
+    });
+    child.on("close", code => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`[moku-worker] wrangler exited with code ${String(code)}.`));
+    });
+  });
+};

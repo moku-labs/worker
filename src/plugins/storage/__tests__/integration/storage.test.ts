@@ -166,13 +166,13 @@ describe("storage plugin (integration)", () => {
     it("app.storage exposes StorageApi surface", () => {
       const app = createTestApp();
 
-      expectTypeOf(app.storage).toMatchTypeOf<StorageApi>();
+      expectTypeOf(app.storage).toExtend<StorageApi>();
     });
 
     it("app.storage.get is env-first: (env, key) => Promise<R2ObjectBody | null>", () => {
       const app = createTestApp();
 
-      expectTypeOf(app.storage.get).toMatchTypeOf<
+      expectTypeOf(app.storage.get).toExtend<
         (env: Record<string, unknown>, key: string) => Promise<R2ObjectBody | null>
       >();
     });
@@ -180,7 +180,7 @@ describe("storage plugin (integration)", () => {
     it("app.storage.deployManifest returns { kind:'r2'; bucket:string; upload:string }", () => {
       const app = createTestApp();
 
-      expectTypeOf(app.storage.deployManifest).toMatchTypeOf<
+      expectTypeOf(app.storage.deployManifest).toExtend<
         () => { kind: "r2"; bucket: string; upload: string }
       >();
     });

@@ -300,7 +300,7 @@ describe("createServerApi", () => {
   it("handle signature is (Request, WorkerEnv, ExecutionContext) => Promise<Response>", () => {
     const ctx = createMockCtx();
     const api = createServerApi(ctx);
-    expectTypeOf(api.handle).toMatchTypeOf<
+    expectTypeOf(api.handle).toEqualTypeOf<
       (req: Request, env: WorkerEnv, exec: ExecutionContext) => Promise<Response>
     >();
   });
@@ -308,7 +308,7 @@ describe("createServerApi", () => {
   it("scheduled signature is (ScheduledController, WorkerEnv, ExecutionContext) => Promise<void>", () => {
     const ctx = createMockCtx();
     const api = createServerApi(ctx);
-    expectTypeOf(api.scheduled).toMatchTypeOf<
+    expectTypeOf(api.scheduled).toEqualTypeOf<
       (c: ScheduledController, env: WorkerEnv, exec: ExecutionContext) => Promise<void>
     >();
   });
@@ -340,13 +340,13 @@ describe("createServerApi", () => {
   });
 
   it("ServerEvents type has server:matched", () => {
-    expectTypeOf<ServerEvents>().toMatchTypeOf<{
+    expectTypeOf<ServerEvents>().toExtend<{
       "server:matched": { path: string; method: string };
     }>();
   });
 
   it("WorkerEvents type has request:start and request:end", () => {
-    expectTypeOf<WorkerEvents>().toMatchTypeOf<{
+    expectTypeOf<WorkerEvents>().toExtend<{
       "request:start": { method: string; path: string; requestId: string };
       "request:end": { method: string; path: string; status: number; ms: number };
     }>();

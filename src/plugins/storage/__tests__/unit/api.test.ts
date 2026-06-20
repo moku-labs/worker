@@ -194,14 +194,14 @@ describe("createStorageApi", () => {
       const ctx = createMockCtx();
       const api = createStorageApi(ctx);
 
-      expectTypeOf(api).toMatchTypeOf<StorageApi>();
+      expectTypeOf(api).toExtend<StorageApi>();
     });
 
     it("get is env-first: (env, key) => Promise<R2ObjectBody | null>", () => {
       const ctx = createMockCtx();
       const api = createStorageApi(ctx);
 
-      expectTypeOf(api.get).toMatchTypeOf<
+      expectTypeOf(api.get).toEqualTypeOf<
         (env: Record<string, unknown>, key: string) => Promise<R2ObjectBody | null>
       >();
     });
@@ -210,7 +210,7 @@ describe("createStorageApi", () => {
       const ctx = createMockCtx();
       const api = createStorageApi(ctx);
 
-      expectTypeOf(api.deployManifest).toMatchTypeOf<
+      expectTypeOf(api.deployManifest).toExtend<
         () => { kind: "r2"; bucket: string; upload: string }
       >();
     });

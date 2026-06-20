@@ -9,17 +9,19 @@ import type { WorkerConfig, WorkerEvents } from "../../config";
 /**
  * A web-site build hook wired in from the consumer's deploy/dev script — e.g.
  * `() => webApp.cli.build()`. This is the seam that lets one small app-side script compose a
- * Moku Web app with this Worker framework: `dev` / `deploy` invoke it to (re)build the site
- * before serving or deploying. May resolve a `{ files }` count (surfaced in `dev:rebuilt`) or
- * nothing.
+ * Moku Web app with this Worker framework: `dev` / `deploy` invoke it to (re)build the site before
+ * serving or deploying. The hook may resolve ANYTHING — `void`, the web app's own build summary, or
+ * a `{ files }` count; when the resolved value carries a numeric `files` field it is surfaced in
+ * `dev:rebuilt`, otherwise the count is reported as 0. Returning `Promise<unknown>` keeps the hook
+ * assignable from any real build function (whose return type the worker framework cannot know).
  *
- * @returns Resolves when the web build completes; optionally a rebuilt-file count.
+ * @returns Resolves when the web build completes (the value is read opportunistically for `files`).
  * @example
  * ```ts
  * await server.cli.dev({ webBuild: () => web.cli.build() });
  * ```
  */
-export type WebBuild = () => Promise<void> | Promise<{ files?: number }>;
+export type WebBuild = () => Promise<unknown>;
 
 /** deploy plugin configuration. Flat; complete defaults so omission never yields undefined. */
 export type Config = {

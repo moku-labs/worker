@@ -16,6 +16,27 @@ import type { Ctx, WebBuild } from "../types";
 const AUTO_DETECT = "scripts/build.ts";
 
 /**
+ * Opportunistically read a numeric `files` count off an arbitrary web build result. A real web
+ * build returns its own summary shape (the worker framework cannot know it), so anything without a
+ * numeric `files` field reports 0.
+ *
+ * @param result - The resolved value of a {@link WebBuild} hook (any shape).
+ * @returns The `files` count when present and numeric, else 0.
+ * @example
+ * ```ts
+ * fileCountOf({ files: 12 }); // 12
+ * fileCountOf({ outDir: "dist", pageCount: 4 }); // 0
+ * ```
+ */
+const fileCountOf = (result: unknown): number => {
+  if (typeof result === "object" && result !== null && "files" in result) {
+    const { files } = result as { files: unknown };
+    return typeof files === "number" ? files : 0;
+  }
+  return 0;
+};
+
+/**
  * Run a shell build command, resolving on a zero exit and rejecting otherwise.
  *
  * @param command - The shell command to run (the consumer's own configured build).
@@ -62,8 +83,7 @@ const runShellBuild = (command: string): Promise<void> => {
 export const buildSite = async (ctx: Ctx, webBuild?: WebBuild): Promise<{ files: number }> => {
   const hook = webBuild ?? ctx.config.webBuild;
   if (hook !== undefined) {
-    const result = await hook();
-    return { files: result?.files ?? 0 };
+    return { files: fileCountOf(await hook()) };
   }
 
   const command =

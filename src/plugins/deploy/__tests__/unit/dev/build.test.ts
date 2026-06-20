@@ -67,6 +67,22 @@ describe("buildSite", () => {
     expect(result).toEqual({ files: 0 });
   });
 
+  it("reads the files count off a richer build summary (ignores other fields)", async () => {
+    const hook = vi.fn().mockResolvedValue({ outDir: "dist/client", pageCount: 12, files: 5 });
+
+    const result = await buildSite(makeCtx({}), hook);
+
+    expect(result).toEqual({ files: 5 });
+  });
+
+  it("reports 0 when a build summary carries no numeric files field", async () => {
+    const hook = vi.fn().mockResolvedValue({ outDir: "dist/client", pageCount: 12 });
+
+    const result = await buildSite(makeCtx({}), hook);
+
+    expect(result).toEqual({ files: 0 });
+  });
+
   it("emits dev:error and no-ops when nothing is configured", async () => {
     vi.mocked(existsSync).mockReturnValue(false);
     const ctx = makeCtx({ buildCommand: "" });

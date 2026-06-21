@@ -188,3 +188,68 @@ export const renderProvisionResult = (ui: BrandConsole, result: ProvisionResult)
     }
   }
 };
+
+/**
+ * Format an elapsed duration compactly: sub-second as `820ms`, otherwise one-decimal seconds (`4.2s`),
+ * and minutes once it crosses 60s (`1m04s`) so a long deploy stays readable.
+ *
+ * @param ms - The elapsed milliseconds.
+ * @returns The compact duration string.
+ * @example
+ * ```ts
+ * formatDuration(4234); // "4.2s"
+ * ```
+ */
+const formatDuration = (ms: number): string => {
+  if (ms < 1000) return `${String(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const whole = Math.floor(seconds);
+  return `${String(Math.floor(whole / 60))}m${String(whole % 60).padStart(2, "0")}s`;
+};
+
+/**
+ * Render the terminal deploy summary as a branded panel — the headline the user actually wants. The
+ * live URL leads on its own line (pink, so it is the first thing the eye lands on), then a dim
+ * key/value block: the target stage, the resource tally (with a red `failed` count when non-zero),
+ * and the wall-clock time the whole deploy took. Replaces the prior single `deployed → url` line.
+ *
+ * @param ui - The branded console to render through.
+ * @param summary - The deploy summary fields.
+ * @param summary.url - The live deployed URL (the panel headline).
+ * @param summary.stage - The target stage the worker deployed to.
+ * @param summary.created - How many resources were created this run.
+ * @param summary.exists - How many resources already existed (skipped).
+ * @param summary.failed - How many resources failed to provision.
+ * @param summary.elapsedMs - The wall-clock deploy duration in milliseconds.
+ * @example
+ * ```ts
+ * renderDeploySummary(ui, { url, stage: "production", created: 0, exists: 5, failed: 0, elapsedMs: 4234 });
+ * ```
+ */
+export const renderDeploySummary = (
+  ui: BrandConsole,
+  summary: {
+    url: string;
+    stage: string;
+    created: number;
+    exists: number;
+    failed: number;
+    elapsedMs: number;
+  }
+): void => {
+  const { palette } = ui;
+
+  const tally = `${String(summary.exists)} exist · ${String(summary.created)} created`;
+  const failedLabel = palette.red(`${String(summary.failed)} failed`);
+  const resources = summary.failed > 0 ? `${tally} · ${failedLabel}` : tally;
+
+  ui.heading("Deployed");
+  ui.box([
+    palette.pink(summary.url),
+    "",
+    `${palette.dim("stage".padEnd(10))}${summary.stage}`,
+    `${palette.dim("resources".padEnd(10))}${resources}`,
+    `${palette.dim("took".padEnd(10))}${formatDuration(summary.elapsedMs)}`
+  ]);
+};

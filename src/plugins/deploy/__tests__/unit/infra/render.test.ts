@@ -5,7 +5,12 @@
 import { createBrandConsole } from "@moku-labs/common/cli";
 import { describe, expect, it } from "vitest";
 
-import { renderPlan, renderProvisionResult, resourceName } from "../../../infra/render";
+import {
+  renderDeploySummary,
+  renderPlan,
+  renderProvisionResult,
+  resourceName
+} from "../../../infra/render";
 import type { InfraPlan, ProvisionResult } from "../../../types";
 
 /** A BrandConsole wired to a capturing sink (color off → plain text) + a joined-output reader. */
@@ -108,5 +113,52 @@ describe("renderProvisionResult", () => {
     renderProvisionResult(ui, result);
 
     expect(text()).toContain("1 created · 0 exist · 0 failed");
+  });
+});
+
+describe("renderDeploySummary", () => {
+  it("leads with the URL, then stage, the resource tally, and elapsed time", () => {
+    const { ui, text } = capture();
+
+    renderDeploySummary(ui, {
+      url: "https://tracker.example.workers.dev",
+      stage: "production",
+      created: 0,
+      exists: 5,
+      failed: 0,
+      elapsedMs: 4234
+    });
+    const out = text();
+
+    expect(out).toContain("Deployed"); // the panel heading
+    expect(out).toContain("https://tracker.example.workers.dev"); // the URL headline
+    expect(out).toContain("production"); // the target stage
+    expect(out).toContain("5 exist · 0 created"); // the resource tally
+    expect(out).toContain("4.2s"); // elapsed, one-decimal seconds
+  });
+
+  it("formats sub-second + multi-minute durations and surfaces a failed count", () => {
+    const sub = capture();
+    renderDeploySummary(sub.ui, {
+      url: "https://x.workers.dev",
+      stage: "staging",
+      created: 2,
+      exists: 1,
+      failed: 1,
+      elapsedMs: 820
+    });
+    expect(sub.text()).toContain("820ms"); // sub-second
+    expect(sub.text()).toContain("1 failed"); // failed count surfaced in the tally
+
+    const long = capture();
+    renderDeploySummary(long.ui, {
+      url: "https://x.workers.dev",
+      stage: "production",
+      created: 0,
+      exists: 0,
+      failed: 0,
+      elapsedMs: 64_000
+    });
+    expect(long.text()).toContain("1m04s"); // minutes once past 60s
   });
 });

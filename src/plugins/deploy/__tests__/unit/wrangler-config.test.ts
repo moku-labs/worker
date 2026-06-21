@@ -175,6 +175,30 @@ describe("writeWranglerConfig", () => {
       expect(queues?.consumers).toBeUndefined();
     });
 
+    it("writes max_batch_timeout on the consumer when maxBatchTimeout is set", async () => {
+      const manifest: ExternalManifest = {
+        name: "w",
+        compatibilityDate: "2026-06-17",
+        resources: [
+          {
+            kind: "queue",
+            name: "tracker-activity",
+            binding: "ACTIVITY_QUEUE",
+            consumer: true,
+            maxBatchTimeout: 1
+          }
+        ]
+      };
+
+      await writeWranglerConfig(configPath(), manifest);
+
+      const config = readConfig();
+      const queues = config.queues as {
+        consumers?: Array<{ queue: string; max_batch_timeout?: number }>;
+      };
+      expect(queues?.consumers).toEqual([{ queue: "tracker-activity", max_batch_timeout: 1 }]);
+    });
+
     it("writes durable_objects for do resources", async () => {
       const manifest: ExternalManifest = {
         name: "w",

@@ -86,7 +86,7 @@ export type ResourceManifest =
   | { kind: "r2"; name: string; binding: string; upload?: string }
   | { kind: "kv"; name: string; binding: string }
   | { kind: "d1"; name: string; binding: string; migrations?: string }
-  | { kind: "queue"; name: string; binding: string; consumer?: boolean }
+  | { kind: "queue"; name: string; binding: string; consumer?: boolean; maxBatchTimeout?: number }
   | { kind: "do"; binding: string; className: string };
 
 /**

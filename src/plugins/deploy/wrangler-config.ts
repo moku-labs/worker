@@ -47,7 +47,7 @@ type D1Entry = {
 /** A wrangler queue producer entry. */
 type QueueProducer = { queue: string; binding: string };
 /** A wrangler queue consumer entry — registers this Worker to receive the queue's messages. */
-type QueueConsumer = { queue: string };
+type QueueConsumer = { queue: string; max_batch_timeout?: number };
 /** A wrangler Durable Objects binding entry. */
 type DoBinding = { name: string; class_name: string };
 /** A wrangler Durable Objects migration entry (SQLite-backed, the modern default). */
@@ -135,13 +135,14 @@ const buildD1Databases = (resources: ResourceManifest[], ids: Record<string, str
  * Every queue is a `producer`; a queue flagged `consumer: true` (it declares an `onMessage` handler)
  * is ALSO registered as a `consumer` so wrangler delivers its messages to this Worker's queue()
  * handler — both locally under `wrangler dev` and in production. Without the consumer entry the
- * handler never runs (the bug that silently drops a queue-driven activity feed).
+ * handler never runs (the bug that silently drops a queue-driven activity feed). A consumer that
+ * sets `maxBatchTimeout` carries it through as wrangler's `max_batch_timeout` (lower delivery latency).
  *
  * @param resources - All resource descriptors from the manifest.
  * @returns The queues section (producers, plus consumers when any), or undefined when there are none.
  * @example
  * ```ts
- * const q = buildQueues([{ kind: "queue", name: "tracker-activity", binding: "ACTIVITY", consumer: true }]);
+ * const q = buildQueues([{ kind: "queue", name: "tracker-activity", binding: "ACTIVITY", consumer: true, maxBatchTimeout: 1 }]);
  * ```
  */
 const buildQueues = (
@@ -159,7 +160,14 @@ const buildQueues = (
   }));
   const consumers: QueueConsumer[] = queueResources
     .filter(resource => resource.consumer === true)
-    .map(resource => ({ queue: resource.name }));
+    .map(resource => {
+      const entry: QueueConsumer = { queue: resource.name };
+      // Carry an explicit batch-timeout through to wrangler; omit it to keep Cloudflare's default.
+      if (resource.maxBatchTimeout !== undefined) {
+        entry.max_batch_timeout = resource.maxBatchTimeout;
+      }
+      return entry;
+    });
 
   return consumers.length > 0 ? { producers, consumers } : { producers };
 };

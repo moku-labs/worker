@@ -40,7 +40,7 @@ export const createDoApi = (ctx: Ctx) => ({
    * @param logicalName - Logical DO key (selects the configured instance, e.g. `"board"`).
    * @param idName - Stable id name passed to `idFromName` (e.g. `"room-42"`).
    * @returns The addressed `DurableObjectStub`.
-   * @throws {Error} With `[moku-worker]` prefix when `logicalName` is not configured, or when the
+   * @throws {Error} With `[worker]` prefix when `logicalName` is not configured, or when the
    *   binding is not bound on `env`.
    * @example
    * ```typescript

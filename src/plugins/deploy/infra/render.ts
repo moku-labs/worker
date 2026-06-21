@@ -78,7 +78,7 @@ const stripAnsi = (text: string): string => text.replaceAll(ANSI_SGR, "");
  * @returns The full, plain failure reason.
  * @example
  * ```ts
- * cleanError("[moku-worker] wrangler exited…\n  ✘ [ERROR] The bucket name is invalid.");
+ * cleanError("[worker] wrangler exited…\n  ✘ [ERROR] The bucket name is invalid.");
  * // "The bucket name is invalid."
  * ```
  */
@@ -87,7 +87,7 @@ const cleanError = (message: string): string => {
     .split("\n")
     .map(line => line.trim())
     .filter(line => line.length > 0)
-    .filter(line => !/^\[moku-worker\]/u.test(line)) // our own wrangler-exit wrapper
+    .filter(line => !/^\[worker\]/u.test(line)) // our own wrangler-exit wrapper
     .filter(line => !/logs were written to/iu.test(line)) // wrangler's log-file pointer
     .map(line => line.replace(/^✘\s*/u, "").replace(/^\[error\]\s*/iu, ""));
   const cleaned = lines.join(" ");

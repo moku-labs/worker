@@ -95,7 +95,7 @@ flowchart LR
 
 | Layer | File | Produces |
 |---|---|---|
-| 1 — config + events | `src/config.ts` | `createCoreConfig` → `WorkerConfig`, `WorkerEvents`; registers core plugins (`log`, `env`, `stage`) |
+| 1 — config + events | `src/config.ts` | `createCoreConfig` → `WorkerConfig`, `WorkerEvents`; registers core plugins (`log`, `env`) |
 | 2 — framework + plugins | `src/index.ts` | `createCore` → `createApp` / `createPlugin`; wires `bindings` + `server` defaults |
 | 3 — consumer app | your code | `createApp({ … })` |
 
@@ -121,7 +121,7 @@ endpoint("/cache/{key}").get(async ({ params, env, require, has }) => {
 });
 ```
 
-The core plugins are **flat-injected** on every plugin's `ctx` — `ctx.log`, `ctx.env`, `ctx.stage` — and also mounted on the app surface (`app.log`, `app.env`, `app.stage`).
+The core plugins are **flat-injected** on every plugin's `ctx` — `ctx.log`, `ctx.env` — and also mounted on the app surface (`app.log`, `app.env`). Deployment stage is plain global config: `ctx.global.stage`.
 
 ## Plugins
 
@@ -136,11 +136,10 @@ Name **strings** are bare (`"server"`, `"kv"`); the exported **instances** carry
 | [`queues`](src/plugins/queues/README.md) | Standard | Cloudflare Queues producer + consumer. | `send`, `sendBatch`, `consume` |
 | [`storage`](src/plugins/storage/README.md) | Complex | R2 object storage behind a provider-adapter seam. | `get`, `put`, `delete`, `list` |
 | [`durableObjects`](src/plugins/durable-objects/README.md) | Standard | Resolves DO stubs off `env`; ships `defineDurableObject`. | `get`, `defineDurableObject` |
-| [`stage`](src/plugins/stage/README.md) | Nano (core) | Deployment-stage / dev-mode detection, flat-injected as `ctx.stage`. | `isDev`, `isProduction`, `current` |
 | [`deploy`](src/plugins/deploy/README.md) | Complex | Build-time orchestrator: detect → provision → wrangler-config → upload → deploy. **Node-only.** | `run`, `dev`, `init` |
 | [`cli`](src/plugins/cli/README.md) | Standard | Developer-facing `dev` / `deploy` verbs + live progress TUI. **Node-only.** | `dev`, `deploy` |
 
-> The `log` and `env` core plugins are **not authored here** — they come from [`@moku-labs/common`](https://github.com/moku-labs/common) and are re-exported (`logPlugin`, `envPlugin`). `env` is environment-**variable** access, distinct from `stage` (dev/production detection). Helpers `endpoint(path)` and `defineDurableObject(name)` ship from the root too.
+> The `log` and `env` core plugins are **not authored here** — they come from [`@moku-labs/common`](https://github.com/moku-labs/common) and are re-exported (`logPlugin`, `envPlugin`). `env` is environment-**variable** access; deployment stage is plain global config (`config.stage`, read via `ctx.global.stage`). Helpers `endpoint(path)` and `defineDurableObject(name)` ship from the root too.
 
 Add a resource plugin by appending it — defaults stay implicit:
 
@@ -157,7 +156,7 @@ const app = createApp({
 ```
 
 > [!IMPORTANT]
-> The final plugin list is `[…frameworkDefaults, …yourPlugins]`. Defaults are `[log, env, stage, bindings, server]`, registered first; your `plugins` append after. **Do not re-list a default** — re-listing collides on name and throws `TypeError: [moku-worker] Duplicate plugin name: "bindings"` at init. `pluginConfigs` is keyed by name, so you can still configure a default (e.g. `bindings.required`) without listing it.
+> The final plugin list is `[…frameworkDefaults, …yourPlugins]`. Defaults are `[log, env, bindings, server]`, registered first; your `plugins` append after. **Do not re-list a default** — re-listing collides on name and throws `TypeError: [worker] Duplicate plugin name: "bindings"` at init. `pluginConfigs` is keyed by name, so you can still configure a default (e.g. `bindings.required`) without listing it.
 
 ## Runtime vs. node-only
 
@@ -177,8 +176,8 @@ The global `WorkerConfig`, passed as `createApp({ config })` — flat, with comp
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `name` | `string` | `"moku-worker"` | Worker name; `deploy` uses it as the wrangler `name`. |
-| `stage` | `"production" \| "development" \| "test"` | `"production"` | Production-safe default; bridged into the `stage` plugin so `ctx.stage` and `ctx.global.stage` stay in lockstep. |
+| `name` | `string` | `"worker"` | Worker name; `deploy` uses it as the wrangler `name`. |
+| `stage` | `"production" \| "development" \| "test"` | `"production"` | Production-safe default. Read via `ctx.global.stage`; `deploy`/`cli` use it to suffix resource names (`production` = bare). |
 | `compatibilityDate` | `string` | `""` | Cloudflare compatibility date; `deploy` uses it as `compatibility_date`. |
 
 Per-plugin config goes under `pluginConfigs.<name>` (e.g. `server.endpoints`, `kv.binding`, `bindings.required`, `deploy.configFile`). Every config is flat with complete defaults — overriding one key never drops siblings — and **frozen** after `createApp`. Each field is documented in that plugin's README, linked in the [Plugins](#plugins) table.

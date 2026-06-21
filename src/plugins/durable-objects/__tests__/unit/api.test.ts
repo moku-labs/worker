@@ -40,7 +40,7 @@ const makeFakeBindings = (): FakeBindingsApi => ({
     const value = env[name];
     if (value === undefined || value === null) {
       throw new Error(
-        `[moku-worker] binding "${name}" is not bound.\n` +
+        `[worker] binding "${name}" is not bound.\n` +
           `  Declare it in wrangler config and pass it in via the request env.`
       );
     }
@@ -117,7 +117,7 @@ describe("createDoApi", () => {
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
       expect(() => api.get(env, "missing", "room-3")).toThrow(
-        '[moku-worker] No durableObjects instance "missing".'
+        '[worker] No durableObjects instance "missing".'
       );
     });
   });
@@ -197,7 +197,7 @@ describe("createDoApi", () => {
           requireCallArgs.push([env, name]);
           const value = env[name];
           if (value === undefined || value === null) {
-            throw new Error(`[moku-worker] binding "${name}" is not bound.`);
+            throw new Error(`[worker] binding "${name}" is not bound.`);
           }
           return value as T;
         },
@@ -229,9 +229,7 @@ describe("createDoApi", () => {
       });
       const api = createDoApi(ctx as Parameters<typeof createDoApi>[0]);
 
-      expect(() => api.get(env, "board", "room")).toThrow(
-        '[moku-worker] binding "BOARD" is not bound.'
-      );
+      expect(() => api.get(env, "board", "room")).toThrow('[worker] binding "BOARD" is not bound.');
     });
   });
 

@@ -31,7 +31,7 @@ export type BindingsApi = {
    * @param env - The Cloudflare request env object.
    * @param name - The binding name to resolve.
    * @returns The binding value narrowed to T.
-   * @throws {Error} With a `[moku-worker]` prefix when the binding is nullish.
+   * @throws {Error} With a `[worker]` prefix when the binding is nullish.
    */
   require<T>(env: WorkerEnvironment, name: string): T;
 

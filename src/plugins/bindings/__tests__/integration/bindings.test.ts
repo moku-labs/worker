@@ -16,7 +16,7 @@ import { bindingsPlugin } from "../../index";
 // Omitting core plugins is valid: createCoreConfig plugins?: [...] is optional.
 // ---------------------------------------------------------------------------
 
-const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("moku-worker", {
+const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("worker", {
   config: {
     stage: "test",
     name: "bindings-test",
@@ -81,11 +81,11 @@ describe("bindings plugin (integration)", () => {
       expect(app.bindings.has(stubEnv, "MISSING")).toBe(false);
     });
 
-    it("app.bindings.require throws [moku-worker] for an unbound key", () => {
+    it("app.bindings.require throws [worker] for an unbound key", () => {
       const app = createTestApp();
       const stubEnv = {};
 
-      expect(() => app.bindings.require(stubEnv, "UNBOUND")).toThrow("[moku-worker]");
+      expect(() => app.bindings.require(stubEnv, "UNBOUND")).toThrow("[worker]");
       expect(() => app.bindings.require(stubEnv, "UNBOUND")).toThrow("UNBOUND");
     });
   });

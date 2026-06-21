@@ -81,7 +81,7 @@ const createMockCtx = (overrides?: {
       const value = env[name];
       if (value === undefined || value === null) {
         throw new Error(
-          `[moku-worker] binding "${name}" is not bound.\n  Declare it in wrangler config and pass it in via the request env.`
+          `[worker] binding "${name}" is not bound.\n  Declare it in wrangler config and pass it in via the request env.`
         );
       }
       return value as T;
@@ -354,9 +354,7 @@ describe("createD1Api", () => {
       const emptyEnv: Record<string, unknown> = {};
 
       // db(env) throws synchronously inside the non-async arrow; use .toThrow not .rejects
-      expect(() => api.query(emptyEnv, "SELECT 1")).toThrow(
-        '[moku-worker] binding "DB" is not bound.'
-      );
+      expect(() => api.query(emptyEnv, "SELECT 1")).toThrow('[worker] binding "DB" is not bound.');
     });
 
     it("throws the framework-prefixed error for a custom binding name", () => {
@@ -365,7 +363,7 @@ describe("createD1Api", () => {
       const emptyEnv: Record<string, unknown> = {};
 
       expect(() => api.query(emptyEnv, "SELECT 1")).toThrow(
-        '[moku-worker] binding "MY_DB" is not bound.'
+        '[worker] binding "MY_DB" is not bound.'
       );
     });
   });
@@ -454,7 +452,7 @@ describe("createD1Api", () => {
       const env = makeEnv(makeFakeDb());
 
       expect(() => api.use("missing").prepare(env)).toThrow(
-        '[moku-worker] No d1 instance "missing". Configured: main.'
+        '[worker] No d1 instance "missing". Configured: main.'
       );
     });
   });
@@ -497,7 +495,7 @@ describe("createD1Api", () => {
       const api = createD1Api(ctx);
       const env = makeEnv(makeFakeDb());
 
-      expect(() => api.prepare(env)).toThrow("[moku-worker] d1 has 2 instances");
+      expect(() => api.prepare(env)).toThrow("[worker] d1 has 2 instances");
     });
   });
 

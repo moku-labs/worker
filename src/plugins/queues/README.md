@@ -69,7 +69,7 @@ send(env: WorkerEnv, queue: string, body: unknown): Promise<void>
 Enqueues a single message `body` onto the named `queue` resolved from `env`. Thin wrapper over the
 platform `Queue.send` — request/response work, so it returns a promise rather than emitting an event.
 
-- **Throws** an `Error` with a `[moku-worker]` prefix if the queue binding is missing from `env`
+- **Throws** an `Error` with a `[worker]` prefix if the queue binding is missing from `env`
   (propagated from `bindings.require`).
 
 ```typescript
@@ -90,7 +90,7 @@ sendBatch(env: WorkerEnv, queue: string, bodies: unknown[]): Promise<void>
 Enqueues many messages in one call; each element of `bodies` becomes one message. Maps each body to
 `{ body }` (`bodies.map(body => ({ body }))`) before calling the platform `Queue.sendBatch`.
 
-- **Throws** an `Error` with a `[moku-worker]` prefix if the queue binding is missing from `env`.
+- **Throws** an `Error` with a `[worker]` prefix if the queue binding is missing from `env`.
 
 ```typescript
 import { queuesPlugin } from "@moku-labs/worker";

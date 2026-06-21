@@ -32,11 +32,11 @@ const app = createApp({
 });
 ```
 
-`d1` declares `depends: [bindingsPlugin]`, but you do **not** list `bindingsPlugin` yourself: `bindings` is a framework default shipped by every `createApp` from `@moku-labs/worker`, so the dependency is already satisfied. Adding it again throws `TypeError: [moku-worker] Duplicate plugin name: "bindings"`.
+`d1` declares `depends: [bindingsPlugin]`, but you do **not** list `bindingsPlugin` yourself: `bindings` is a framework default shipped by every `createApp` from `@moku-labs/worker`, so the dependency is already satisfied. Adding it again throws `TypeError: [worker] Duplicate plugin name: "bindings"`.
 
 ## API
 
-Every method is **env-first**: the per-request `env` is the first argument, threaded down to where the binding is resolved. Access from a consumer is the cross-plugin pull `require(d1Plugin).<method>(env, ...)`; the app-surface form is `app.d1.<method>(env, ...)` (regular plugins mount on `app.<name>`). Results are the raw D1 result objects — no mapping. A missing binding throws a `[moku-worker]`-prefixed error from the `bindings` resolver.
+Every method is **env-first**: the per-request `env` is the first argument, threaded down to where the binding is resolved. Access from a consumer is the cross-plugin pull `require(d1Plugin).<method>(env, ...)`; the app-surface form is `app.d1.<method>(env, ...)` (regular plugins mount on `app.<name>`). Results are the raw D1 result objects — no mapping. A missing binding throws a `[worker]`-prefixed error from the `bindings` resolver.
 
 The Cloudflare D1 types referenced below (`D1Database`, `D1PreparedStatement`, `D1Result`) are **ambient globals** from `@cloudflare/workers-types`; you do not import them.
 
@@ -188,7 +188,7 @@ export default {
 
 ## Integration
 
-- **`bindings`** — `d1` declares `depends: [bindingsPlugin] as const`. Every method resolves its `D1Database` through `ctx.require(bindingsPlugin).require<D1Database>(env, ctx.config.binding)`. `bindings` is a framework default, so this dependency is satisfied automatically — never add `bindingsPlugin` to your `plugins` array (it would throw a duplicate-plugin-name `TypeError`). A binding named by `config.binding` that is absent from `env` raises the `[moku-worker] binding "DB" is not bound.` error from the `bindings` resolver.
+- **`bindings`** — `d1` declares `depends: [bindingsPlugin] as const`. Every method resolves its `D1Database` through `ctx.require(bindingsPlugin).require<D1Database>(env, ctx.config.binding)`. `bindings` is a framework default, so this dependency is satisfied automatically — never add `bindingsPlugin` to your `plugins` array (it would throw a duplicate-plugin-name `TypeError`). A binding named by `config.binding` that is absent from `env` raises the `[worker] binding "DB" is not bound.` error from the `bindings` resolver.
 - **`server`** — `d1` does no routing itself; reach it from endpoint handlers via `require(d1Plugin).<method>(env, ...)`, threading the handler's `env`. `server` is also a framework default, so registering endpoints under `pluginConfigs.server.endpoints` is enough — you do not list `serverPlugin` either.
 - **deploy** — the deploy pipeline reads `deployManifest()` to discover the binding and migrations directory. `d1` exposes this metadata through its own API surface; it never has its config read by sibling plugins.
 

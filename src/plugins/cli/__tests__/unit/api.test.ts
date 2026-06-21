@@ -270,7 +270,7 @@ describe("createCliApi", () => {
         migration: "applied",
         seed: "failed",
         elapsedMs: 1,
-        errors: ["[moku-worker] seed failed"]
+        errors: ["[worker] seed failed"]
       });
       const api = createCliApi(ctx);
       const originalExit = process.exitCode;

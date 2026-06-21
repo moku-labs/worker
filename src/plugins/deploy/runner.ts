@@ -65,7 +65,7 @@ export const runWrangler = (args: string[]): Promise<string> =>
 
     // Reject if wrangler can't be spawned at all (missing binary, EACCES, …).
     child.on("error", err => {
-      reject(new Error(`[moku-worker] Failed to spawn wrangler.\n  ${err.message}`));
+      reject(new Error(`[worker] Failed to spawn wrangler.\n  ${err.message}`));
     });
 
     // On close: decode the buffers, then reject on a non-zero exit or resolve
@@ -76,9 +76,7 @@ export const runWrangler = (args: string[]): Promise<string> =>
 
       if (code !== 0) {
         reject(
-          new Error(
-            `[moku-worker] wrangler exited with code ${String(code)}.\n  ${stderr || stdout}`
-          )
+          new Error(`[worker] wrangler exited with code ${String(code)}.\n  ${stderr || stdout}`)
         );
         return;
       }
@@ -106,14 +104,14 @@ export const runWranglerInherit = (args: string[]): Promise<void> => {
     const child = spawn("wrangler", args, { stdio: "inherit" });
 
     child.on("error", error => {
-      reject(new Error(`[moku-worker] Failed to spawn wrangler.\n  ${error.message}`));
+      reject(new Error(`[worker] Failed to spawn wrangler.\n  ${error.message}`));
     });
     child.on("close", code => {
       if (code === 0) {
         resolve();
         return;
       }
-      reject(new Error(`[moku-worker] wrangler exited with code ${String(code)}.`));
+      reject(new Error(`[worker] wrangler exited with code ${String(code)}.`));
     });
   });
 };

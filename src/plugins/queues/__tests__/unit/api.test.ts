@@ -87,7 +87,7 @@ const createMockCtx = (
       const val = reqEnv[name];
       if (val === undefined || val === null) {
         throw new Error(
-          `[moku-worker] binding "${name}" is not bound.\n` +
+          `[worker] binding "${name}" is not bound.\n` +
             `  Declare it in wrangler config and pass it in via the request env.`
         );
       }
@@ -162,16 +162,16 @@ describe("createQueuesApi", () => {
       const { ctx, env } = createMockCtx(config, {});
       const api = createQueuesApi(ctx as unknown as Ctx);
 
-      await expect(api.send(env, "data")).rejects.toThrow("[moku-worker] binding");
+      await expect(api.send(env, "data")).rejects.toThrow("[worker] binding");
     });
 
-    it("use() rejects with a [moku-worker] error for an unknown instance key", async () => {
+    it("use() rejects with a [worker] error for an unknown instance key", async () => {
       const config: Config = { orders: { name: "orders", binding: "ORDERS" } };
       const { ctx, env } = createMockCtx(config, { ORDERS: makeFakeQueue() });
       const api = createQueuesApi(ctx as unknown as Ctx);
 
       await expect(api.use("missing").send(env, "x")).rejects.toThrow(
-        '[moku-worker] No queues instance "missing"'
+        '[worker] No queues instance "missing"'
       );
     });
   });

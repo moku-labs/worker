@@ -157,18 +157,18 @@ describe("resolveR2Provider", () => {
   // ───────── missing binding ─────────────────────────────────────────────────
 
   describe("missing binding", () => {
-    it("throws the [moku-worker] error when the binding is absent", async () => {
+    it("throws the [worker] error when the binding is absent", async () => {
       const bindings = {
         require: vi.fn((_env: Record<string, unknown>, name: string) => {
           throw new Error(
-            `[moku-worker] binding "${name}" is not bound.\n  Declare it in wrangler config and pass it in via the request env.`
+            `[worker] binding "${name}" is not bound.\n  Declare it in wrangler config and pass it in via the request env.`
           );
         }),
         has: vi.fn(() => false)
       } as unknown as BindingsResolver;
       const provider = resolveR2Provider(bindings, {}, "MISSING");
 
-      await expect(provider.get("k")).rejects.toThrow("[moku-worker]");
+      await expect(provider.get("k")).rejects.toThrow("[worker]");
     });
   });
 });

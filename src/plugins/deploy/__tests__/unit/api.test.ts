@@ -859,7 +859,7 @@ describe("createDeployApi", () => {
       const ui = makeUi();
       vi.mocked(createBrandConsole).mockReturnValueOnce(asConsole(ui));
       vi.mocked(verifyAuth).mockRejectedValueOnce(
-        new Error("[moku-worker] CLOUDFLARE_API_TOKEN is not set. Run `auth setup` ...")
+        new Error("[worker] CLOUDFLARE_API_TOKEN is not set. Run `auth setup` ...")
       );
       const confirm = vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(true);
       stubPrompts(confirm);
@@ -890,7 +890,7 @@ describe("createDeployApi", () => {
     it("STILL shows the token panel when .env.local already exists (the instruction is never skipped)", async () => {
       const ui = makeUi();
       vi.mocked(createBrandConsole).mockReturnValueOnce(asConsole(ui));
-      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[moku-worker] token missing"));
+      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[worker] token missing"));
       vi.mocked(ensureEnvLocal).mockResolvedValueOnce({ created: false, path: "/cwd/.env.local" });
       const confirm = vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(true);
       stubPrompts(confirm);
@@ -910,7 +910,7 @@ describe("createDeployApi", () => {
     it("does not scaffold an existing .env.local — tells the user to fill it in", async () => {
       const ui = makeUi();
       vi.mocked(createBrandConsole).mockReturnValueOnce(asConsole(ui));
-      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[moku-worker] token missing"));
+      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[worker] token missing"));
       vi.mocked(ensureEnvLocal).mockResolvedValueOnce({ created: false, path: "/cwd/.env.local" });
       const confirm = vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(true);
       stubPrompts(confirm);
@@ -928,7 +928,7 @@ describe("createDeployApi", () => {
     it("skips the guidance + scaffold but still points at .env.local when setup is declined", async () => {
       const ui = makeUi();
       vi.mocked(createBrandConsole).mockReturnValueOnce(asConsole(ui));
-      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[moku-worker] token missing"));
+      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[worker] token missing"));
       const confirm = vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(false);
       stubPrompts(confirm);
       const ctx = createMockCtx();
@@ -946,7 +946,7 @@ describe("createDeployApi", () => {
     });
 
     it("fails fast (throws, no prompt) when auth fails in CI mode", async () => {
-      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[moku-worker] token missing"));
+      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[worker] token missing"));
       const ctx = createMockCtx();
       const api = createDeployApi(ctx);
 
@@ -956,7 +956,7 @@ describe("createDeployApi", () => {
 
     it("fails fast when auth fails off a TTY (even when not ci)", async () => {
       vi.mocked(stdoutIsTty).mockReturnValueOnce(false);
-      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[moku-worker] token missing"));
+      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[worker] token missing"));
       const ctx = createMockCtx();
       const api = createDeployApi(ctx);
 
@@ -970,7 +970,7 @@ describe("createDeployApi", () => {
   describe("guided recovery — retryable steps", () => {
     it("retries `wrangler deploy` when it fails and the user confirms, then completes", async () => {
       vi.mocked(runWrangler)
-        .mockRejectedValueOnce(new Error("[moku-worker] wrangler exited with code 1."))
+        .mockRejectedValueOnce(new Error("[worker] wrangler exited with code 1."))
         .mockResolvedValueOnce("https://retry.workers.dev");
       const ctx = createMockCtx({ has: () => false });
       const api = createDeployApi(ctx);
@@ -987,7 +987,7 @@ describe("createDeployApi", () => {
       // Once — the call rejects exactly once (retry is declined), and a non-Once reject would
       // bleed past clearAllMocks (which clears calls, not implementations) into later tests.
       vi.mocked(runWrangler).mockRejectedValueOnce(
-        new Error("[moku-worker] wrangler exited with code 1.")
+        new Error("[worker] wrangler exited with code 1.")
       );
       const confirm = vi
         .fn<(question: string) => Promise<boolean>>()
@@ -1012,7 +1012,7 @@ describe("createDeployApi", () => {
 
     it("fails fast (throws) when `wrangler deploy` fails in CI mode", async () => {
       vi.mocked(runWrangler).mockRejectedValueOnce(
-        new Error("[moku-worker] wrangler exited with code 1.")
+        new Error("[worker] wrangler exited with code 1.")
       );
       const ctx = createMockCtx({ has: () => false });
       const api = createDeployApi(ctx);
@@ -1021,9 +1021,7 @@ describe("createDeployApi", () => {
     });
 
     it("re-plans and retries provisioning when the infra preflight fails, then deploys", async () => {
-      vi.mocked(planInfra).mockRejectedValueOnce(
-        new Error("[moku-worker] Cloudflare listing failed")
-      );
+      vi.mocked(planInfra).mockRejectedValueOnce(new Error("[worker] Cloudflare listing failed"));
       const ctx = createMockCtx({ has: () => false });
       const api = createDeployApi(ctx);
 
@@ -1034,7 +1032,7 @@ describe("createDeployApi", () => {
     });
 
     it("aborts (no deploy) when the user declines an R2 upload retry", async () => {
-      vi.mocked(uploadDirToR2).mockRejectedValueOnce(new Error("[moku-worker] R2 upload failed"));
+      vi.mocked(uploadDirToR2).mockRejectedValueOnce(new Error("[worker] R2 upload failed"));
       const confirm = vi
         .fn<(question: string) => Promise<boolean>>()
         .mockResolvedValueOnce(true) // create-missing gate
@@ -1083,7 +1081,7 @@ describe("createDeployApi", () => {
 
     it("captures a resource failure (no throw) and aborts when the retry is declined", async () => {
       vi.mocked(provisionResource).mockRejectedValueOnce(
-        new Error("[moku-worker] wrangler exited with code 1.\n  ✘ [ERROR] bucket name invalid")
+        new Error("[worker] wrangler exited with code 1.\n  ✘ [ERROR] bucket name invalid")
       );
       const confirm = vi
         .fn<(question: string) => Promise<boolean>>()
@@ -1103,7 +1101,7 @@ describe("createDeployApi", () => {
 
     it("retries only the still-failed resource and proceeds once it succeeds", async () => {
       vi.mocked(provisionResource)
-        .mockRejectedValueOnce(new Error("[moku-worker] transient")) // first attempt fails
+        .mockRejectedValueOnce(new Error("[worker] transient")) // first attempt fails
         .mockResolvedValue({}); // retry succeeds
       const ctx = createMockCtx({ has: name => name === "kv" });
       const api = createDeployApi(ctx);
@@ -1115,7 +1113,7 @@ describe("createDeployApi", () => {
     });
 
     it("fails fast (throws) when a resource fails to provision in CI mode", async () => {
-      vi.mocked(provisionResource).mockRejectedValueOnce(new Error("[moku-worker] boom"));
+      vi.mocked(provisionResource).mockRejectedValueOnce(new Error("[worker] boom"));
       const ctx = createMockCtx({ has: name => name === "kv" });
       const api = createDeployApi(ctx);
 
@@ -1296,7 +1294,7 @@ describe("createDeployApi", () => {
       // Auth was never set up → the guided recovery scaffolds .env.local and aborts BEFORE the
       // deploy. The whole point of moving these steps inside run(): no remote-DB command may run.
       vi.mocked(verifyAuth).mockRejectedValueOnce(
-        new Error("[moku-worker] CLOUDFLARE_API_TOKEN is not set.")
+        new Error("[worker] CLOUDFLARE_API_TOKEN is not set.")
       );
       stubPrompts(vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(true));
       const ctx = createMockCtx({
@@ -1331,7 +1329,7 @@ describe("createDeployApi", () => {
       // runWrangler #1 is `deploy` (resolve it); #2 is the migration apply — make THAT one fail.
       vi.mocked(runWrangler)
         .mockResolvedValueOnce("https://test.workers.dev")
-        .mockRejectedValueOnce(new Error("[moku-worker] wrangler exited with code 1."));
+        .mockRejectedValueOnce(new Error("[worker] wrangler exited with code 1."));
       const api = createDeployApi(ctx);
 
       const report = await api.run({ migration: true, seed: true });

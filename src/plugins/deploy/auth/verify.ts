@@ -26,7 +26,7 @@ const SETUP_HINT = "Run `auth setup` for the exact token to create.";
 export const verifyAuth = async (ctx: Ctx): Promise<AuthStatus> => {
   const token = ctx.env.get("CLOUDFLARE_API_TOKEN");
   if (token === undefined || token === "") {
-    throw new Error(`[moku-worker] CLOUDFLARE_API_TOKEN is not set. ${SETUP_HINT}`);
+    throw new Error(`[worker] CLOUDFLARE_API_TOKEN is not set. ${SETUP_HINT}`);
   }
 
   // Verify the token is usable (cfGet throws on a rejected token; we re-brand it).
@@ -34,12 +34,12 @@ export const verifyAuth = async (ctx: Ctx): Promise<AuthStatus> => {
   try {
     ({ status } = await verifyToken(token));
   } catch (error) {
-    throw new Error(`[moku-worker] Cloudflare API token is invalid or expired. ${SETUP_HINT}`, {
+    throw new Error(`[worker] Cloudflare API token is invalid or expired. ${SETUP_HINT}`, {
       cause: error
     });
   }
   if (status !== "active") {
-    throw new Error(`[moku-worker] Cloudflare API token is "${status}", not active. ${SETUP_HINT}`);
+    throw new Error(`[worker] Cloudflare API token is "${status}", not active. ${SETUP_HINT}`);
   }
 
   // Use a pinned account id when provided; else resolve the first accessible account.

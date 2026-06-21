@@ -36,7 +36,7 @@ const cfGet = async <T>(token: string, path: string): Promise<T> => {
   const body = (await response.json()) as CfEnvelope;
   if (!response.ok || !body.success) {
     const detail = body.errors?.map(error => error.message).join("; ") || `HTTP ${response.status}`;
-    throw new Error(`[moku-worker] Cloudflare API request failed (${path}): ${detail}`);
+    throw new Error(`[worker] Cloudflare API request failed (${path}): ${detail}`);
   }
 
   return body.result as T;
@@ -58,7 +58,7 @@ export const resolveAccount = async (token: string): Promise<{ id: string; name:
   const accounts = await cfGet<Array<{ id: string; name: string }>>(token, "/accounts");
   const first = accounts[0];
   if (!first) {
-    throw new Error("[moku-worker] No Cloudflare account is accessible with this API token.");
+    throw new Error("[worker] No Cloudflare account is accessible with this API token.");
   }
   return { id: first.id, name: first.name };
 };

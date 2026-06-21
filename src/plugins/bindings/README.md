@@ -12,7 +12,7 @@ The `bindings` plugin exposes two pure methods for resolving Cloudflare Worker b
 
 ### `require<T>(env, name): T`
 
-Resolves binding `name` off the request-supplied `env`, narrowed to `T`. Throws a `[moku-worker]`-prefixed `Error` when the binding is `null` or `undefined` (both mean "unbound"). Falsy-but-bound values (`""`, `0`, `false`) are returned as-is and never throw.
+Resolves binding `name` off the request-supplied `env`, narrowed to `T`. Throws a `[worker]`-prefixed `Error` when the binding is `null` or `undefined` (both mean "unbound"). Falsy-but-bound values (`""`, `0`, `false`) are returned as-is and never throw.
 
 ```typescript
 import type { KVNamespace } from "@cloudflare/workers-types";
@@ -20,7 +20,7 @@ import type { KVNamespace } from "@cloudflare/workers-types";
 export default {
   fetch(request: Request, env: Record<string, unknown>) {
     const kv = app.bindings.require<KVNamespace>(env, "MY_KV");
-    // throws [moku-worker] binding "MY_KV" is not bound. if absent
+    // throws [worker] binding "MY_KV" is not bound. if absent
     return new Response("ok");
   },
 };

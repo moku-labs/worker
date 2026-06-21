@@ -33,20 +33,20 @@ describe("bindings plugin — unit", () => {
       expect(result).toBe(bound);
     });
 
-    it("throws with [moku-worker] prefix and binding name when key is undefined", () => {
+    it("throws with [worker] prefix and binding name when key is undefined", () => {
       const api = makeApi();
       const env: WorkerEnv = {};
 
-      expect(() => api.require(env, "MISSING")).toThrow("[moku-worker]");
+      expect(() => api.require(env, "MISSING")).toThrow("[worker]");
       expect(() => api.require(env, "MISSING")).toThrow("MISSING");
     });
 
-    it("throws with [moku-worker] prefix and binding name when key is explicitly absent (undefined value)", () => {
+    it("throws with [worker] prefix and binding name when key is explicitly absent (undefined value)", () => {
       const api = makeApi();
       // undefined value — the == null guard covers undefined (same path as missing key)
       const env: WorkerEnv = { ABSENT_BINDING: undefined };
 
-      expect(() => api.require(env, "ABSENT_BINDING")).toThrow("[moku-worker]");
+      expect(() => api.require(env, "ABSENT_BINDING")).toThrow("[worker]");
       expect(() => api.require(env, "ABSENT_BINDING")).toThrow("ABSENT_BINDING");
     });
 
@@ -153,7 +153,7 @@ describe("bindings plugin — unit", () => {
       expect(v1).toBe("from-env1");
       expect(v2).toBe("from-env2");
       // X is not in env2 — must throw, not leak from env1
-      expect(() => api.require(env2, "X")).toThrow("[moku-worker]");
+      expect(() => api.require(env2, "X")).toThrow("[worker]");
     });
 
     it("has resolves from each call's env; second env cannot see first env's keys", () => {

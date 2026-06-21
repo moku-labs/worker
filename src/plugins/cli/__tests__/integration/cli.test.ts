@@ -17,7 +17,6 @@ import type { DeployReport } from "../../../deploy/types";
 import { durableObjectsPlugin } from "../../../durable-objects";
 import { kvPlugin } from "../../../kv";
 import { queuesPlugin } from "../../../queues";
-import { stagePlugin } from "../../../stage";
 import { storagePlugin } from "../../../storage";
 import { cliPlugin } from "../../index";
 import type { Api } from "../../types";
@@ -78,14 +77,14 @@ vi.mock("../../../deploy/dev/runner", () => ({
 const testCoreConfig = createCoreConfig<
   WorkerConfig,
   WorkerEvents,
-  [typeof logPlugin, typeof envPlugin, typeof stagePlugin]
->("moku-worker", {
+  [typeof logPlugin, typeof envPlugin]
+>("worker", {
   config: {
     stage: "test",
     name: "cli-test-worker",
     compatibilityDate: "2026-06-17"
   },
-  plugins: [logPlugin, envPlugin, stagePlugin],
+  plugins: [logPlugin, envPlugin],
   pluginConfigs: { log: { mode: "test" } }
 });
 

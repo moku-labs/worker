@@ -420,9 +420,7 @@ const guidedProvision = async (
 
     // Some resources failed. CI has no human to guide → fail fast; otherwise offer to retry them.
     if (!deps.interactive) {
-      throw new Error(
-        `[moku-worker] ${String(result.failed.length)} resource(s) failed to provision.`
-      );
+      throw new Error(`[worker] ${String(result.failed.length)} resource(s) failed to provision.`);
     }
     if (!(await deps.confirm("Retry the failed resource(s)?"))) return ABORTED;
   }
@@ -570,7 +568,7 @@ type PostDeploy = {
  * @returns The captured (branded) message.
  * @example
  * ```ts
- * captureFailure(ui, errors, new Error("[moku-worker] seed failed"));
+ * captureFailure(ui, errors, new Error("[worker] seed failed"));
  * ```
  */
 const captureFailure = (
@@ -630,7 +628,7 @@ const runPostDeploy = async (
     captureFailure(
       ui,
       errors,
-      new Error("[moku-worker] seed skipped — the remote migration it depends on failed.")
+      new Error("[worker] seed skipped — the remote migration it depends on failed.")
     );
   } else if (want.seed) {
     const config = ctx.config.seed;
@@ -640,7 +638,7 @@ const runPostDeploy = async (
         ui,
         errors,
         new Error(
-          "[moku-worker] deploy({ seed: true }) but no seed is configured — set pluginConfigs.deploy.seed."
+          "[worker] deploy({ seed: true }) but no seed is configured — set pluginConfigs.deploy.seed."
         )
       );
     } else {
@@ -862,7 +860,7 @@ export const createDeployApi = (ctx: Ctx) => ({
     opts?: { stage?: string; binding?: string; remote?: boolean }
   ): Promise<void> {
     if (!ctx.has("d1")) {
-      throw new Error("[moku-worker] seed: no d1 database is configured.");
+      throw new Error("[worker] seed: no d1 database is configured.");
     }
 
     // Generate the wrangler config up front so `d1 …` can resolve the binding even on a first run

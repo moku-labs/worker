@@ -135,8 +135,8 @@ import { cliPlugin, deployPlugin } from "@moku-labs/worker";
 import { web } from "./web"; // your @moku-labs/web app — web.cli.build() rebuilds the site
 
 // bindings + server are framework defaults baked into the exported createApp
-// ([log, env, stage, bindings, server]) — do NOT re-list them or createApp throws
-// `TypeError: [moku-worker] Duplicate plugin name: "bindings".`. Among the CONSUMER
+// ([log, env, bindings, server]) — do NOT re-list them or createApp throws
+// `TypeError: [worker] Duplicate plugin name: "bindings".`. Among the CONSUMER
 // extras, every `depends` target must still be registered EARLIER in the array:
 // cli → deploy → [storage, kv, d1, queues, durableObjects] (→ bindings, already a default).
 const server = createApp({

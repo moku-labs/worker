@@ -260,7 +260,7 @@ describe("d1 plugin (integration)", () => {
 
       // db(env) throws synchronously; use .toThrow not .rejects
       expect(() => app.d1.query(emptyEnv, "SELECT 1")).toThrow(
-        '[moku-worker] binding "DB" is not bound.'
+        '[worker] binding "DB" is not bound.'
       );
     });
   });

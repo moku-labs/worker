@@ -1,8 +1,9 @@
 /**
  * @file Default workerd-safe env provider for the worker framework.
  *
- * The framework wires this into the `env` core plugin (via the {@link createApp} bridge in index.ts)
- * so deploy/auth can read CLOUDFLARE_API_TOKEN and friends through `ctx.env`. It reads `process.env`
+ * The framework seeds this as the `env` core plugin's default provider in `config.ts`
+ * (`createCoreConfig` `pluginConfigs.env.providers`) so deploy/auth can read CLOUDFLARE_API_TOKEN
+ * and friends through `ctx.env`. It reads `process.env`
  * — present under Bun/Node (where the deploy scripts run) and under workerd with `nodejs_compat` —
  * and degrades to an empty map when there is no `process` global (a Worker without nodejs_compat), so
  * baking it into every runtime app can never crash a bundle at cold start. `dotenv()` is intentionally
@@ -18,7 +19,7 @@ import type { EnvProvider } from "@moku-labs/common";
  * @returns An {@link EnvProvider} named `worker-process-env`.
  * @example
  * ```ts
- * // wired by createApp so `ctx.env.get("CLOUDFLARE_API_TOKEN")` resolves under Bun/Node
+ * // seeded as the env plugin's default so `ctx.env.get("CLOUDFLARE_API_TOKEN")` resolves under Bun/Node
  * const provider = workerSafeProcessEnv();
  * provider.load().CLOUDFLARE_API_TOKEN;
  * ```

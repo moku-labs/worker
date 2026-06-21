@@ -100,8 +100,8 @@ export const resolveD1 = (
   if (target === undefined) {
     throw new Error(
       binding === undefined
-        ? `[moku-worker] seed: ${String(databases.length)} d1 databases configured — pass { binding } to choose one.`
-        : `[moku-worker] seed: no d1 database is bound to "${binding}".`
+        ? `[worker] seed: ${String(databases.length)} d1 databases configured — pass { binding } to choose one.`
+        : `[worker] seed: no d1 database is bound to "${binding}".`
     );
   }
   return target;
@@ -133,7 +133,7 @@ export const runConfiguredSeed = async (
   scope: "--remote" | "--local"
 ): Promise<SeedOutcome> => {
   if (!ctx.has("d1")) {
-    throw new Error("[moku-worker] seed: no d1 database is configured.");
+    throw new Error("[worker] seed: no d1 database is configured.");
   }
 
   const database = resolveD1(ctx, seed.binding);

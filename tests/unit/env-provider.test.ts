@@ -2,9 +2,8 @@
  * Unit tests for the default workerd-safe env provider + its createApp wiring.
  */
 import { describe, expect, it } from "vitest";
-
+import { workerSafeProcessEnv } from "../../src/env-provider";
 import { createApp } from "../../src/index";
-import { workerSafeProcessEnv } from "../../src/plugins/stage/env-provider";
 
 describe("workerSafeProcessEnv", () => {
   it("is named worker-process-env", () => {
@@ -47,7 +46,9 @@ describe("createApp env wiring", () => {
   it("a consumer-supplied env provider array is respected over the default", () => {
     const app = createApp({
       pluginConfigs: {
-        // Core-plugin config is bridged through createApp; the cast mirrors the stage bridge.
+        // The `env` core-plugin key is sealed from the public `pluginConfigs` type (spec/05 §1b),
+        // but the kernel honors a level-4 override at runtime over the config.ts default. The cast
+        // reaches that sealed channel to prove a consumer-supplied provider array wins.
         env: { providers: [{ name: "fixed", load: () => ({ FIXED_ONLY: "yes" }) }] }
       }
     } as Parameters<typeof createApp>[0]);

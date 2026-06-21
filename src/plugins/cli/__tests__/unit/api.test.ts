@@ -7,6 +7,8 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { deployPlugin } from "../../../deploy";
 import type {
   AuthStatus,
+  DeployReport,
+  ExternalManifest,
   InfraPlan,
   OnChange,
   PermissionGroup,
@@ -21,13 +23,42 @@ import { createCliApi } from "../../api";
 // Stub deploy API — vi.fn() stubs for dev and run
 // ---------------------------------------------------------------------------
 
+/** A default successful deploy report — what the stubbed run() resolves to unless overridden. */
+const DEPLOYED_REPORT: DeployReport = {
+  ok: true,
+  status: "deployed",
+  stage: "production",
+  url: "https://test.workers.dev",
+  resources: { created: 0, exists: 0, failed: 0 },
+  migration: "skipped",
+  seed: "skipped",
+  elapsedMs: 0,
+  errors: []
+};
+
 const makeDeployStub = () => ({
   dev: vi
-    .fn<(opts?: { port?: number; webBuild?: WebBuild; onChange?: OnChange }) => Promise<void>>()
+    .fn<
+      (opts?: {
+        port?: number;
+        webBuild?: WebBuild;
+        onChange?: OnChange;
+        seed?: boolean;
+      }) => Promise<void>
+    >()
     .mockResolvedValue(undefined),
   run: vi
-    .fn<(opts?: { ci?: boolean; webBuild?: WebBuild }) => Promise<void>>()
-    .mockResolvedValue(undefined),
+    .fn<
+      (opts?: {
+        ci?: boolean;
+        stage?: string;
+        webBuild?: WebBuild;
+        manifest?: ExternalManifest;
+        migration?: boolean;
+        seed?: boolean;
+      }) => Promise<DeployReport>
+    >()
+    .mockResolvedValue(DEPLOYED_REPORT),
   seed: vi
     .fn<
       (
@@ -142,6 +173,15 @@ describe("createCliApi", () => {
       expect(deployStub.dev).toHaveBeenCalledWith({ port: 3000, webBuild, onChange });
     });
 
+    it("forwards the seed flag to deploy.dev", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+
+      await api.dev({ seed: true });
+
+      expect(deployStub.dev).toHaveBeenCalledWith({ seed: true });
+    });
+
     it("resolves to undefined on the happy path", async () => {
       const { ctx } = makeMockCtx();
       const api = createCliApi(ctx);
@@ -204,23 +244,63 @@ describe("createCliApi", () => {
       expect(deployStub.run).toHaveBeenCalledWith({ ci: true, webBuild });
     });
 
-    it("renders a branded error + sets a non-zero exit code when run() throws (no rethrow)", async () => {
+    it("renders a branded error + sets a non-zero exit code AND returns a failed report when run() throws", async () => {
       const { ctx, deployStub } = makeMockCtx();
       deployStub.run.mockRejectedValueOnce(new Error("CLOUDFLARE_API_TOKEN is not set"));
       const api = createCliApi(ctx);
       const originalExit = process.exitCode;
 
-      await expect(api.deploy({ ci: true })).resolves.toBeUndefined();
+      const report = await api.deploy({ ci: true });
+      expect(report.status).toBe("failed");
+      expect(report.ok).toBe(false);
+      expect(report.errors).toContain("CLOUDFLARE_API_TOKEN is not set");
       expect(process.exitCode).toBe(1);
 
       process.exitCode = originalExit;
     });
 
-    it("resolves to undefined on the happy path", async () => {
+    it("sets a non-zero exit code when run() resolves a failed report (a post-step failed)", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      deployStub.run.mockResolvedValueOnce({
+        ok: false,
+        status: "failed",
+        stage: "production",
+        url: "https://test.workers.dev",
+        resources: { created: 0, exists: 0, failed: 0 },
+        migration: "applied",
+        seed: "failed",
+        elapsedMs: 1,
+        errors: ["[moku-worker] seed failed"]
+      });
+      const api = createCliApi(ctx);
+      const originalExit = process.exitCode;
+
+      const report = await api.deploy({ ci: true });
+      expect(report.seed).toBe("failed");
+      expect(process.exitCode).toBe(1);
+
+      process.exitCode = originalExit;
+    });
+
+    it("returns the deploy report (and leaves the exit code alone) on the happy path", async () => {
       const { ctx } = makeMockCtx();
       const api = createCliApi(ctx);
+      const originalExit = process.exitCode;
 
-      await expect(api.deploy({ ci: true })).resolves.toBeUndefined();
+      const report = await api.deploy({ ci: true });
+      expect(report.status).toBe("deployed");
+      expect(report.ok).toBe(true);
+
+      process.exitCode = originalExit;
+    });
+
+    it("forwards the migration + seed flags verbatim to run", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+
+      await api.deploy({ ci: true, migration: true, seed: true });
+
+      expect(deployStub.run).toHaveBeenCalledWith({ ci: true, migration: true, seed: true });
     });
   });
 
@@ -376,11 +456,11 @@ describe("createCliApi", () => {
       expectTypeOf(api.deploy).toBeFunction();
     });
 
-    it("deploy returns Promise<void>", () => {
+    it("deploy returns Promise<DeployReport>", () => {
       const { ctx } = makeMockCtx();
       const api = createCliApi(ctx);
 
-      expectTypeOf(api.deploy()).toEqualTypeOf<Promise<void>>();
+      expectTypeOf(api.deploy()).toEqualTypeOf<Promise<DeployReport>>();
     });
 
     it("@ts-expect-error: dev rejects port: string", () => {

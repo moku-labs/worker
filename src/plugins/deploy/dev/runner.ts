@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 
 import { d1Plugin } from "../../d1";
 import { runWrangler } from "../runner";
+import { runConfiguredSeed } from "../seed";
 import type { Ctx, OnChange, WebBuild } from "../types";
 import { buildSite, fileCountOf } from "./build";
 import { watchPaths } from "./watch";
@@ -221,8 +222,34 @@ const rebuild = async (
 };
 
 /**
- * Run a long-lived dev session: cold build → (local d1 migrate) → spawn `wrangler dev` →
- * watch + rebuild on change → teardown on signal.
+ * Load the configured seed into the LOCAL D1 for a `dev --seed` session: execute the SQL file, then
+ * clear the configured cached KV keys so the app rebuilds them from the freshly-seeded rows. The
+ * schema already exists (the migrate step above runs first), so this never migrates — the local
+ * analogue of the deploy's remote seed, over the same `pluginConfigs.deploy.seed` config.
+ *
+ * @param ctx - The deploy plugin context.
+ * @param deps - The injected dev deps (for the wrangler runner).
+ * @returns Resolves once the seed file has executed and every cached KV key is cleared.
+ * @throws {Error} When `--seed` is set but no seed is configured under `pluginConfigs.deploy.seed`.
+ * @example
+ * ```ts
+ * await seedLocal(ctx, realDevDeps());
+ * ```
+ */
+const seedLocal = async (ctx: Ctx, deps: DevDeps): Promise<void> => {
+  const config = ctx.config.seed;
+  if (config === undefined) {
+    throw new Error(
+      "[moku-worker] dev({ seed: true }) but no seed is configured — set pluginConfigs.deploy.seed."
+    );
+  }
+  ctx.emit("dev:phase", { phase: "seed", detail: config.file });
+  await runConfiguredSeed(ctx, deps.runWrangler, config, "--local");
+};
+
+/**
+ * Run a long-lived dev session: cold build → (local d1 migrate) → (local seed) → spawn `wrangler
+ * dev` → watch + rebuild on change → teardown on signal.
  *
  * @param ctx - The deploy plugin context (config + emit + require/has).
  * @param opts - Optional options.
@@ -230,33 +257,41 @@ const rebuild = async (
  * @param opts.webBuild - Cold-build hook (also the per-change rebuild when `onChange` is omitted).
  * @param opts.onChange - Incremental per-change rebuild hook (e.g. `c => web.cli.update(c)`); when
  *   set, each debounced change rebuilds only the changed paths instead of a full `webBuild()`.
+ * @param opts.seed - Load the configured seed into the LOCAL D1 (+ reset its KV keys) before serving.
  * @param deps - Injected side effects (real ones from realDevDeps in production).
  * @returns Resolves when the session ends (SIGINT).
  * @example
  * ```ts
- * await runDev(ctx, { port: 8787, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) }, realDevDeps());
+ * await runDev(ctx, { port: 8787, seed: true, webBuild: () => web.cli.build() }, realDevDeps());
  * ```
  */
 export const runDev = async (
   ctx: Ctx,
-  opts: { port?: number; webBuild?: WebBuild; onChange?: OnChange } | undefined,
+  opts: { port?: number; webBuild?: WebBuild; onChange?: OnChange; seed?: boolean } | undefined,
   deps: DevDeps
 ): Promise<void> => {
   const port = opts?.port ?? 8787;
   const webBuild = opts?.webBuild;
   const onChange = opts?.onChange;
+  const seed = opts?.seed === true;
 
   // Cold build so the ASSETS dir has content before wrangler serves it.
   ctx.emit("dev:phase", { phase: "build", detail: "site" });
   await deps.build(ctx, webBuild);
 
   // Apply local D1 migrations when configured — once per d1 instance that declares migrations.
-  const migrationBindings = ctx.config.migrateLocal ? d1MigrationBindings(ctx) : [];
+  // `--seed` also forces this: the local seed below needs the schema, even if `migrateLocal` is off.
+  const migrationBindings = ctx.config.migrateLocal || seed ? d1MigrationBindings(ctx) : [];
   if (migrationBindings.length > 0) {
     ctx.emit("dev:phase", { phase: "migrate", detail: "d1 (local)" });
     for (const binding of migrationBindings) {
       await deps.runWrangler(["d1", "migrations", "apply", binding, "--local"]);
     }
+  }
+
+  // Load the local seed when `--seed` is set (tables now exist) — the local twin of `deploy --seed`.
+  if (seed) {
+    await seedLocal(ctx, deps);
   }
 
   // Spawn wrangler dev ONCE; it stays up across site rebuilds (its asset server live-reloads).

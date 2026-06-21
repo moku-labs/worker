@@ -51,35 +51,48 @@ dev(opts?: {
   stage?: string;
   webBuild?: WebBuild; // () => Promise<unknown> — full cold build (e.g. () => web.cli.build())
   onChange?: OnChange; // (changes: readonly string[]) => Promise<unknown> — incremental per-change rebuild
+  seed?: boolean;      // load the configured seed into the LOCAL D1 before serving
 }): Promise<void>
 ```
 
-Run the Worker locally via Wrangler. Prints a branded dev-session banner, then delegates to `ctx.require(deployPlugin).dev(...)`. The dev port comes **only** from `opts.port` — the consumer passes it (e.g. parsed from its own CLI flags in `scripts/dev.ts`); it defaults to 8787 when omitted. There is no hidden argv/config port resolution. `webBuild` is the **cold** build; `onChange` (when wired) is the **incremental** per-change rebuild — each change rebuilds only the changed paths instead of a full `webBuild()`. A failure renders a branded `✗` line and sets a non-zero exit code rather than throwing.
+Run the Worker locally via Wrangler. Prints a branded dev-session banner, then delegates to `ctx.require(deployPlugin).dev(...)`. The dev port comes **only** from `opts.port` — the consumer passes it (e.g. parsed from its own CLI flags in `scripts/dev.ts`); it defaults to 8787 when omitted. There is no hidden argv/config port resolution. `webBuild` is the **cold** build; `onChange` (when wired) is the **incremental** per-change rebuild — each change rebuilds only the changed paths instead of a full `webBuild()`. `seed` loads the configured seed (`pluginConfigs.deploy.seed`) into the **local** D1 (+ KV reset) before serving — the local twin of `deploy({ seed: true })`. A failure renders a branded `✗` line and sets a non-zero exit code rather than throwing.
 
 ```typescript
 await app.cli.dev();               // port from --port, else 8787 → deploy.dev({ port })
 await app.cli.dev({ port: 3000 }); // explicit override → deploy.dev({ port: 3000 })
 // Compose a web client: full cold build + incremental per-change rebuilds.
 await app.cli.dev({ port: 3000, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
+// Seed the local D1 before serving (mirrors deploy --seed).
+await app.cli.dev({ port: 3000, seed: true, webBuild: () => web.cli.build() });
 ```
 
 ### `deploy`
 
 ```typescript
-deploy(opts?: { ci?: boolean; webBuild?: WebBuild }): Promise<void>
+deploy(opts?: {
+  ci?: boolean;
+  stage?: string;
+  webBuild?: WebBuild;
+  migration?: boolean; // apply remote D1 migrations after a successful deploy
+  seed?: boolean;      // load the configured remote seed after a successful deploy (+ migration)
+}): Promise<DeployReport>
 ```
 
-Run the one-command Cloudflare deploy. Delegates to `ctx.require(deployPlugin).run(opts)`, forwarding `opts` **verbatim** — when called with no opts it passes `undefined`. While `deploy.run` executes its `detect → provision → wrangler-config → upload → deploy` pipeline, it emits the global `deploy:*` / `provision:resource` events that this plugin's hooks turn into the live progress TUI (see [Events](#events)). A failure is caught into a branded `✗` line + non-zero exit code (matching `auth`/`doctor`), never a raw stack trace.
+Run the one-command Cloudflare deploy. Delegates to `ctx.require(deployPlugin).run(opts)`, forwarding `opts` **verbatim**. While `deploy.run` executes its `detect → provision → wrangler-config → upload → deploy` pipeline (then, on a live deploy, the requested `migration`/`seed`), it emits the global `deploy:*` / `provision:resource` events that this plugin's hooks turn into the live progress TUI (see [Events](#events)). It **returns the `DeployReport`** so a script can branch on the outcome; on a failure it also renders a branded `✗` line + non-zero exit code (matching `auth`/`doctor`), never a raw stack trace. An aborted deploy (`status: "aborted"`) is a clean, intentional stop — exit code stays 0.
 
 - `ci` — automated/non-interactive: never prompts, auto-confirms. Omit or `false` → guided (interactive) on a TTY.
+- `stage` — target stage (resource-name suffix); falls back to `--stage`, then the app stage.
 - `webBuild` — build the web site first (e.g. `() => webApp.cli.build()`), before `wrangler deploy`.
+- `migration` / `seed` — the post-deploy remote-DB steps; run only after a live deploy, skipped on abort. `seed` loads what's declared under `pluginConfigs.deploy.seed` (a SQL `file` + optional `resetKv` keys).
 
 ```typescript
-await app.cli.deploy();             // guided on a TTY
-await app.cli.deploy({ ci: true }); // automated (CI)
+const report = await app.cli.deploy();                          // guided on a TTY
+await app.cli.deploy({ ci: true });                             // automated (CI)
+await app.cli.deploy({ migration: true, seed: true });          // deploy, then migrate + seed the remote DB
+if (report.status === "aborted") return;                        // creds not set up yet — nothing shipped
 ```
 
-> `cli.deploy` exposes `{ ci?, webBuild? }`. The underlying `deploy.run` also accepts a `manifest` (the universal/non-Moku path); to use it, call `app.deploy.run({ manifest })` directly — `cli` deliberately does not surface it.
+> `cli.deploy` exposes `{ ci?, stage?, webBuild?, migration?, seed? }`. The underlying `deploy.run` also accepts a `manifest` (the universal/non-Moku path); to use it, call `app.deploy.run({ manifest })` directly — `cli` deliberately does not surface it.
 
 ## Events
 

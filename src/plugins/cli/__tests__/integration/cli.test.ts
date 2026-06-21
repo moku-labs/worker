@@ -13,6 +13,7 @@ import type { WorkerConfig, WorkerEvents } from "../../../../config";
 import { bindingsPlugin } from "../../../bindings";
 import { d1Plugin } from "../../../d1";
 import { deployPlugin } from "../../../deploy";
+import type { DeployReport } from "../../../deploy/types";
 import { durableObjectsPlugin } from "../../../durable-objects";
 import { kvPlugin } from "../../../kv";
 import { queuesPlugin } from "../../../queues";
@@ -291,10 +292,10 @@ describe("cli plugin (integration)", () => {
       expectTypeOf(app.cli.dev()).toEqualTypeOf<Promise<void>>();
     });
 
-    it("app.cli.deploy returns Promise<void>", () => {
+    it("app.cli.deploy returns Promise<DeployReport>", () => {
       const app = createTestApp();
 
-      expectTypeOf(app.cli.deploy()).toEqualTypeOf<Promise<void>>();
+      expectTypeOf(app.cli.deploy()).toEqualTypeOf<Promise<DeployReport>>();
     });
 
     it("dev and deploy accept an explicit stage", () => {
@@ -303,7 +304,7 @@ describe("cli plugin (integration)", () => {
       // Type-level: an explicit stage must compile on both (surfaced on the Api type; the impl
       // already resolves opts.stage ?? --stage ?? config.stage). No @ts-expect-error needed.
       const devCall = (): Promise<void> => app.cli.dev({ stage: "dev" });
-      const deployCall = (): Promise<void> => app.cli.deploy({ stage: "production" });
+      const deployCall = (): Promise<DeployReport> => app.cli.deploy({ stage: "production" });
 
       expect(typeof devCall).toBe("function");
       expect(typeof deployCall).toBe("function");

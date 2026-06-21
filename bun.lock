@@ -5,8 +5,8 @@
     "": {
       "name": "worker",
       "dependencies": {
-        "@moku-labs/common": "0.2.0",
-        "@moku-labs/core": "0.1.4",
+        "@moku-labs/common": "0.2.1",
+        "@moku-labs/core": "1.5.0",
       },
       "devDependencies": {
         "@arethetypeswrong/cli": "0.18.3",
@@ -29,6 +29,12 @@
         "typescript-eslint": "8.58.0",
         "vitest": "4.0.18",
       },
+      "peerDependencies": {
+        "wrangler": ">=3",
+      },
+      "optionalPeers": [
+        "wrangler",
+      ],
     },
   },
   "packages": {
@@ -198,9 +204,9 @@
 
     "@loaderkit/resolve": ["@loaderkit/resolve@1.0.6", "", { "dependencies": { "@braidai/lang": "^1.0.0" } }, "sha512-G8FdIoF5CypfwmD9rl8BXod5HDn8JqB0CCNBXDTaRZ+yRYhARrrSToX1zg1zy9jX3zLqigsELwhT4gNtkdQAUg=="],
 
-    "@moku-labs/common": ["@moku-labs/common@0.2.0", "", { "dependencies": { "@moku-labs/core": "0.1.4" } }, "sha512-3CLKsQ0BwrFzk/dWWEP4ene60kx5tejjQntMdhhsgOjcpjFwUs8HY+UfvHLjQ7GXQnRyutjepqq/E9m9JLCePg=="],
+    "@moku-labs/common": ["@moku-labs/common@0.2.1", "", { "dependencies": { "@moku-labs/core": "1.5.0" } }, "sha512-z7gbsQgutGdN0jaxXZpJjfMKVZuPvMM5NP9jfPcHK3chY/SwlxhoGExDb1xeYQfl4RgqiHI7xh2f+b8oF3dImw=="],
 
-    "@moku-labs/core": ["@moku-labs/core@0.1.4", "", {}, "sha512-RkpbkrC89BTkVWIKJaIzCDQifjcfgP9AFzMCUhStd9iu87n/xoxt/e/qpoz1vUocDqZfT0da5ibwJshGwzIBLg=="],
+    "@moku-labs/core": ["@moku-labs/core@1.5.0", "", {}, "sha512-CPQmvFvLTo/NpQBeoyLFXNcfuNIxtuSuFXkGwCpvuS0KmWwzkd8ObnN1s3xpzQ8J681t2NsrdDr+Fhc6DuFBvQ=="],
 
     "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.1.5", "", { "dependencies": { "@tybys/wasm-util": "^0.10.2" }, "peerDependencies": { "@emnapi/core": "^1.7.1", "@emnapi/runtime": "^1.7.1" } }, "sha512-AWPoBRJ9tsnVhor4sjO7rkni+7p+2IAEFj6cx06UgP10jkQHqay/36uRV/bFkgrh18D9vb4cr8Q0Pthskgzy+Q=="],
 

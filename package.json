@@ -2,6 +2,7 @@
   "name": "@moku-labs/worker",
   "version": "0.1.0",
   "description": "Cloudflare Worker framework for Moku — Durable Objects, Queues, R2, D1, and KV plugins that compose with Moku Web.",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/moku-labs/worker.git"

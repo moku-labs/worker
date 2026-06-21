@@ -1,36 +1,11 @@
 /**
- * Unit tests for the default workerd-safe env provider + its createApp wiring.
+ * Unit tests for the framework's env wiring: `config.ts` seeds the workerd-safe
+ * `process.env` provider (now `workerSafeProcessEnv` from `@moku-labs/common`) as
+ * the `env` core-plugin default, so `app.env` resolves `process.env` out of the box.
+ * The provider itself is unit-tested in `@moku-labs/common`.
  */
 import { describe, expect, it } from "vitest";
-import { workerSafeProcessEnv } from "../../src/env-provider";
 import { createApp } from "../../src/index";
-
-describe("workerSafeProcessEnv", () => {
-  it("is named worker-process-env", () => {
-    expect(workerSafeProcessEnv().name).toBe("worker-process-env");
-  });
-
-  it("reads the current process.env", () => {
-    process.env.MOKU_PROVIDER_TEST = "abc123";
-    try {
-      expect(workerSafeProcessEnv().load().MOKU_PROVIDER_TEST).toBe("abc123");
-    } finally {
-      delete process.env.MOKU_PROVIDER_TEST;
-    }
-  });
-
-  it("snapshots fresh on each load (not a live reference)", () => {
-    const provider = workerSafeProcessEnv();
-    const before = provider.load();
-    process.env.MOKU_PROVIDER_FRESH = "x";
-    try {
-      expect(before.MOKU_PROVIDER_FRESH).toBeUndefined(); // captured before the set
-      expect(provider.load().MOKU_PROVIDER_FRESH).toBe("x"); // re-read picks it up
-    } finally {
-      delete process.env.MOKU_PROVIDER_FRESH;
-    }
-  });
-});
 
 describe("createApp env wiring", () => {
   it("resolves a process.env var via app.env (the default provider is wired)", () => {

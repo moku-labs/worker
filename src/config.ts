@@ -1,9 +1,8 @@
 /**
  * @file Framework configuration — Config + Events types, core plugin registration.
  */
-import { envPlugin, logPlugin } from "@moku-labs/common";
+import { envPlugin, logPlugin, workerSafeProcessEnv } from "@moku-labs/common";
 import { createCoreConfig, type PluginCtx } from "@moku-labs/core";
-import { workerSafeProcessEnv } from "./env-provider";
 
 /** Per-request Cloudflare bindings object (env). Framework-level shared type. */
 export type WorkerEnv = Record<string, unknown>;

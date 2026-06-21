@@ -49,7 +49,7 @@
     "test:coverage": "vitest run --project unit --project integration --coverage"
   },
   "dependencies": {
-    "@moku-labs/common": "0.2.1",
+    "@moku-labs/common": "0.3.0",
     "@moku-labs/core": "1.5.0"
   },
   "peerDependencies": {

@@ -14,7 +14,7 @@ import { kvPlugin } from "../../../kv";
 import { queuesPlugin } from "../../../queues";
 import { storagePlugin } from "../../../storage";
 import { deployPlugin } from "../../index";
-import type { Api, ExternalManifest } from "../../types";
+import type { Api, DeployReport, ExternalManifest } from "../../types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Module stubs — hoisted by vitest
@@ -279,7 +279,7 @@ describe("deploy plugin (integration)", () => {
       expectTypeOf(app.deploy).toMatchTypeOf<Api>();
     });
 
-    it("app.deploy.run accepts optional opts (ci/manifest)", () => {
+    it("app.deploy.run accepts optional opts (ci/manifest/migration/seed)", () => {
       const app = createTestApp();
 
       // Runtime: verify run is a function
@@ -287,14 +287,19 @@ describe("deploy plugin (integration)", () => {
 
       // Type-level: valid signature must compile (no @ts-expect-error needed)
       expectTypeOf(app.deploy.run).toMatchTypeOf<
-        (opts?: { ci?: boolean; manifest?: ExternalManifest }) => Promise<void>
+        (opts?: {
+          ci?: boolean;
+          manifest?: ExternalManifest;
+          migration?: boolean;
+          seed?: boolean;
+        }) => Promise<DeployReport>
       >();
     });
 
-    it("app.deploy.run returns Promise<void>", () => {
+    it("app.deploy.run returns Promise<DeployReport>", () => {
       const app = createTestApp();
 
-      expectTypeOf(app.deploy.run).returns.toEqualTypeOf<Promise<void>>();
+      expectTypeOf(app.deploy.run).returns.toEqualTypeOf<Promise<DeployReport>>();
     });
 
     it("app.deploy.dev returns Promise<void>", () => {

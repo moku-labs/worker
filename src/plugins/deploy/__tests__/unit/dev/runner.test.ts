@@ -4,10 +4,10 @@
 import { describe, expect, it, type Mock, vi } from "vitest";
 
 import { type DevDeps, runDev } from "../../../dev/runner";
-import type { Ctx } from "../../../types";
+import type { Ctx, SeedConfig } from "../../../types";
 
 /** Build a mock deploy ctx with the config + has/require surface runDev uses. */
-const makeCtx = (overrides?: { hasD1?: boolean; migrateLocal?: boolean }): Ctx =>
+const makeCtx = (overrides?: { hasD1?: boolean; migrateLocal?: boolean; seed?: SeedConfig }): Ctx =>
   ({
     emit: vi.fn(),
     config: {
@@ -16,7 +16,8 @@ const makeCtx = (overrides?: { hasD1?: boolean; migrateLocal?: boolean }): Ctx =
       watch: ["src/**/*"],
       buildCommand: "",
       migrateLocal: overrides?.migrateLocal ?? true,
-      debounceMs: 120
+      debounceMs: 120,
+      ...(overrides?.seed === undefined ? {} : { seed: overrides.seed })
     },
     has: (name: string) => name === "d1" && (overrides?.hasD1 ?? false),
     require: () => ({
@@ -113,6 +114,72 @@ describe("runDev", () => {
     await runDev(makeCtx({ hasD1: false }), {}, deps);
 
     expect(deps.runWrangler).not.toHaveBeenCalled();
+  });
+
+  it("loads the configured LOCAL seed (execute + KV reset) before serving when seed is set", async () => {
+    const { deps } = makeDeps();
+    const ctx = makeCtx({
+      hasD1: true,
+      seed: { file: "db/seed.sql", resetKv: [{ binding: "BOARDS_KV", key: "boards:index" }] }
+    });
+
+    await runDev(ctx, { seed: true }, deps);
+
+    // migrate (schema) → execute (seed) → kv reset, all local.
+    expect(deps.runWrangler).toHaveBeenCalledWith(["d1", "migrations", "apply", "DB", "--local"]);
+    expect(deps.runWrangler).toHaveBeenCalledWith([
+      "d1",
+      "execute",
+      "DB",
+      "--local",
+      "--file",
+      "db/seed.sql"
+    ]);
+    expect(deps.runWrangler).toHaveBeenCalledWith([
+      "kv",
+      "key",
+      "delete",
+      "boards:index",
+      "--binding",
+      "BOARDS_KV",
+      "--local"
+    ]);
+    expect(ctx.emit).toHaveBeenCalledWith("dev:phase", { phase: "seed", detail: "db/seed.sql" });
+  });
+
+  it("forces local migrations when seed is set even if migrateLocal is off", async () => {
+    const { deps } = makeDeps();
+    const ctx = makeCtx({ hasD1: true, migrateLocal: false, seed: { file: "db/seed.sql" } });
+
+    await runDev(ctx, { seed: true }, deps);
+
+    expect(deps.runWrangler).toHaveBeenCalledWith(["d1", "migrations", "apply", "DB", "--local"]);
+  });
+
+  it("does NOT seed when the seed flag is absent", async () => {
+    const { deps } = makeDeps();
+    const ctx = makeCtx({ hasD1: true, seed: { file: "db/seed.sql" } });
+
+    await runDev(ctx, {}, deps);
+
+    expect(deps.runWrangler).not.toHaveBeenCalledWith(
+      expect.arrayContaining(["execute", "--file", "db/seed.sql"])
+    );
+  });
+
+  it("throws when seed is set but no seed is configured", async () => {
+    const { deps } = makeDeps();
+
+    await expect(runDev(makeCtx({ hasD1: true }), { seed: true }, deps)).rejects.toThrow(
+      "no seed is configured"
+    );
+  });
+
+  it("throws when seed is set but no d1 database is configured", async () => {
+    const { deps } = makeDeps();
+    const ctx = makeCtx({ hasD1: false, seed: { file: "db/seed.sql" } });
+
+    await expect(runDev(ctx, { seed: true }, deps)).rejects.toThrow("no d1 database is configured");
   });
 
   it("rebuilds the site on a file change and emits dev:rebuilt", async () => {

@@ -33,10 +33,12 @@ import { stageName } from "./naming";
 import { provisionResource } from "./providers";
 import { uploadDirToR2 } from "./providers/r2";
 import { runWrangler, runWranglerInherit } from "./runner";
+import { resolveD1, runConfiguredSeed } from "./seed";
 import { stdoutIsTty } from "./tty";
 import type {
   AuthStatus,
   Ctx,
+  DeployReport,
   ExternalManifest,
   InfraPlan,
   OnChange,
@@ -147,17 +149,33 @@ const HINTS = {
 } as const;
 
 /**
- * Emit the terminal `aborted` phase — the single exit every guided gate/retry funnels through when
- * the user stops the deploy. Factored out so each abort path renders one consistent line.
+ * Emit the terminal `aborted` phase AND build the matching {@link DeployReport} — the single exit
+ * every guided gate/retry funnels through when the user stops the deploy (or auth was never set up).
+ * Centralizing it keeps every abort path emitting one consistent line and returning the same shaped
+ * report: `status: "aborted"`, both post-steps `"skipped"`, no errors — so a calling script sees a
+ * clean stop, never a half-filled success, and the remote-DB migration/seed are guaranteed unrun.
  *
  * @param ctx - The deploy plugin context.
- * @returns Nothing.
+ * @param stage - The resolved deploy stage (echoed into the report).
+ * @param startedAt - The run's start timestamp, for the elapsed field.
+ * @returns The aborted deploy report.
  * @example
  * ```ts
- * if (declined) return emitAborted(ctx);
+ * if (declined) return aborted(ctx, stage, startedAt);
  * ```
  */
-const emitAborted = (ctx: Ctx): void => ctx.emit("deploy:phase", { phase: "aborted" });
+const aborted = (ctx: Ctx, stage: string, startedAt: number): DeployReport => {
+  ctx.emit("deploy:phase", { phase: "aborted" });
+  return {
+    ok: false,
+    status: "aborted",
+    stage,
+    migration: "skipped",
+    seed: "skipped",
+    elapsedMs: Date.now() - startedAt,
+    errors: []
+  };
+};
 
 /**
  * Shared interactivity for the guided recovery helpers: whether prompting is safe, and the prompt.
@@ -197,7 +215,9 @@ const guidedTokenSetup = async (
     return;
   }
 
-  // Explain where to get the token — branded panel: dashboard URL, template, the permissions to add.
+  // Explain WHERE to get the token — branded panel: dashboard URL, the template, and exactly which
+  // permissions to add (derived from the manifest, so D1/Queues are flagged). Always shown after the
+  // user opts in — including when `.env.local` already exists — so the next step is never a mystery.
   // Stage is irrelevant to token derivation (it keys off resource KINDS, not names).
   const manifest = assembleManifest(ctx, ctx.global.stage);
   renderAuthSetup(ui, deriveRequiredToken(manifest));
@@ -464,6 +484,138 @@ const guidedDeployStep = async (
 };
 
 /**
+ * Apply pending D1 migrations to the REMOTE database for every configured d1 instance that ships a
+ * migrations dir — the generic, deploy-owned analogue of `wrangler d1 migrations apply <binding>
+ * --remote`. The wrangler config was written earlier in the pipeline, so each binding resolves. The
+ * caller runs this only AFTER a successful deploy, so a deploy that never happened never migrates a
+ * remote DB. Streams wrangler's output; throws on the first non-zero exit (the caller folds it into
+ * the report).
+ *
+ * @param ctx - The deploy plugin context.
+ * @returns Resolves once every configured database's remote migrations have been applied.
+ * @example
+ * ```ts
+ * await applyRemoteMigrations(ctx);
+ * ```
+ */
+const applyRemoteMigrations = async (ctx: Ctx): Promise<void> => {
+  if (!ctx.has("d1")) return;
+
+  for (const database of ctx.require(d1Plugin).deployManifest()) {
+    if (database.migrations !== undefined) {
+      await runWranglerInherit(["d1", "migrations", "apply", database.binding, "--remote"]);
+    }
+  }
+};
+
+/** The migration + seed outcome of the post-deploy stage, folded into the {@link DeployReport}. */
+type PostDeploy = {
+  /** Remote D1 migration outcome. */
+  migration: DeployReport["migration"];
+  /** Remote seed outcome. */
+  seed: DeployReport["seed"];
+  /** Branded failure messages captured (not thrown) so the report stays rich on a partial failure. */
+  errors: string[];
+};
+
+/**
+ * Render a post-deploy step's failure as a branded line and capture its message into `errors` —
+ * folding the failure into the report instead of throwing, so a deploy that already went live still
+ * yields a complete, honest report when a later remote step (migration/seed) fails.
+ *
+ * @param ui - The branded console to render the error through.
+ * @param errors - The accumulator the captured message is pushed into.
+ * @param error - The thrown error (or value) to brand and capture.
+ * @returns The captured (branded) message.
+ * @example
+ * ```ts
+ * captureFailure(ui, errors, new Error("[moku-worker] seed failed"));
+ * ```
+ */
+const captureFailure = (
+  ui: ReturnType<typeof createBrandConsole>,
+  errors: string[],
+  error: unknown
+): string => {
+  const message = error instanceof Error ? error.message : String(error);
+  ui.error(message);
+  errors.push(message);
+  return message;
+};
+
+/**
+ * Run the post-deploy remote steps — REACHED ONLY ON A SUCCESSFUL DEPLOY (every gate in `run` returns
+ * early before here), so a deploy that never happened never touches a remote DB. Applies remote D1
+ * migrations (when requested), then loads the configured seed (when requested) — but skips the seed
+ * if the migration it depends on failed. Each step's failure is RENDERED inline and CAPTURED in
+ * `errors` (never thrown), so one failed step still yields a complete, honest report.
+ *
+ * @param ctx - The deploy plugin context.
+ * @param want - Which post-steps the caller requested.
+ * @param want.migration - Whether to apply pending remote D1 migrations.
+ * @param want.seed - Whether to load the configured remote seed (and reset its KV keys).
+ * @returns The migration + seed outcomes and any captured branded errors.
+ * @example
+ * ```ts
+ * const post = await runPostDeploy(ctx, { migration: true, seed: true });
+ * ```
+ */
+const runPostDeploy = async (
+  ctx: Ctx,
+  want: { migration: boolean; seed: boolean }
+): Promise<PostDeploy> => {
+  const ui = createBrandConsole();
+  const errors: string[] = [];
+
+  // Apply remote migrations first — the seed below depends on the schema they create.
+  let migration: DeployReport["migration"] = "skipped";
+  if (want.migration) {
+    try {
+      await applyRemoteMigrations(ctx);
+      migration = "applied";
+      ui.check(true, "migrated", "remote D1");
+    } catch (error) {
+      migration = "failed";
+      captureFailure(ui, errors, error);
+    }
+  }
+
+  // Seed needs the schema the migration creates — skip it when that migration failed.
+  let seed: DeployReport["seed"] = "skipped";
+  if (want.seed && migration === "failed") {
+    seed = "failed";
+    captureFailure(
+      ui,
+      errors,
+      new Error("[moku-worker] seed skipped — the remote migration it depends on failed.")
+    );
+  } else if (want.seed) {
+    const config = ctx.config.seed;
+    if (config === undefined) {
+      seed = "failed";
+      captureFailure(
+        ui,
+        errors,
+        new Error(
+          "[moku-worker] deploy({ seed: true }) but no seed is configured — set pluginConfigs.deploy.seed."
+        )
+      );
+    } else {
+      try {
+        await runConfiguredSeed(ctx, runWranglerInherit, config, "--remote");
+        seed = "applied";
+        ui.check(true, "seeded", config.file);
+      } catch (error) {
+        seed = "failed";
+        captureFailure(ui, errors, error);
+      }
+    }
+  }
+
+  return { migration, seed, errors };
+};
+
+/**
  * Create the deploy api. Assembles the manifest from each resource plugin's own deployManifest(),
  * runs an infra preflight (check-before-create + id capture), generates config, uploads, and runs
  * `wrangler deploy`, emitting global deploy events along the way.
@@ -479,13 +631,19 @@ const guidedDeployStep = async (
 export const createDeployApi = (ctx: Ctx) => ({
   /**
    * Run the full deploy pipeline: detect → preflight (check-before-create) → provision (only the
-   * missing) → wrangler-config (with real ids) → upload → deploy. When opts.manifest is supplied
-   * it is used verbatim (universal path).
+   * missing) → wrangler-config (with real ids) → upload → deploy, then — ONLY on a successful
+   * deploy — the requested post-deploy remote steps (migration, seed). When opts.manifest is
+   * supplied it is used verbatim (universal path).
    *
    * On a TTY the run is GUIDED end to end: each gate is confirmed, and every failure is recovered
-   * interactively rather than thrown — a missing/invalid token offers `auth setup`, and the build,
-   * infra, upload, and `wrangler deploy` steps offer a retry. In CI/pipes it fails fast (no prompt,
-   * the first error propagates to the branded CLI handler).
+   * interactively rather than thrown — a missing/invalid token offers a `.env.local` scaffold, and
+   * the build, infra, upload, and `wrangler deploy` steps offer a retry. In CI/pipes it fails fast
+   * (no prompt, the first error propagates to the branded CLI handler).
+   *
+   * Resolves to a {@link DeployReport}. Every abort path (a declined gate, or auth never set up)
+   * returns `status: "aborted"` BEFORE the post-deploy steps, so `migration`/`seed` run only when
+   * the worker actually went live — a first `deploy --seed` with no token aborts cleanly instead of
+   * falling through to a raw `wrangler … --remote` auth error.
    *
    * @param opts - Optional run options.
    * @param opts.ci - CI/automated mode: never prompts, auto-confirms every gate, fails fast. When
@@ -494,11 +652,15 @@ export const createDeployApi = (ctx: Ctx) => ({
    * @param opts.stage - Target stage; suffixes resource names (`production` = bare). Falls back to the app stage.
    * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
    * @param opts.manifest - Caller-supplied manifest (bypasses deployManifest() assembly).
-   * @returns Resolves once the deploy completes.
+   * @param opts.migration - After a successful deploy, apply pending remote D1 migrations for every
+   *   configured d1 instance that ships migrations. Skipped (not attempted) on an aborted deploy.
+   * @param opts.seed - After a successful deploy (+ migration), load the seed configured under
+   *   `pluginConfigs.deploy.seed` into the remote D1 and reset its cached KV keys. Skipped on abort.
+   * @returns The deploy report (status, url, resource tally, migration/seed outcome, errors).
    * @example
    * ```ts
-   * await api.run({ webBuild: () => web.cli.build() }); // guided on a TTY
-   * await api.run({ ci: true, manifest: { name: "w", compatibilityDate: "2026-06-17", resources: [] } });
+   * const report = await api.run({ webBuild: () => web.cli.build(), migration: true, seed: true });
+   * if (!report.ok) process.exitCode = 1; // aborted or a post-step failed
    * ```
    */
   async run(opts?: {
@@ -506,11 +668,13 @@ export const createDeployApi = (ctx: Ctx) => ({
     stage?: string;
     webBuild?: WebBuild;
     manifest?: ExternalManifest;
-  }): Promise<void> {
+    migration?: boolean;
+    seed?: boolean;
+  }): Promise<DeployReport> {
     // CI — the explicit opt, else the standing config default — is automated: never prompt,
     // auto-confirm every gate, fail fast on any error. Otherwise the deploy is GUIDED whenever
     // stdout is a real TTY: each gate is confirmed and every failure becomes an interactive
-    // recovery (offer `auth setup` / retry the step) instead of a hard stop.
+    // recovery (offer the `.env.local` scaffold / retry the step) instead of a hard stop.
     const ci = opts?.ci ?? ctx.config.ci;
     // Stage drives the resource-name suffix (production = bare name); `--stage`/opts override config.
     const stage = opts?.stage ?? ctx.global.stage;
@@ -523,14 +687,14 @@ export const createDeployApi = (ctx: Ctx) => ({
     // Wall-clock start — the terminal summary panel reports how long the whole deploy took.
     const startedAt = Date.now();
 
-    // Auth preflight — verify the .env token up front. A missing/invalid token is guided (offer
-    // `auth setup`, then point at the re-run), not a silent stack trace.
+    // Auth preflight — verify the .env token up front. A missing/invalid token is guided (offer the
+    // `.env.local` scaffold, then point at the re-run), not a silent stack trace.
     ctx.emit("deploy:phase", { phase: "auth" });
-    if (!(await guidedAuth(ctx, deps))) return emitAborted(ctx);
+    if (!(await guidedAuth(ctx, deps))) return aborted(ctx, stage, startedAt);
 
     // Build the web site first (when a hook is wired in from the consumer's script).
     const webBuild = opts?.webBuild ?? ctx.config.webBuild;
-    if (!(await guidedWebBuild(ctx, webBuild, deps))) return emitAborted(ctx);
+    if (!(await guidedWebBuild(ctx, webBuild, deps))) return aborted(ctx, stage, startedAt);
 
     // Manifest from each plugin's OWN deployManifest() api — never sibling pluginConfigs (F6).
     ctx.emit("deploy:phase", { phase: "detect" });
@@ -540,7 +704,7 @@ export const createDeployApi = (ctx: Ctx) => ({
     // rest — retrying the whole plan→create unit on failure so it stays idempotent.
     ctx.emit("deploy:phase", { phase: "provision" });
     const provisioned = await guidedProvision(ctx, manifest, ci, deps);
-    if (provisioned === ABORTED) return emitAborted(ctx);
+    if (provisioned === ABORTED) return aborted(ctx, stage, startedAt);
 
     // Generate/update the wrangler config from the assembled manifest (with the captured ids), plus
     // the app's `wrangler` passthrough (main / compatibility_flags / assets / …) and auto DO migrations.
@@ -553,22 +717,45 @@ export const createDeployApi = (ctx: Ctx) => ({
     );
 
     // Upload the R2 directory when a bucket declares an upload source.
-    if (!(await guidedUpload(ctx, manifest, deps))) return emitAborted(ctx);
+    if (!(await guidedUpload(ctx, manifest, deps))) return aborted(ctx, stage, startedAt);
 
     // Confirm the deploy target (guided only), then hand off to `wrangler deploy` (with retry).
     const url = await guidedDeployStep(ctx, manifest, stage, deps);
-    if (url === undefined) return emitAborted(ctx);
+    if (url === undefined) return aborted(ctx, stage, startedAt);
 
     // Terminal summary panel — the deployed URL leads (the headline), then stage, the resource tally,
     // and how long the whole deploy took.
+    const resources = {
+      created: provisioned.created.length,
+      exists: provisioned.skipped.length,
+      failed: provisioned.failed.length
+    };
     renderDeploySummary(createBrandConsole(), {
       url,
       stage,
-      created: provisioned.created.length,
-      exists: provisioned.skipped.length,
-      failed: provisioned.failed.length,
+      ...resources,
       elapsedMs: Date.now() - startedAt
     });
+
+    // Post-deploy remote steps — REACHED ONLY HERE, after a live deploy (every gate above returns
+    // early). Migration + seed run against the remote DB and fold any failure into the report rather
+    // than throwing, so the report is complete whether they ran, were skipped, or failed.
+    const post = await runPostDeploy(ctx, {
+      migration: opts?.migration === true,
+      seed: opts?.seed === true
+    });
+
+    return {
+      ok: post.errors.length === 0,
+      status: post.errors.length === 0 ? "deployed" : "failed",
+      stage,
+      url,
+      resources,
+      migration: post.migration,
+      seed: post.seed,
+      elapsedMs: Date.now() - startedAt,
+      errors: post.errors
+    };
   },
 
   /**
@@ -582,10 +769,12 @@ export const createDeployApi = (ctx: Ctx) => ({
    * @param opts.webBuild - Cold-build the web site (e.g. `() => webApp.cli.build()`); also the
    *   per-change rebuild when `onChange` is omitted.
    * @param opts.onChange - Incremental per-change rebuild (e.g. `changes => webApp.cli.update(changes)`).
+   * @param opts.seed - Load the configured seed (`pluginConfigs.deploy.seed`) into the LOCAL D1 and
+   *   reset its cached KV keys before serving — the local analogue of `deploy({ seed: true })`.
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await api.dev({ port: 8787, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
+   * await api.dev({ port: 8787, seed: true, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
    * ```
    */
   async dev(opts?: {
@@ -593,6 +782,7 @@ export const createDeployApi = (ctx: Ctx) => ({
     stage?: string;
     webBuild?: WebBuild;
     onChange?: OnChange;
+    seed?: boolean;
   }): Promise<void> {
     // Generate wrangler.jsonc up front so first-run `wrangler dev` has a config to read. Empty ids —
     // writeWranglerConfig preserves any ids already in the file (e.g. captured by a prior deploy).
@@ -639,18 +829,7 @@ export const createDeployApi = (ctx: Ctx) => ({
     );
 
     // Resolve the target database: the only configured one, or the instance bound to opts.binding.
-    const databases = ctx.require(d1Plugin).deployManifest();
-    const wanted = opts?.binding;
-    const matched =
-      wanted === undefined ? databases : databases.filter(database => database.binding === wanted);
-    const target = matched.length === 1 ? matched[0] : undefined;
-    if (target === undefined) {
-      throw new Error(
-        wanted === undefined
-          ? `[moku-worker] seed: ${String(databases.length)} d1 databases configured — pass { binding } to choose one.`
-          : `[moku-worker] seed: no d1 database is bound to "${wanted}".`
-      );
-    }
+    const target = resolveD1(ctx, opts?.binding);
 
     // Local seed (default): apply this database's migrations first so the file's tables exist, then
     // run it. Remote seeds run against Cloudflare (schema is applied by `deploy`).

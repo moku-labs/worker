@@ -9,7 +9,15 @@ import { kvPlugin } from "../../../kv";
 import { queuesPlugin } from "../../../queues";
 import { storagePlugin } from "../../../storage";
 import { createDeployApi } from "../../api";
-import type { Api, Ctx, ExternalManifest, ResourceManifest, WebBuild } from "../../types";
+import type {
+  Api,
+  Ctx,
+  DeployReport,
+  ExternalManifest,
+  ResourceManifest,
+  SeedConfig,
+  WebBuild
+} from "../../types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vitest module stubs — must be at top level (hoisted by vitest)
@@ -213,6 +221,7 @@ const createMockCtx = (overrides?: {
   configFile?: string;
   ci?: boolean;
   storageUploadDir?: string;
+  seed?: SeedConfig;
 }): Ctx => {
   const storageApi = makeStorageApi(overrides?.storageUploadDir);
   const kvApi = makeKvApi();
@@ -236,7 +245,8 @@ const createMockCtx = (overrides?: {
       watch: ["src/**/*"],
       buildCommand: "",
       migrateLocal: true,
-      debounceMs: 120
+      debounceMs: 120,
+      ...(overrides?.seed === undefined ? {} : { seed: overrides.seed })
     },
     state: {} as Record<string, never>,
     emit: vi.fn(),
@@ -811,7 +821,7 @@ describe("createDeployApi", () => {
   // ───────── guided recovery — auth (ask + guide the user through `auth setup`) ─
 
   describe("guided recovery — auth", () => {
-    it("walks through token setup, prints the guidance, and scaffolds .env.local when missing (TTY)", async () => {
+    it("shows the token-creation panel + scaffolds .env.local when the token is missing (TTY)", async () => {
       const ui = makeUi();
       vi.mocked(createBrandConsole).mockReturnValueOnce(asConsole(ui));
       vi.mocked(verifyAuth).mockRejectedValueOnce(
@@ -822,11 +832,12 @@ describe("createDeployApi", () => {
       const ctx = createMockCtx();
       const api = createDeployApi(ctx);
 
-      await api.run();
+      const report = await api.run();
 
       expect(confirm).toHaveBeenCalledWith("Set up Cloudflare credentials now? (guided)");
+      // The instruction MUST be shown: the branded "which token / which permissions" panel.
       expect(ui.heading).toHaveBeenCalledWith("Cloudflare API token");
-      expect(ui.box).toHaveBeenCalled(); // the branded LOCAL token panel
+      expect(ui.box).toHaveBeenCalled();
       expect(ensureEnvLocal).toHaveBeenCalledWith(
         process.cwd(),
         expect.stringContaining("CLOUDFLARE_API_TOKEN=")
@@ -836,6 +847,30 @@ describe("createDeployApi", () => {
       );
       expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", { phase: "aborted" });
       expect(runWrangler).not.toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+      // The aborted deploy reports cleanly and never reaches a remote-DB step.
+      expect(report.status).toBe("aborted");
+      expect(report.migration).toBe("skipped");
+      expect(report.seed).toBe("skipped");
+    });
+
+    it("STILL shows the token panel when .env.local already exists (the instruction is never skipped)", async () => {
+      const ui = makeUi();
+      vi.mocked(createBrandConsole).mockReturnValueOnce(asConsole(ui));
+      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[moku-worker] token missing"));
+      vi.mocked(ensureEnvLocal).mockResolvedValueOnce({ created: false, path: "/cwd/.env.local" });
+      const confirm = vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(true);
+      stubPrompts(confirm);
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      await api.run();
+
+      // The user's regression: an existing (empty) .env.local must NOT swallow the instruction.
+      expect(ui.heading).toHaveBeenCalledWith("Cloudflare API token");
+      expect(ui.box).toHaveBeenCalled();
+      expect(ui.info).toHaveBeenCalledWith(
+        "/cwd/.env.local already exists — fill in CLOUDFLARE_API_TOKEN there, then run `deploy` again."
+      );
     });
 
     it("does not scaffold an existing .env.local — tells the user to fill it in", async () => {
@@ -1174,6 +1209,120 @@ describe("createDeployApi", () => {
     });
   });
 
+  // ───────── run — post-deploy (migration + seed gated on a live deploy) ───────
+
+  describe("run — post-deploy", () => {
+    it("applies remote D1 migrations after a successful deploy when migration is set", async () => {
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.run({ migration: true });
+
+      expect(runWranglerInherit).toHaveBeenCalledWith([
+        "d1",
+        "migrations",
+        "apply",
+        "DB",
+        "--remote"
+      ]);
+      expect(report.migration).toBe("applied");
+      expect(report.status).toBe("deployed");
+      expect(report.ok).toBe(true);
+    });
+
+    it("loads the configured remote seed (execute + KV reset) after a successful deploy", async () => {
+      const ctx = createMockCtx({
+        seed: { file: "db/seed.sql", resetKv: [{ binding: "BOARDS_KV", key: "boards:index" }] }
+      });
+      const api = createDeployApi(ctx);
+
+      const report = await api.run({ seed: true });
+
+      expect(runWranglerInherit).toHaveBeenCalledWith([
+        "d1",
+        "execute",
+        "DB",
+        "--remote",
+        "--file",
+        "db/seed.sql"
+      ]);
+      expect(runWranglerInherit).toHaveBeenCalledWith([
+        "kv",
+        "key",
+        "delete",
+        "boards:index",
+        "--binding",
+        "BOARDS_KV",
+        "--remote"
+      ]);
+      expect(report.seed).toBe("applied");
+      expect(report.status).toBe("deployed");
+    });
+
+    it("skips both (no remote-DB commands) when neither flag is set", async () => {
+      const ctx = createMockCtx({ seed: { file: "db/seed.sql" } });
+      const api = createDeployApi(ctx);
+
+      const report = await api.run();
+
+      expect(runWranglerInherit).not.toHaveBeenCalled();
+      expect(report.migration).toBe("skipped");
+      expect(report.seed).toBe("skipped");
+      expect(report.status).toBe("deployed");
+    });
+
+    it("NEVER runs migration/seed when the deploy aborts (the first-deploy --seed regression)", async () => {
+      // Auth was never set up → the guided recovery scaffolds .env.local and aborts BEFORE the
+      // deploy. The whole point of moving these steps inside run(): no remote-DB command may run.
+      vi.mocked(verifyAuth).mockRejectedValueOnce(
+        new Error("[moku-worker] CLOUDFLARE_API_TOKEN is not set.")
+      );
+      stubPrompts(vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(true));
+      const ctx = createMockCtx({
+        seed: { file: "db/seed.sql", resetKv: [{ binding: "BOARDS_KV", key: "boards:index" }] }
+      });
+      const api = createDeployApi(ctx);
+
+      const report = await api.run({ migration: true, seed: true });
+
+      expect(report.status).toBe("aborted");
+      expect(report.migration).toBe("skipped");
+      expect(report.seed).toBe("skipped");
+      expect(runWranglerInherit).not.toHaveBeenCalled();
+      expect(runWrangler).not.toHaveBeenCalledWith(["deploy", "--config", "wrangler.jsonc"]);
+    });
+
+    it("reports a failed seed when seed is requested but none is configured", async () => {
+      const ctx = createMockCtx(); // no ctx.config.seed
+      const api = createDeployApi(ctx);
+
+      const report = await api.run({ seed: true });
+
+      expect(report.seed).toBe("failed");
+      expect(report.status).toBe("failed");
+      expect(report.ok).toBe(false);
+      expect(report.errors.join(" ")).toContain("no seed is configured");
+      expect(runWranglerInherit).not.toHaveBeenCalledWith(expect.arrayContaining(["execute"]));
+    });
+
+    it("skips the seed and reports failure when the remote migration fails", async () => {
+      const ctx = createMockCtx({ seed: { file: "db/seed.sql" } });
+      // The first runWranglerInherit call IS the migration apply — make it fail.
+      vi.mocked(runWranglerInherit).mockRejectedValueOnce(
+        new Error("[moku-worker] wrangler exited with code 1.")
+      );
+      const api = createDeployApi(ctx);
+
+      const report = await api.run({ migration: true, seed: true });
+
+      expect(report.migration).toBe("failed");
+      expect(report.seed).toBe("failed");
+      expect(report.status).toBe("failed");
+      // The seed execute must NOT run after a failed migration.
+      expect(runWranglerInherit).not.toHaveBeenCalledWith(expect.arrayContaining(["execute"]));
+    });
+  });
+
   // ───────── init ────────────────────────────────────────────────────────────
 
   describe("init", () => {
@@ -1222,11 +1371,11 @@ describe("createDeployApi", () => {
   // ───────── type-level tests ─────────────────────────────────────────────────
 
   describe("types", () => {
-    it("run returns Promise<void>", () => {
+    it("run returns Promise<DeployReport>", () => {
       const ctx = createMockCtx();
       const api = createDeployApi(ctx);
 
-      expectTypeOf(api.run).returns.toEqualTypeOf<Promise<void>>();
+      expectTypeOf(api.run).returns.toEqualTypeOf<Promise<DeployReport>>();
     });
 
     it("dev returns Promise<void>", () => {

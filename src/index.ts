@@ -122,7 +122,12 @@ export * from "./plugins";
 // (`"sideEffects": false` tree-shakes them out otherwise). The `./cli` subpath stays as an alias.
 export { cliPlugin } from "./plugins/cli";
 export { deployPlugin } from "./plugins/deploy";
-export type { ExternalManifest, ResourceManifest } from "./plugins/deploy/types";
+export type {
+  DeployReport,
+  ExternalManifest,
+  ResourceManifest,
+  SeedConfig
+} from "./plugins/deploy/types";
 
 // Core plugins (log + env from @moku-labs/common; stage is worker-local).
 export { envPlugin, logPlugin } from "@moku-labs/common";

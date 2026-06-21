@@ -2,7 +2,7 @@
  * @file cli plugin — type definitions (Config, Api).
  */
 
-import type { OnChange, WebBuild } from "../deploy/types";
+import type { DeployReport, OnChange, WebBuild } from "../deploy/types";
 
 /**
  * Resolved configuration for the cli plugin. The cli surface is configuration-free: the dev port is
@@ -28,10 +28,12 @@ export type Api = {
    *   per-change rebuild when `onChange` is omitted.
    * @param opts.onChange - Incremental per-change rebuild (e.g. `changes => webApp.cli.update(changes)`),
    *   so each change rebuilds only the changed paths instead of a full `webBuild()` every keystroke.
+   * @param opts.seed - Load the configured seed (`pluginConfigs.deploy.seed`) into the LOCAL D1 and
+   *   reset its cached KV keys before serving — the local analogue of `deploy({ seed: true })`.
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await app.cli.dev({ stage: "dev", port: 7878, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
+   * await app.cli.dev({ stage: "dev", port: 7878, seed: true, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
    * ```
    */
   dev(opts?: {
@@ -39,27 +41,39 @@ export type Api = {
     stage?: string;
     webBuild?: WebBuild;
     onChange?: OnChange;
+    seed?: boolean;
   }): Promise<void>;
 
   /**
-   * One-command Cloudflare deploy (delegates to deploy.run). Guided/interactive by default; pass
-   * `{ ci: true }` for the automated/non-interactive path (CI). A failure renders a branded `✗`
-   * line and sets a non-zero exit code rather than throwing a raw stack trace.
+   * One-command Cloudflare deploy (delegates to deploy.run), then — only on a successful deploy —
+   * the requested post-deploy remote steps (migration, seed). Guided/interactive by default; pass
+   * `{ ci: true }` for the automated/non-interactive path (CI). Unlike the other verbs this RETURNS
+   * the structured {@link DeployReport} (so a script can branch on the outcome) AND, on a failure,
+   * renders a branded `✗` line + sets a non-zero exit code rather than throwing a raw stack trace.
    *
-   * @param opts - Optional ci flag, stage, and a web build hook.
+   * @param opts - Optional ci flag, stage, a web build hook, and the post-deploy migration/seed flags.
    * @param opts.ci - Automated mode: never prompts, auto-confirms. Omit/false → guided on a TTY.
    * @param opts.stage - Stage for the generated wrangler config's resource names (e.g. "production",
    *   "staging"). Falls back to the `--stage` CLI flag, then the app's configured stage. Pass it
    *   explicitly from a script for a self-documenting `deploy({ stage })` instead of the hidden flag.
    * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
-   * @returns Resolves once the deploy completes (or after a failure is rendered).
+   * @param opts.migration - Apply pending remote D1 migrations after a successful deploy (skipped on abort).
+   * @param opts.seed - Load the configured remote seed (`pluginConfigs.deploy.seed`) after a
+   *   successful deploy (+ migration); skipped on an aborted deploy.
+   * @returns The deploy report (status, url, resource tally, migration/seed outcome, errors).
    * @example
    * ```ts
-   * await app.cli.deploy({ stage: "production", webBuild: () => web.cli.build() }); // guided
-   * await app.cli.deploy({ ci: true, webBuild: () => web.cli.build() });            // CI
+   * const report = await app.cli.deploy({ webBuild: () => web.cli.build(), migration: true, seed: true });
+   * if (report.status === "aborted") return; // creds not set up yet — nothing shipped
    * ```
    */
-  deploy(opts?: { ci?: boolean; stage?: string; webBuild?: WebBuild }): Promise<void>;
+  deploy(opts?: {
+    ci?: boolean;
+    stage?: string;
+    webBuild?: WebBuild;
+    migration?: boolean;
+    seed?: boolean;
+  }): Promise<DeployReport>;
 
   /**
    * Seed a configured D1 database from a SQL file (delegates to deploy.seed). Local by default

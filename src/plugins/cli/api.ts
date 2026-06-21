@@ -6,7 +6,7 @@ import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEvents } from "../../config";
 import { deployPlugin } from "../deploy";
 import { renderAuthSetup } from "../deploy/auth/render";
-import type { Api as DeployApi, OnChange, WebBuild } from "../deploy/types";
+import type { Api as DeployApi, DeployReport, OnChange, WebBuild } from "../deploy/types";
 import { parseStageArg } from "./args";
 import type { Api, Config } from "./types";
 
@@ -57,10 +57,12 @@ export const createCliApi = (ctx: CliCtx): Api => ({
    *   per-change rebuild when `onChange` is omitted.
    * @param opts.onChange - Incremental per-change rebuild (e.g. `changes => webApp.cli.update(changes)`),
    *   so each change rebuilds only the changed paths instead of a full `webBuild()`.
+   * @param opts.seed - Load the configured seed (`pluginConfigs.deploy.seed`) into the LOCAL D1 and
+   *   reset its cached KV keys before serving — the local analogue of `deploy({ seed: true })`.
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await api.dev({ port: 7878, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
+   * await api.dev({ port: 7878, seed: true, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
    * ```
    */
   async dev(opts?: {
@@ -68,6 +70,7 @@ export const createCliApi = (ctx: CliCtx): Api => ({
     stage?: string;
     webBuild?: WebBuild;
     onChange?: OnChange;
+    seed?: boolean;
   }): Promise<void> {
     const ui = createBrandConsole();
     ui.lockup({ wordmark: "moku worker", label: "dev session" });
@@ -78,7 +81,8 @@ export const createCliApi = (ctx: CliCtx): Api => ({
         ...(opts?.port === undefined ? {} : { port: opts.port }),
         ...(stage === undefined ? {} : { stage }),
         ...(opts?.webBuild ? { webBuild: opts.webBuild } : {}),
-        ...(opts?.onChange ? { onChange: opts.onChange } : {})
+        ...(opts?.onChange ? { onChange: opts.onChange } : {}),
+        ...(opts?.seed ? { seed: opts.seed } : {})
       });
       ui.check(true, "dev session stopped cleanly");
     } catch (error) {
@@ -88,29 +92,57 @@ export const createCliApi = (ctx: CliCtx): Api => ({
   },
 
   /**
-   * One-command Cloudflare deploy; forwards opts verbatim to deploy.run. Guided/interactive by
-   * default; `{ ci: true }` runs the automated path (CI). A `webBuild` hook builds the web site
-   * first (before `wrangler deploy`). A failure renders a branded `✗` line + non-zero exit code
-   * (matching cli.auth/doctor), never a raw stack trace.
+   * One-command Cloudflare deploy; forwards opts verbatim to deploy.run, then — only on a successful
+   * deploy — the requested post-deploy migration/seed. Guided/interactive by default; `{ ci: true }`
+   * runs the automated path (CI). A `webBuild` hook builds the web site first (before `wrangler
+   * deploy`). RETURNS the structured {@link DeployReport}; on a failure it also renders a branded `✗`
+   * line + sets a non-zero exit code (matching cli.auth/doctor), never a raw stack trace.
    *
    * @param opts - Optional deploy options.
    * @param opts.ci - Automated mode: never prompts, auto-confirms. Omit/false → guided on a TTY.
    * @param opts.stage - Target stage (resource-name suffix); falls back to `--stage` then the app stage.
    * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
-   * @returns Resolves once the deploy completes (or after a failure is rendered).
+   * @param opts.migration - Apply pending remote D1 migrations after a successful deploy (skipped on abort).
+   * @param opts.seed - Load the configured remote seed (`pluginConfigs.deploy.seed`) after a
+   *   successful deploy (+ migration); skipped on an aborted deploy.
+   * @returns The deploy report (status, url, resource tally, migration/seed outcome, errors).
    * @example
    * ```ts
-   * await api.deploy({ webBuild: () => web.cli.build() });            // guided, app stage
-   * await api.deploy({ ci: true, webBuild: () => web.cli.build() });  // CI; `--stage dev` honored
+   * const report = await api.deploy({ webBuild: () => web.cli.build(), migration: true, seed: true });
+   * if (report.status === "aborted") return; // creds not set up yet — nothing shipped
    * ```
    */
-  async deploy(opts?: { ci?: boolean; stage?: string; webBuild?: WebBuild }): Promise<void> {
+  async deploy(opts?: {
+    ci?: boolean;
+    stage?: string;
+    webBuild?: WebBuild;
+    migration?: boolean;
+    seed?: boolean;
+  }): Promise<DeployReport> {
     const stage = opts?.stage ?? parseStageArg(process.argv);
     try {
-      await ctx.require(deployPlugin).run({ ...opts, ...(stage === undefined ? {} : { stage }) });
+      const report = await ctx
+        .require(deployPlugin)
+        .run({ ...opts, ...(stage === undefined ? {} : { stage }) });
+      // run() already rendered the summary + any inline post-step errors; a "failed" report only
+      // needs the non-zero exit here. An "aborted" report is a clean, intentional stop (exit 0).
+      if (report.status === "failed") process.exitCode = 1;
+      return report;
     } catch (error) {
-      createBrandConsole().error(error instanceof Error ? error.message : String(error));
+      // Hard failure (the CI fail-fast path threw before a report existed) — brand it, set the exit
+      // code, and still hand back a structured failed report so callers never face a raw throw.
+      const message = error instanceof Error ? error.message : String(error);
+      createBrandConsole().error(message);
       process.exitCode = 1;
+      return {
+        ok: false,
+        status: "failed",
+        stage: stage ?? "production",
+        migration: "skipped",
+        seed: "skipped",
+        elapsedMs: 0,
+        errors: [message]
+      };
     }
   },
 

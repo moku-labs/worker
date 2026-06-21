@@ -41,6 +41,26 @@ export type WebBuild = () => Promise<unknown>;
  */
 export type OnChange = (changes: readonly string[]) => Promise<unknown>;
 
+/**
+ * The remote seed wired into `deploy({ seed: true })`: which SQL file to load into the REMOTE D1
+ * AFTER a successful deploy (+ migration), and which cached KV keys to clear afterwards so the app
+ * rebuilds them from the freshly-seeded rows. Declarative — the deploy plugin runs no app code, so
+ * the app-specific seed lives in `pluginConfigs.deploy.seed` (config) rather than a deploy hook.
+ *
+ * @example
+ * ```ts
+ * deploy: { seed: { file: "db/seed.sql", resetKv: [{ binding: "BOARDS_KV", key: "boards:index" }] } }
+ * ```
+ */
+export type SeedConfig = {
+  /** SQL file executed against the remote D1 (e.g. "db/seed.sql"). */
+  file: string;
+  /** The d1 binding to target when more than one database is configured (e.g. "DB"); the sole one otherwise. */
+  binding?: string;
+  /** Cached KV keys to delete after seeding so reads rebuild from the freshly-seeded DB. */
+  resetKv?: { binding: string; key: string }[];
+};
+
 /** deploy plugin configuration. Flat; complete defaults so omission never yields undefined. */
 export type Config = {
   /**
@@ -91,6 +111,12 @@ export type Config = {
   migrateLocal: boolean;
   /** Debounce window (ms) coalescing rapid file changes into one rebuild. */
   debounceMs: number;
+  /**
+   * The remote seed `deploy({ seed: true })` loads AFTER a successful deploy (+ migration): the SQL
+   * file and the cached KV keys to reset. Omit it and `deploy({ seed: true })` reports a clear
+   * "no seed configured" error instead of silently doing nothing.
+   */
+  seed?: SeedConfig;
 };
 
 /**
@@ -185,6 +211,38 @@ export type ProvisionResult = {
   ids: Record<string, string>;
 };
 
+/**
+ * Structured outcome of a deploy run (the value `run()` / `cli.deploy()` now resolve to, replacing
+ * the old `void`) so a script can branch on the result instead of guessing from a thrown error. It
+ * is also WHY the post-deploy migration + seed live inside `run()`: the report's `status` is the
+ * single source of truth for whether the worker actually went live, so those remote-DB steps run
+ * only on a successful deploy and never on an aborted one.
+ *
+ * `ok` is true only when the worker is live AND every requested post-step (migration, seed) also
+ * succeeded. `status` is the coarse outcome: `"deployed"` (live, all post-steps ok), `"aborted"`
+ * (a gate was declined or auth was never set up — nothing shipped), `"failed"` (a step errored).
+ */
+export type DeployReport = {
+  /** True only when the worker is live and every requested post-step (migration, seed) succeeded. */
+  ok: boolean;
+  /** Coarse outcome: "deployed" (live + post-steps ok), "aborted" (a gate declined / auth not set up), "failed" (a step errored). */
+  status: "deployed" | "aborted" | "failed";
+  /** The resolved deploy stage (resource-name suffix; "production" is bare). */
+  stage: string;
+  /** The live worker URL once `wrangler deploy` succeeded — set even if a later migration/seed failed. */
+  url?: string;
+  /** Provisioning tally: resources created, already-existing, and failed to create. */
+  resources?: { created: number; exists: number; failed: number };
+  /** Remote D1 migration outcome — "skipped" (not requested), "applied", or "failed". */
+  migration: "skipped" | "applied" | "failed";
+  /** Remote seed outcome — "skipped" (not requested), "applied", or "failed". */
+  seed: "skipped" | "applied" | "failed";
+  /** Wall-clock duration of the whole run (ms). */
+  elapsedMs: number;
+  /** Branded failure message(s) — empty when `ok`; one per failed step otherwise. */
+  errors: string[];
+};
+
 /** Result of verifying the `.env` Cloudflare API token and resolving its account. */
 export type AuthStatus = {
   /** Whether the token is present and active. */
@@ -222,21 +280,37 @@ export type TokenRequirement = {
 /** Public api surface of the deploy plugin, mounted at app.deploy.*. */
 export type Api = {
   /**
-   * Run the full deploy pipeline (detect -> provision -> config -> upload -> deploy).
+   * Run the full deploy pipeline (detect -> provision -> config -> upload -> deploy), then — ONLY on
+   * a successful deploy — the requested post-deploy remote steps (migration, seed). Resolves to a
+   * {@link DeployReport}: a deploy that aborts (a declined gate, or auth never set up) returns
+   * `status: "aborted"` and never touches the remote DB, so `deploy --seed` on a first run with no
+   * token can no longer fall through to a raw `wrangler … --remote` auth error.
    *
-   * @param opts - Optional ci flag, a web build hook, or a caller-supplied manifest.
+   * @param opts - Optional run options.
    * @param opts.ci - CI/automated mode: never prompts, auto-confirms every gate. When false (the
    *   default) and stdout is a TTY, the deploy is guided — each gate is confirmed interactively.
+   * @param opts.stage - Target stage; suffixes resource names ("production" = bare).
    * @param opts.webBuild - Build the web site first (e.g. `() => webApp.cli.build()`), before deploy.
    * @param opts.manifest - Caller-supplied universal manifest (bypasses auto-detection).
-   * @returns Resolves once the deploy completes.
+   * @param opts.migration - After a successful deploy, apply pending D1 migrations to the REMOTE
+   *   database for every configured d1 instance that ships migrations. Skipped on an aborted deploy.
+   * @param opts.seed - After a successful deploy (+ migration), load the seed configured under
+   *   `pluginConfigs.deploy.seed` into the remote D1 and reset its cached KV keys. Skipped on abort.
+   * @returns The deploy report (status, url, resource tally, migration/seed outcome, errors).
    * @example
    * ```ts
-   * await app.deploy.run({ webBuild: () => web.cli.build() });            // guided on a TTY
-   * await app.deploy.run({ ci: true, webBuild: () => web.cli.build() });  // automated (CI)
+   * const report = await app.deploy.run({ webBuild: () => web.cli.build(), migration: true, seed: true });
+   * if (report.status === "aborted") process.exit(0);
    * ```
    */
-  run(opts?: { ci?: boolean; webBuild?: WebBuild; manifest?: ExternalManifest }): Promise<void>;
+  run(opts?: {
+    ci?: boolean;
+    stage?: string;
+    webBuild?: WebBuild;
+    manifest?: ExternalManifest;
+    migration?: boolean;
+    seed?: boolean;
+  }): Promise<DeployReport>;
 
   /**
    * Start a local Cloudflare dev session via `wrangler dev`: cold-build the web site, spawn
@@ -248,13 +322,20 @@ export type Api = {
    *   per-change rebuild when `onChange` is omitted.
    * @param opts.onChange - Incremental per-change rebuild (e.g. `changes => webApp.cli.update(changes)`).
    *   When set, each debounced change rebuilds only the changed paths instead of a full `webBuild()`.
+   * @param opts.seed - Load the configured seed (`pluginConfigs.deploy.seed`) into the LOCAL D1 and
+   *   reset its cached KV keys before serving — the local analogue of `deploy({ seed: true })`.
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await app.deploy.dev({ port: 8787, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
+   * await app.deploy.dev({ port: 8787, seed: true, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
    * ```
    */
-  dev(opts?: { port?: number; webBuild?: WebBuild; onChange?: OnChange }): Promise<void>;
+  dev(opts?: {
+    port?: number;
+    webBuild?: WebBuild;
+    onChange?: OnChange;
+    seed?: boolean;
+  }): Promise<void>;
 
   /**
    * Execute a SQL file against a configured D1 database via `wrangler d1 execute` — for seeding dev

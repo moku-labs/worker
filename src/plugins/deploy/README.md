@@ -45,6 +45,7 @@ Configured under `pluginConfigs.deploy`. The config is flat and every field has 
 |---|---|---|---|
 | `configFile` | `string` | `"wrangler.jsonc"` | The wrangler config file `deploy` generates/updates and that `wrangler deploy` reads. Also the file parsed in the universal/non-moku path. |
 | `ci` | `boolean` | `false` | CI / non-interactive mode. When `true` (or stdout is non-TTY), the guided flow never prompts. Cloudflare credentials are read from the Node env (`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`), never from plugin config. |
+| `seed` | `SeedConfig?` | — | The remote seed `run({ seed: true })` loads after a successful deploy (+ migration): `{ file: string; binding?: string; resetKv?: { binding; key }[] }` — the SQL file executed against the remote D1, then the cached KV keys to clear. Omit it and `run({ seed: true })` reports a clear "no seed configured" error. |
 
 ```typescript
 import { createApp, deployPlugin } from "@moku-labs/worker";
@@ -54,7 +55,9 @@ const app = createApp({
   pluginConfigs: {
     deploy: {
       configFile: "wrangler.jsonc",
-      ci: false
+      ci: false,
+      // Remote seed wired into `deploy({ seed: true })` (run only after a live deploy):
+      seed: { file: "db/seed.sql", resetKv: [{ binding: "BOARDS_KV", key: "boards:index" }] }
     }
   }
 });
@@ -64,14 +67,17 @@ const app = createApp({
 
 All methods are mounted on `app.deploy.*` and are invoked from thin Node-side `scripts/*.ts` passthroughs (and re-exposed by the `cli` plugin) — never from the deployed runtime.
 
-### `run(opts?): Promise<void>`
+### `run(opts?): Promise<DeployReport>`
 
 ```typescript
 run(opts?: {
   ci?: boolean;
+  stage?: string;
   webBuild?: WebBuild; // () => Promise<void> | Promise<{ files?: number }>
   manifest?: ExternalManifest;
-}): Promise<void>
+  migration?: boolean; // apply remote D1 migrations after a successful deploy
+  seed?: boolean;      // load the configured remote seed after a successful deploy (+ migration)
+}): Promise<DeployReport>
 ```
 
 Runs the full deploy pipeline. The phases execute, and emit, in this order:
@@ -84,19 +90,24 @@ Runs the full deploy pipeline. The phases execute, and emit, in this order:
 6. `deploy:phase { phase: "deploy" }` — run `wrangler deploy`.
 7. `deploy:complete { url }` — the parsed deployed URL.
 
+**Post-deploy (migration + seed).** `run` owns the remote-DB steps so they run **only after a live deploy** and are **skipped on any abort** (a declined gate, or auth never set up) — the report's `status` is the gate. When `opts.migration` is set, pending D1 migrations are applied to the **remote** database for every configured d1 instance that ships a `migrations` dir. When `opts.seed` is set, the seed configured under `pluginConfigs.deploy.seed` (a SQL `file` + optional `resetKv` keys) is loaded into the remote D1 and its cached KV keys are cleared — after the migration (the seed needs the schema; a failed migration skips the seed). Each post-step folds its failure into the report (rendered inline, not thrown), so a deploy that went live but failed to seed still returns a complete report with `status: "failed"`.
+
 **Manifest source.** When `opts.manifest` is omitted, the manifest is built from each *present* resource plugin's `deployManifest()` via `ctx.require`, gated by `ctx.has(name)` so absent plugins are skipped. When `opts.manifest` is supplied, it is used **verbatim** (the universal / non-moku path) and no `deployManifest()` calls are made.
 
 | Option | Type | Description |
 |---|---|---|
 | `opts.ci` | `boolean` | CI/automated: never prompts, auto-confirms every gate. Omit/`false` → guided (interactive) whenever stdout is a TTY. Falls back to `ctx.config.ci`. |
+| `opts.stage` | `string` | Target stage; suffixes resource names (`"production"` = bare). Falls back to the app stage. |
 | `opts.webBuild` | `WebBuild` | Build the web site first (e.g. `() => webApp.cli.build()`). When supplied, an extra `deploy:phase { phase: "build", detail: "web" }` runs right after the auth preflight, before provisioning — so the generated assets exist before the R2 upload and `wrangler deploy`. Wired in from the consumer's app-side script (falls back to `ctx.config.webBuild`). |
 | `opts.manifest` | `ExternalManifest` | Caller-supplied manifest; bypasses `deployManifest()` assembly. |
+| `opts.migration` | `boolean` | After a **successful** deploy, apply pending D1 migrations to the remote DB for every configured d1 instance with a `migrations` dir. Skipped on an aborted deploy. |
+| `opts.seed` | `boolean` | After a **successful** deploy (+ migration), load the seed configured under `pluginConfigs.deploy.seed` into the remote D1 and reset its cached KV keys. Skipped on an aborted deploy. |
 
-**Returns:** resolves once `wrangler deploy` completes and `deploy:complete` is emitted — or once a guided run is aborted (see below), which resolves after emitting `deploy:phase { phase: "aborted" }`.
+**Returns:** a `DeployReport` — `{ ok, status: "deployed" | "aborted" | "failed", stage, url?, resources?, migration, seed, elapsedMs, errors }`. A successful run resolves after `deploy:complete` (and any post-deploy migration/seed); a guided run that the user stops resolves with `status: "aborted"` after emitting `deploy:phase { phase: "aborted" }` — and never touches the remote DB. `DeployReport` is exported from `@moku-labs/worker`.
 
 **Guided recovery (TTY).** On an interactive terminal (not `ci`, stdout is a TTY) every failure point is *guided* rather than thrown:
 
-- **Auth.** A missing/invalid `CLOUDFLARE_API_TOKEN` surfaces the reason, then offers a guided setup: it renders a **branded panel** of exactly which token to create (dashboard URL, the `"Edit Cloudflare Workers"` template, and which permissions to add — derived from your manifest, so D1/Queues are flagged) and **scaffolds a `.env.local`** (same guidance baked in as comments) for you to paste the token + account id into — never clobbering an existing one. Because the env is snapshotted at app start, a freshly-pasted token only takes effect on a **new** run — the prompt points you there and the deploy aborts cleanly. The same panel renders for the `auth setup` command (which also shows the reduced CI token).
+- **Auth.** A missing/invalid `CLOUDFLARE_API_TOKEN` surfaces the reason, then offers a guided setup: it renders a **branded panel** of exactly which token to create (dashboard URL, the `"Edit Cloudflare Workers"` template, and which permissions to add — derived from your manifest, so D1/Queues are flagged) and **scaffolds a `.env.local`** (same guidance baked in as comments) for you to paste the token + account id into — never clobbering an existing one. The panel is shown whether or not `.env.local` already exists, so the next step is never a mystery. Because the env is snapshotted at app start, a freshly-pasted token only takes effect on a **new** run — the prompt points you there and the deploy aborts cleanly (`status: "aborted"`, no migration/seed). The same panel renders for the `auth setup` command (which also shows the reduced CI token).
 - **Build / infra / upload / `wrangler deploy`.** A failure renders the error + a one-line hint, then offers **Retry?**. Provisioning re-plans each attempt, so a partially-created plan stays idempotent. Declining a retry aborts cleanly (the error is shown once, not re-rendered).
 
 **Throws:** only in `ci` / non-interactive runs (fail-fast). The first failure — auth, infra preflight, provisioning, upload, or the wrangler subprocess (`[moku-worker] wrangler exited with code <n>` / `[moku-worker] Failed to spawn wrangler`) — propagates to the caller (the `cli` plugin renders it as a branded `✗` + non-zero exit).
@@ -122,10 +133,11 @@ dev(opts?: {
   port?: number;
   webBuild?: WebBuild; // () => Promise<unknown> — full cold build (e.g. () => web.cli.build())
   onChange?: OnChange; // (changes: readonly string[]) => Promise<unknown> — incremental per-change rebuild
+  seed?: boolean;      // load the configured seed into the LOCAL D1 before serving
 }): Promise<void>
 ```
 
-Starts a long-lived local dev session: cold-build the web site (when a `webBuild` hook is wired in), spawn `wrangler dev --port <port> --config <configFile> --live-reload` **once** (default port `8787`), then watch the site sources and rebuild on change — wrangler's asset server live-reloads the browser; wrangler is never restarted for a site change. A failed rebuild emits `dev:error` and keeps serving the last good build. Build-time only; resolves on `SIGINT`.
+Starts a long-lived local dev session: cold-build the web site (when a `webBuild` hook is wired in), apply local D1 migrations, **(when `seed` is set) load the local seed**, spawn `wrangler dev --port <port> --config <configFile> --live-reload` **once** (default port `8787`), then watch the site sources and rebuild on change — wrangler's asset server live-reloads the browser; wrangler is never restarted for a site change. A failed rebuild emits `dev:error` and keeps serving the last good build. Build-time only; resolves on `SIGINT`.
 
 The per-change rebuild takes the **fast path** when an `onChange` hook is wired: each debounced change calls `onChange(changedPaths)` (e.g. `c => web.cli.update(c)`) so only the changed paths rebuild. Omit `onChange` and each change runs a full `webBuild()` instead — the prior, backward-compatible behavior.
 
@@ -134,6 +146,7 @@ The per-change rebuild takes the **fast path** when an `onChange` hook is wired:
 | `opts.port` | `number` | `8787` | Local dev port. |
 | `opts.webBuild` | `WebBuild` | — | **Cold** build of the web site (e.g. `() => webApp.cli.build()`); also the per-change rebuild when `onChange` is omitted. Wired in from the consumer's app-side script (falls back to `ctx.config.webBuild`). Omit for a worker-only session. |
 | `opts.onChange` | `OnChange` | — | **Incremental** per-change rebuild (e.g. `changes => webApp.cli.update(changes)`). When set, each debounced change rebuilds only the changed paths instead of a full `webBuild()`. |
+| `opts.seed` | `boolean` | — | Load the seed configured under `pluginConfigs.deploy.seed` into the **local** D1 (and reset its cached KV keys) before serving — the local twin of `run({ seed: true })`. Forces the local migrate step first so the seed's tables exist (even if `migrateLocal` is off). |
 
 **Throws:** propagates the wrangler subprocess `Error` on a non-zero exit / spawn failure.
 

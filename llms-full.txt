@@ -13,26 +13,24 @@
 1. ENTRY POINTS
 ================================================================================
 
-The package exposes exactly TWO entry points (from package.json `exports`):
+The package exposes exactly ONE entry point (from package.json `exports`):
 
-  "."     → src/index.ts  — RUNTIME. Imported by the deployed Worker. Ships in the bundle.
-  "./cli" → src/cli.ts    — NODE-ONLY. Imported by scripts/*.ts at build/deploy time. Uses
-                            node:child_process + node:fs; NEVER bundled into the Worker (HC11).
+  "."  → src/index.ts  — the only entry. RUNTIME ships in the deployed Worker bundle; the NODE-ONLY
+                         deploy/CLI plugins (deployPlugin/cliPlugin, using node:child_process +
+                         node:fs) are exported from here too but tree-shaken out ("sideEffects":
+                         false) of any bundle that does not list them in createApp({ plugins }) (HC11).
 
-The specs reference a `@moku-labs/worker/worker` subpath. IT DOES NOT EXIST. Only `.` and `./cli`
-are real. Use `@moku-labs/worker` for runtime and `@moku-labs/worker/cli` for deploy/CLI.
+The specs reference `@moku-labs/worker/worker` and `@moku-labs/worker/cli` subpaths. NEITHER EXISTS.
+There is only `.` — use `@moku-labs/worker` for both runtime and the (tree-shaken) deploy/CLI plugins.
 
-Exports from "@moku-labs/worker" (src/index.ts):
+Exports from "@moku-labs/worker" (src/index.ts) — the only entry point:
   Values:  createApp, createPlugin, endpoint, defineDurableObject,
            bindingsPlugin, serverPlugin, kvPlugin, d1Plugin, queuesPlugin, storagePlugin,
-           durableObjectsPlugin, stagePlugin, envPlugin, logPlugin
-  Types:   WorkerConfig, WorkerEvents, WorkerEnv, StageApi,
+           durableObjectsPlugin, stagePlugin, envPlugin, logPlugin,
+           deployPlugin, cliPlugin  (node-only; tree-shaken out unless listed in createApp({ plugins }))
+  Types:   WorkerConfig, WorkerEvents, WorkerEnv, StageApi, ExternalManifest, ResourceManifest,
            type namespaces: Server, D1, Queues, Storage, DurableObjects
            (also flat: Endpoint, EndpointHandler, RequestContext from the server barrel)
-
-Exports from "@moku-labs/worker/cli" (src/cli.ts):
-  Values:  deployPlugin, cliPlugin
-  Types:   ExternalManifest, ResourceManifest
 
 (envPlugin / logPlugin are authored in @moku-labs/common and re-exported here for completeness.)
 
@@ -359,11 +357,11 @@ API (StageApi, ctx.stage):
   NOTE: isDev() and isProduction() are BOTH false in "test" — not boolean inverses.
 
 ────────────────────────────────────────────────────────────────────────────
-deploy  — Complex · @moku-labs/worker/cli · NODE-ONLY · depends: [storage, kv, d1, queues, durableObjects]
+deploy  — Complex · @moku-labs/worker (node-only, tree-shaken) · depends: [storage, kv, d1, queues, durableObjects]
 ────────────────────────────────────────────────────────────────────────────
 Build-time deploy orchestrator. Pipeline: detect → provision → wrangler-config → upload → deploy.
 Uses node:child_process (spawn wrangler) + node:fs (read/write wrangler config, walk upload dir).
-EXCLUDED from the runtime barrel (HC11). Import from @moku-labs/worker/cli. No state, no hooks, no
+Tree-shaken out of bundles that don't list it via "sideEffects": false (HC11). No state, no hooks, no
 lifecycle. Reads each resource plugin's deployManifest() via ctx.require, gated by ctx.has(name).
 
 Config:  { configFile: string; ci: boolean }    defaults { configFile: "wrangler.jsonc", ci: false }
@@ -401,7 +399,7 @@ Provisioning + wrangler config per resource:
   (R2/D1 names lower-case the binding; queue bindings upper-case the producer; id/database_id written "".)
 
 ────────────────────────────────────────────────────────────────────────────
-cli  — Standard · @moku-labs/worker/cli · NODE-ONLY · depends: [deployPlugin]
+cli  — Standard · @moku-labs/worker (node-only, tree-shaken) · depends: [deployPlugin]
 ────────────────────────────────────────────────────────────────────────────
 Developer-facing dev/deploy verbs + a live progress TUI. Thin passthroughs to deploy; does no work
 itself. No state, no events of its own, no lifecycle. The "TUI" is plain ctx.log lines (no argv
@@ -639,15 +637,14 @@ export default {
 ```
 
 ────────────────────────────────────────────────────────────────────────────
-8.4  Node deploy script using @moku-labs/worker/cli
+8.4  Node deploy script using @moku-labs/worker
 ────────────────────────────────────────────────────────────────────────────
 ```typescript
 // scripts/deploy.ts — node-only; run with `bun scripts/deploy.ts` (or `node scripts/deploy.ts`).
 import { createApp } from "@moku-labs/worker";
 import {
-  d1Plugin, durableObjectsPlugin, kvPlugin, queuesPlugin, storagePlugin
+  d1Plugin, deployPlugin, durableObjectsPlugin, kvPlugin, queuesPlugin, storagePlugin
 } from "@moku-labs/worker";
-import { deployPlugin } from "@moku-labs/worker/cli";
 
 // bindings + server are framework defaults; add the resource plugins + deployPlugin (NOT defaults).
 // deploy depends on all five resource plugins, so each must appear before deployPlugin here.
@@ -673,9 +670,8 @@ await app.deploy.run({ guided: !process.argv.includes("--ci") });
 // scripts/cli.ts — the cli plugin sits above deploy; same plugin order + cliPlugin last.
 import { createApp } from "@moku-labs/worker";
 import {
-  d1Plugin, durableObjectsPlugin, kvPlugin, queuesPlugin, storagePlugin
+  cliPlugin, d1Plugin, deployPlugin, durableObjectsPlugin, kvPlugin, queuesPlugin, storagePlugin
 } from "@moku-labs/worker";
-import { cliPlugin, deployPlugin } from "@moku-labs/worker/cli";
 
 // bindings + server are framework defaults; cli depends on deploy, so cliPlugin comes last.
 const app = createApp({
@@ -820,7 +816,7 @@ api return values, not emit.
 - env-per-request: first argument to every binding method; on the stack only; never in state.
 - Response/work via return value, never via emit (events are observability only).
 - bindings is the regular-plugin root of the binding family (core plugins can't be depends targets).
-- deploy/cli are node-only; @moku-labs/worker/cli only; never in the Worker bundle (HC11).
+- deploy/cli are node-only; exported from @moku-labs/worker, tree-shaken out of the Worker bundle (HC11).
 - deploy reads deployManifest() apis, never sibling pluginConfigs (a plugin sees ctx.global + its own
   ctx.config; require returns api, not config).
 - createApp is synchronous + frozen; stateless Workers never call start()/stop().

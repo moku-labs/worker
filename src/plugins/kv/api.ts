@@ -4,9 +4,9 @@
  */
 import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEnv as WorkerEnvironment, WorkerEvents } from "../../config";
-import { defaultInstanceKey, pickInstance } from "../../instances";
 import type { BindingsApi } from "../bindings";
 import { bindingsPlugin } from "../bindings";
+import { defaultInstanceKey, pickInstance } from "../bindings/instances";
 
 /**
  * A single KV namespace instance: its base Cloudflare name + the env binding it resolves off.

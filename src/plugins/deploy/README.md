@@ -22,7 +22,7 @@ Each stage emits a global `deploy:phase` event; each provisioned resource emits 
 
 `deploy` is **not** part of the Cloudflare Workers runtime. It uses `node:child_process` (to spawn `wrangler`) and `node:fs` / `node:fs/promises` (to read and write the wrangler config and walk the upload directory), so it can only run in Node — in `scripts/*.ts` at deploy time, never inside the Cloudflare isolate at request time.
 
-It is exported from the package root (the `@moku-labs/worker/cli` subpath remains as a back-compat alias). Import it from `@moku-labs/worker`:
+It is exported from the package root. Import it from `@moku-labs/worker`:
 
 ```typescript
 import { deployPlugin } from "@moku-labs/worker";
@@ -309,7 +309,7 @@ hooks: (register) => {
 ## Integration
 
 - **Resource plugins (`storage`, `kv`, `d1`, `queues`, `durableObjects`).** `deploy` depends on all five and reads each one's `deployManifest()` via `ctx.require`, gated by `ctx.has(name)` so plugins absent from `createApp({ plugins })` are skipped. It never reads their `pluginConfigs` — the manifest api is the only contract. See [Manifests](#manifests) for how each descriptor maps to provisioning and the wrangler config.
-- **`cli` plugin.** `cli` declares `depends: [deployPlugin]` and exposes `app.cli.dev()` / `app.cli.deploy()` as thin passthroughs to `app.deploy.dev()` / `app.deploy.run()`, plus hooks that render the three global deploy events as a live TUI. Both `cliPlugin` and `deployPlugin` are exported from `@moku-labs/worker` (the `@moku-labs/worker/cli` subpath is a back-compat alias).
+- **`cli` plugin.** `cli` declares `depends: [deployPlugin]` and exposes `app.cli.dev()` / `app.cli.deploy()` as thin passthroughs to `app.deploy.dev()` / `app.deploy.run()`, plus hooks that render the three global deploy events as a live TUI. Both `cliPlugin` and `deployPlugin` are exported from `@moku-labs/worker`.
 - **`wrangler`.** Invoked as a subprocess (resolved from `node_modules/.bin`) for `kv namespace create`, `r2 bucket create`, `r2 object put`, `d1 create`, `d1 migrations apply`, `queues create`, `dev`, and `deploy`. It is a peer/dev dependency, never bundled.
 
 ## Design notes

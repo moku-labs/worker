@@ -3,8 +3,8 @@
  */
 
 import type { WorkerEnv } from "../../config";
-import { defaultInstanceKey, pickInstance } from "../../instances";
 import { bindingsPlugin } from "../bindings";
+import { defaultInstanceKey, pickInstance } from "../bindings/instances";
 import type { D1Ctx } from "./types";
 
 /**

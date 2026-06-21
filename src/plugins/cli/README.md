@@ -1,6 +1,6 @@
 # cli
 
-> Standard tier, **node-only** — the developer-facing command-line front door (`dev` / `deploy`) for a `@moku-labs/worker` project. Thin passthroughs to the `deploy` plugin, plus a live progress TUI. Exported from `@moku-labs/worker` (the `@moku-labs/worker/cli` subpath remains as a back-compat alias).
+> Standard tier, **node-only** — the developer-facing command-line front door (`dev` / `deploy`) for a `@moku-labs/worker` project. Thin passthroughs to the `deploy` plugin, plus a live progress TUI. Exported from `@moku-labs/worker`.
 
 ## Overview
 
@@ -192,7 +192,7 @@ Both verbs accept an optional `webBuild` hook (`() => webApp.cli.build()`): `dev
 
 The resource plugins (`storage`/R2, `kv`, `d1`, `queues`, `durableObjects`) are reached only **transitively**, through `deploy`. `cli` never imports or requires them: `deploy` is the one that declares `depends: [storagePlugin, kvPlugin, d1Plugin, queuesPlugin, durableObjectsPlugin]`, assembles each resource's `deployManifest()`, provisions, writes the wrangler config, uploads, and runs `wrangler deploy` — emitting the global events `cli` renders. `cli` reads neither `deploy`'s config nor any sibling `pluginConfigs`; `ctx.require` returns a plugin's API, never its config.
 
-The package root (`@moku-labs/worker`) exports `cliPlugin`, `deployPlugin`, and the deploy manifest types `ExternalManifest` / `ResourceManifest`, so a Node script composes the full deploy toolchain from one import path; the `@moku-labs/worker/cli` entry (`src/cli.ts`) re-exports the same names as a back-compat alias.
+The package root (`@moku-labs/worker`) exports `cliPlugin`, `deployPlugin`, and the deploy manifest types `ExternalManifest` / `ResourceManifest`, so a Node script composes the full deploy toolchain from one import path.
 
 ## Design notes
 

@@ -120,21 +120,25 @@ await app.deploy.run({
 ```typescript
 dev(opts?: {
   port?: number;
-  webBuild?: WebBuild; // () => Promise<void> | Promise<{ files?: number }>
+  webBuild?: WebBuild; // () => Promise<unknown> — full cold build (e.g. () => web.cli.build())
+  onChange?: OnChange; // (changes: readonly string[]) => Promise<unknown> — incremental per-change rebuild
 }): Promise<void>
 ```
 
-Starts a long-lived local dev session: cold-build the web site (when a `webBuild` hook is wired in), spawn `wrangler dev --port <port> --config <configFile> --live-reload` **once** (default port `8787`), then watch the site sources and recompile on change — wrangler's asset server live-reloads the browser; wrangler is never restarted for a site change. A failed rebuild emits `dev:error` and keeps serving the last good build. Build-time only; resolves on `SIGINT`.
+Starts a long-lived local dev session: cold-build the web site (when a `webBuild` hook is wired in), spawn `wrangler dev --port <port> --config <configFile> --live-reload` **once** (default port `8787`), then watch the site sources and rebuild on change — wrangler's asset server live-reloads the browser; wrangler is never restarted for a site change. A failed rebuild emits `dev:error` and keeps serving the last good build. Build-time only; resolves on `SIGINT`.
+
+The per-change rebuild takes the **fast path** when an `onChange` hook is wired: each debounced change calls `onChange(changedPaths)` (e.g. `c => web.cli.update(c)`) so only the changed paths rebuild. Omit `onChange` and each change runs a full `webBuild()` instead — the prior, backward-compatible behavior.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `opts.port` | `number` | `8787` | Local dev port. |
-| `opts.webBuild` | `WebBuild` | — | Rebuild the web site on each change (e.g. `() => webApp.cli.build()`). Wired in from the consumer's app-side script (falls back to `ctx.config.webBuild`). Omit for a worker-only session. |
+| `opts.webBuild` | `WebBuild` | — | **Cold** build of the web site (e.g. `() => webApp.cli.build()`); also the per-change rebuild when `onChange` is omitted. Wired in from the consumer's app-side script (falls back to `ctx.config.webBuild`). Omit for a worker-only session. |
+| `opts.onChange` | `OnChange` | — | **Incremental** per-change rebuild (e.g. `changes => webApp.cli.update(changes)`). When set, each debounced change rebuilds only the changed paths instead of a full `webBuild()`. |
 
 **Throws:** propagates the wrangler subprocess `Error` on a non-zero exit / spawn failure.
 
 ```typescript
-await app.deploy.dev({ port: 8787, webBuild: () => web.cli.build() });
+await app.deploy.dev({ port: 8787, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
 ```
 
 ### `init(opts?): Promise<void>`

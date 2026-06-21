@@ -6,7 +6,7 @@ import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEvents } from "../../config";
 import { deployPlugin } from "../deploy";
 import { renderAuthSetup } from "../deploy/auth/render";
-import type { Api as DeployApi, WebBuild } from "../deploy/types";
+import type { Api as DeployApi, OnChange, WebBuild } from "../deploy/types";
 import { parseStageArg } from "./args";
 import type { Api, Config } from "./types";
 
@@ -53,14 +53,22 @@ export const createCliApi = (ctx: CliCtx): Api => ({
    * @param opts - Optional local dev options.
    * @param opts.port - Local dev port to bind. Defaults to 8787 when omitted.
    * @param opts.stage - Stage for the generated wrangler config; falls back to `--stage` then the app stage.
-   * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
+   * @param opts.webBuild - Cold-build the web site (e.g. `() => webApp.cli.build()`); also the
+   *   per-change rebuild when `onChange` is omitted.
+   * @param opts.onChange - Incremental per-change rebuild (e.g. `changes => webApp.cli.update(changes)`),
+   *   so each change rebuilds only the changed paths instead of a full `webBuild()`.
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await api.dev({ port: 7878, webBuild: () => web.cli.build() });
+   * await api.dev({ port: 7878, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
    * ```
    */
-  async dev(opts?: { port?: number; stage?: string; webBuild?: WebBuild }): Promise<void> {
+  async dev(opts?: {
+    port?: number;
+    stage?: string;
+    webBuild?: WebBuild;
+    onChange?: OnChange;
+  }): Promise<void> {
     const ui = createBrandConsole();
     ui.lockup({ wordmark: "moku worker", label: "dev session" });
 
@@ -69,7 +77,8 @@ export const createCliApi = (ctx: CliCtx): Api => ({
       await ctx.require(deployPlugin).dev({
         ...(opts?.port === undefined ? {} : { port: opts.port }),
         ...(stage === undefined ? {} : { stage }),
-        ...(opts?.webBuild ? { webBuild: opts.webBuild } : {})
+        ...(opts?.webBuild ? { webBuild: opts.webBuild } : {}),
+        ...(opts?.onChange ? { onChange: opts.onChange } : {})
       });
       ui.check(true, "dev session stopped cleanly");
     } catch (error) {

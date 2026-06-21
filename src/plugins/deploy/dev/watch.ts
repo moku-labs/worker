@@ -2,7 +2,8 @@
  * @file deploy plugin — debounced filesystem watcher for dev.
  *
  * Watches the top-level directories implied by the config globs (recursive) and fires a debounced
- * change callback with the last changed path. Uses node:fs.watch — no extra dependency.
+ * change callback with the SET of paths changed in the window (so a burst of edits coalesces into
+ * one rebuild that knows every changed file). Uses node:fs.watch — no extra dependency.
  * Node-only; never imported by the runtime Worker bundle.
  */
 import { existsSync, type FSWatcher, watch as fsWatch } from "node:fs";
@@ -30,33 +31,37 @@ export const watchDirectories = (globs: string[]): string[] => {
 };
 
 /**
- * Watch the directories implied by `globs` and fire `onChange` (debounced by `debounceMs`) with
- * the last changed path. Missing directories are skipped silently.
+ * Watch the directories implied by `globs` and fire `onChange` (debounced by `debounceMs`) with the
+ * distinct set of paths changed within the window. Missing directories are skipped silently.
  *
  * @param globs - Watch globs.
  * @param debounceMs - Coalesce rapid changes into one callback within this window.
- * @param onChange - Called with the last changed path after the debounce settles.
+ * @param onChange - Called with the changed paths (snapshot of the window) after the debounce settles.
  * @returns A handle whose close() stops all watchers and cancels any pending callback.
  * @example
  * ```ts
- * const handle = watchPaths(["src/**\/*.ts"], 120, p => rebuild(p));
+ * const handle = watchPaths(["src/**\/*.ts"], 120, paths => rebuild(paths));
  * handle.close();
  * ```
  */
 export const watchPaths = (
   globs: string[],
   debounceMs: number,
-  onChange: (changedPath: string) => unknown
+  onChange: (changedPaths: string[]) => unknown
 ): { close: () => void } => {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let lastPath = "";
+  // The distinct paths changed since the last fire — accumulated across the debounce window, then
+  // snapshot + cleared per callback so a burst of edits becomes one rebuild that knows every file.
+  const changed = new Set<string>();
 
-  // eslint-disable-next-line jsdoc/require-jsdoc -- inner debounce helper (closes over timer/lastPath)
+  // eslint-disable-next-line jsdoc/require-jsdoc -- inner debounce helper (closes over timer/changed)
   const fire = (changedPath: string): void => {
-    lastPath = changedPath;
+    changed.add(changedPath);
     if (timer !== undefined) clearTimeout(timer);
     timer = setTimeout(() => {
-      void onChange(lastPath);
+      const batch = [...changed];
+      changed.clear();
+      void onChange(batch);
     }, debounceMs);
   };
 

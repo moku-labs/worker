@@ -186,6 +186,8 @@ deploy — build-time deploy orchestrator (detect→provision→wrangler-config�
 cli — developer dev/deploy verbs + live progress TUI; thin passthroughs to deploy | Tier: Standard |
   Entry: @moku-labs/worker/cli (NODE-ONLY) | API: dev(opts?), deploy(opts?) |
   Config: port: number = 8787 | Depends: [deploy] |
+  dev opts: { port?, stage?, webBuild?, onChange? } — webBuild = cold build (() => web.cli.build());
+    onChange = incremental per-change rebuild (changes => web.cli.update(changes)); omit onChange → full webBuild per change. |
   Events: none of its own; hooks the global deploy:* events for the TUI.
 
 (Also re-exported from @moku-labs/worker for completeness: logPlugin, envPlugin — authored in

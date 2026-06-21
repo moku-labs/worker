@@ -23,6 +23,24 @@ import type { WorkerConfig, WorkerEvents } from "../../config";
  */
 export type WebBuild = () => Promise<unknown>;
 
+/**
+ * A per-change INCREMENTAL rebuild hook wired in from the consumer's dev script — e.g.
+ * `(changes) => webApp.cli.update(changes)`. The fast counterpart to {@link WebBuild}: `dev`
+ * calls {@link WebBuild} ONCE for the cold build, then (when this hook is wired) calls `onChange`
+ * with the set of paths changed in the debounce window so the web build can rebuild only what
+ * changed instead of doing a full `webBuild()` every keystroke. Omit it and `dev` keeps doing a
+ * full `webBuild()` per change (the prior behavior). Like {@link WebBuild} it may resolve ANYTHING
+ * (the web build's own summary); the value is read opportunistically for a `files` count.
+ *
+ * @param changes - The paths changed since the last rebuild (the watcher's debounced set).
+ * @returns Resolves when the incremental rebuild completes.
+ * @example
+ * ```ts
+ * await server.cli.dev({ webBuild: () => web.cli.build(), onChange: changes => web.cli.update(changes) });
+ * ```
+ */
+export type OnChange = (changes: readonly string[]) => Promise<unknown>;
+
 /** deploy plugin configuration. Flat; complete defaults so omission never yields undefined. */
 export type Config = {
   /**
@@ -224,16 +242,19 @@ export type Api = {
    * Start a local Cloudflare dev session via `wrangler dev`: cold-build the web site, spawn
    * `wrangler dev`, then watch + recompile the site on change.
    *
-   * @param opts - Optional port override and web build hook.
+   * @param opts - Optional port override, cold-build hook, and incremental change hook.
    * @param opts.port - Local dev port to bind.
-   * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
+   * @param opts.webBuild - Cold-build the web site (e.g. `() => webApp.cli.build()`); also the
+   *   per-change rebuild when `onChange` is omitted.
+   * @param opts.onChange - Incremental per-change rebuild (e.g. `changes => webApp.cli.update(changes)`).
+   *   When set, each debounced change rebuilds only the changed paths instead of a full `webBuild()`.
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await app.deploy.dev({ port: 8787, webBuild: () => web.cli.build() });
+   * await app.deploy.dev({ port: 8787, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
    * ```
    */
-  dev(opts?: { port?: number; webBuild?: WebBuild }): Promise<void>;
+  dev(opts?: { port?: number; webBuild?: WebBuild; onChange?: OnChange }): Promise<void>;
 
   /**
    * Execute a SQL file against a configured D1 database via `wrangler d1 execute` — for seeding dev

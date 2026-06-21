@@ -4,8 +4,7 @@
  * The package root exports the bound {@link createApp} factory (the Layer-3 entry
  * point), {@link createPlugin} for consumer plugins, every runtime plugin instance,
  * the `server`/`durable-objects` helpers, and the framework types. The node-only deploy
- * tooling (`deployPlugin`, `cliPlugin`) is exported from here too — the historical
- * `@moku-labs/worker/cli` subpath remains as a back-compat alias. Tree-shaking
+ * tooling (`deployPlugin`, `cliPlugin`) is exported from here too. Tree-shaking
  * (`"sideEffects": false`) keeps the node-only `node:child_process`/`node:fs` graph out
  * of any consumer bundle that does not actually add those two plugins.
  *
@@ -47,8 +46,8 @@
  */
 import type { EnvProvider } from "@moku-labs/common";
 import { coreConfig, createCore } from "./config";
-import { workerSafeProcessEnv } from "./env-provider";
 import { bindingsPlugin, serverPlugin } from "./plugins";
+import { workerSafeProcessEnv } from "./plugins/stage/env-provider";
 
 const framework = createCore(coreConfig, {
   plugins: [bindingsPlugin, serverPlugin]
@@ -117,9 +116,9 @@ export const createApp: typeof boundCreateApp = options => {
 export * from "./plugins";
 
 // Node-only deploy tooling — exported from the root so consumers add `deployPlugin`/`cliPlugin`
-// without the extra `@moku-labs/worker/cli` import. Their `node:child_process`/`node:fs` graph is
+// straight from `@moku-labs/worker`. Their `node:child_process`/`node:fs` graph is
 // pulled into a bundle ONLY when a consumer actually lists them in `createApp({ plugins })`
-// (`"sideEffects": false` tree-shakes them out otherwise). The `./cli` subpath stays as an alias.
+// (`"sideEffects": false` tree-shakes them out otherwise).
 export { cliPlugin } from "./plugins/cli";
 export { deployPlugin } from "./plugins/deploy";
 export type {

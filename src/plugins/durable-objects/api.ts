@@ -6,8 +6,8 @@
  * env is threaded as an argument, never stored (design §1a / SB4).
  */
 import type { WorkerEnv } from "../../config";
-import { pickInstance } from "../../instances";
 import { bindingsPlugin } from "../bindings";
+import { pickInstance } from "../bindings/instances";
 import type { Ctx } from "./types";
 
 /**

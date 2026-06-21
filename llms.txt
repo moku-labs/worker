@@ -24,12 +24,13 @@ Deploy tooling (`deploy`, `cli`) is built from the same model but kept out of th
 `createApp` is synchronous, built once per isolate at module load, and frozen. Stateless Workers
 never call `app.start()` / `app.stop()` — no plugin holds a long-lived connection.
 
-### Runtime vs node-only (two entry points)
-- `@moku-labs/worker` (`.` → src/index.ts): request-time runtime. Ships in the Worker bundle.
-- `@moku-labs/worker/cli` (`./cli` → src/cli.ts): build-time deploy/CLI. Uses node:child_process +
-  node:fs; NEVER bundled into the Worker (design HC11). Importing deployPlugin from the bare entry
-  is intentionally impossible.
-- NOTE: the specs mention a `@moku-labs/worker/worker` subpath — it does NOT exist. Only `.` and `./cli`.
+### Runtime + node-only deploy tooling (one entry point)
+- `@moku-labs/worker` (`.` → src/index.ts): the only entry point. Request-time runtime ships in the
+  Worker bundle; the node-only deploy/CLI plugins (`deployPlugin`/`cliPlugin`, using node:child_process
+  + node:fs) are exported from here too but tree-shaken out (`"sideEffects": false`) of any bundle that
+  does not list them in `createApp({ plugins })` (design HC11).
+- NOTE: the specs mention `@moku-labs/worker/worker` and `@moku-labs/worker/cli` subpaths — neither
+  exists. There is only `.`.
 
 ### Env per request, never stored
 One isolate serves concurrent requests. Every binding-resolving method takes the per-request `env`
@@ -178,13 +179,13 @@ stage — deployment-stage / dev-mode detection (core plugin, flat ctx.stage) | 
   Events: none. No state, no deps, no lifecycle.
 
 deploy — build-time deploy orchestrator (detect→provision→wrangler-config→upload→deploy) | Tier: Complex |
-  Entry: @moku-labs/worker/cli (NODE-ONLY) | API: run(opts?), dev(opts?), init(opts?) |
+  Entry: @moku-labs/worker (NODE-ONLY, tree-shaken) | API: run(opts?), dev(opts?), init(opts?) |
   Config: configFile: string = "wrangler.jsonc", ci: boolean = false |
   Depends: [storage, kv, d1, queues, durableObjects] |
   Events: emits deploy:phase, provision:resource, deploy:complete (all global).
 
 cli — developer dev/deploy verbs + live progress TUI; thin passthroughs to deploy | Tier: Standard |
-  Entry: @moku-labs/worker/cli (NODE-ONLY) | API: dev(opts?), deploy(opts?) |
+  Entry: @moku-labs/worker (NODE-ONLY, tree-shaken) | API: dev(opts?), deploy(opts?) |
   Config: port: number = 8787 | Depends: [deploy] |
   dev opts: { port?, stage?, webBuild?, onChange? } — webBuild = cold build (() => web.cli.build());
     onChange = incremental per-change rebuild (changes => web.cli.update(changes)); omit onChange → full webBuild per change. |
@@ -231,7 +232,7 @@ type WorkerEvents = { ...the 5 global events above... };
 //   Server.Endpoint, D1.Config, Queues.QueueEvents, Storage.StorageApi, DurableObjects.Api).
 ```
 
-From @moku-labs/worker/cli:
+From @moku-labs/worker:
 ```typescript
 type ResourceManifest =
   | { kind: "r2"; bucket: string; upload?: string }

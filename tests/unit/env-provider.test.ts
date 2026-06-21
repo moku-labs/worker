@@ -3,8 +3,8 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { workerSafeProcessEnv } from "../../src/env-provider";
 import { createApp } from "../../src/index";
+import { workerSafeProcessEnv } from "../../src/plugins/stage/env-provider";
 
 describe("workerSafeProcessEnv", () => {
   it("is named worker-process-env", () => {

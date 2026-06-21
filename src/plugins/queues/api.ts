@@ -9,8 +9,8 @@
  * Consumer dispatch (`consume`) routes the incoming batch to the matching instance's `onMessage`.
  */
 import type { WorkerEnv } from "../../config";
-import { defaultInstanceKey, pickInstance } from "../../instances";
 import { bindingsPlugin } from "../bindings";
+import { defaultInstanceKey, pickInstance } from "../bindings/instances";
 import type { Api, Config, Ctx, QueueInstance, QueueProducerApi } from "./types";
 
 /**

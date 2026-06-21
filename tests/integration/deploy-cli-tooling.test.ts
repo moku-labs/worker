@@ -11,8 +11,8 @@
  * plugin — so NO real wrangler invocation or fs access occurs.
  *
  * App construction uses the REAL exported framework: `createApp` (which pre-wires the
- * defaults — core log/env/stage + bindings + server) plus the node-only `./cli` entry
- * (deployPlugin + cliPlugin). The five resource plugins are registered before deploy
+ * defaults — core log/env/stage + bindings + server) plus the node-only deploy tooling
+ * (deployPlugin + cliPlugin) from the package root. The five resource plugins are registered before deploy
  * (deploy depends on all five), and cli is registered after deploy (cli depends on deploy).
  */
 import { describe, expect, it, vi } from "vitest";
@@ -71,11 +71,12 @@ vi.mock("../../src/plugins/deploy/dev/runner", () => ({
 
 // Imported AFTER the vi.mock calls above (which are hoisted) so these resolve to the mocks.
 import { afterAll, beforeAll, beforeEach } from "vitest";
-import { cliPlugin, deployPlugin } from "../../src/cli";
 import {
+  cliPlugin,
   createApp,
   createPlugin,
   d1Plugin,
+  deployPlugin,
   durableObjectsPlugin,
   kvPlugin,
   queuesPlugin,

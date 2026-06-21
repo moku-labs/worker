@@ -6,8 +6,8 @@
  */
 
 import type { WorkerEnv } from "../../config";
-import { defaultInstanceKey, pickInstance } from "../../instances";
 import { bindingsPlugin } from "../bindings";
+import { defaultInstanceKey, pickInstance } from "../bindings/instances";
 import { resolveR2Provider } from "./providers/r2";
 import type { StorageApi, StorageBucketApi, StorageCtx } from "./types";
 

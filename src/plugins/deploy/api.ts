@@ -39,6 +39,7 @@ import type {
   Ctx,
   ExternalManifest,
   InfraPlan,
+  OnChange,
   PermissionGroup,
   ProvisionedRef,
   ProvisionFailure,
@@ -578,14 +579,21 @@ export const createDeployApi = (ctx: Ctx) => ({
    * @param opts - Optional options.
    * @param opts.port - Local dev port (default 8787).
    * @param opts.stage - Stage for the generated config's resource names (defaults to the app stage).
-   * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
+   * @param opts.webBuild - Cold-build the web site (e.g. `() => webApp.cli.build()`); also the
+   *   per-change rebuild when `onChange` is omitted.
+   * @param opts.onChange - Incremental per-change rebuild (e.g. `changes => webApp.cli.update(changes)`).
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await api.dev({ port: 8787, webBuild: () => web.cli.build() });
+   * await api.dev({ port: 8787, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
    * ```
    */
-  async dev(opts?: { port?: number; stage?: string; webBuild?: WebBuild }): Promise<void> {
+  async dev(opts?: {
+    port?: number;
+    stage?: string;
+    webBuild?: WebBuild;
+    onChange?: OnChange;
+  }): Promise<void> {
     // Generate wrangler.jsonc up front so first-run `wrangler dev` has a config to read. Empty ids —
     // writeWranglerConfig preserves any ids already in the file (e.g. captured by a prior deploy).
     const stage = opts?.stage ?? ctx.global.stage;

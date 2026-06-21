@@ -46,14 +46,21 @@ Two public methods, both mounted on `app.cli.*` (regular plugins mount on `app.<
 ### `dev`
 
 ```typescript
-dev(opts?: { port?: number }): Promise<void>
+dev(opts?: {
+  port?: number;
+  stage?: string;
+  webBuild?: WebBuild; // () => Promise<unknown> — full cold build (e.g. () => web.cli.build())
+  onChange?: OnChange; // (changes: readonly string[]) => Promise<unknown> — incremental per-change rebuild
+}): Promise<void>
 ```
 
-Run the Worker locally via Wrangler. Prints a branded dev-session banner, then delegates to `ctx.require(deployPlugin).dev(...)`. The dev port comes **only** from `opts.port` — the consumer passes it (e.g. parsed from its own CLI flags in `scripts/dev.ts`); it defaults to 8787 when omitted. There is no hidden argv/config port resolution. A failure renders a branded `✗` line and sets a non-zero exit code rather than throwing.
+Run the Worker locally via Wrangler. Prints a branded dev-session banner, then delegates to `ctx.require(deployPlugin).dev(...)`. The dev port comes **only** from `opts.port` — the consumer passes it (e.g. parsed from its own CLI flags in `scripts/dev.ts`); it defaults to 8787 when omitted. There is no hidden argv/config port resolution. `webBuild` is the **cold** build; `onChange` (when wired) is the **incremental** per-change rebuild — each change rebuilds only the changed paths instead of a full `webBuild()`. A failure renders a branded `✗` line and sets a non-zero exit code rather than throwing.
 
 ```typescript
 await app.cli.dev();               // port from --port, else 8787 → deploy.dev({ port })
 await app.cli.dev({ port: 3000 }); // explicit override → deploy.dev({ port: 3000 })
+// Compose a web client: full cold build + incremental per-change rebuilds.
+await app.cli.dev({ port: 3000, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
 ```
 
 ### `deploy`
@@ -132,14 +139,16 @@ const server = createApp({
 });
 
 // The script is the wiring point: pass the web build into dev/deploy so one small
-// app-side script composes the Moku Web app with this Worker framework. dev recompiles
-// the site on change; deploy builds it once before `wrangler deploy`.
+// app-side script composes the Moku Web app with this Worker framework. dev does ONE cold
+// build then rebuilds incrementally per change (onChange); deploy builds once before deploy.
 const webBuild = () => web.cli.build();
+const onChange = (changes: readonly string[]) => web.cli.update(changes);
 const command = process.argv[2];
 
 if (command === "dev") {
   // Port is framework-resolved from a `--port <n>` flag, else 8787 — no manual parsing.
-  await server.cli.dev({ webBuild });
+  // onChange = fast incremental rebuild of only the changed paths (omit it → full webBuild per change).
+  await server.cli.dev({ webBuild, onChange });
 } else if (command === "deploy") {
   // Not CI → guided/interactive; `--ci` → automated, non-interactive.
   await server.cli.deploy({ ci: process.argv.includes("--ci"), webBuild });
@@ -163,10 +172,10 @@ A worker-only app omits the `webBuild` hook entirely (`server.cli.dev()` / `serv
 
 | `cli` verb | Delegates to |
 |------------|--------------|
-| `app.cli.dev(opts?)` | `ctx.require(deployPlugin).dev({ port: opts?.port, webBuild? })` (port only when given; defaults to 8787 downstream) |
+| `app.cli.dev(opts?)` | `ctx.require(deployPlugin).dev({ port: opts?.port, stage?, webBuild?, onChange? })` (each forwarded only when given; port defaults to 8787 downstream) |
 | `app.cli.deploy(opts?)` | `ctx.require(deployPlugin).run(opts)` |
 
-Both verbs accept an optional `webBuild` hook (`() => webApp.cli.build()`): `dev` recompiles the web site on every change, `deploy` builds it once before `wrangler deploy`. The hook is threaded straight through to `deploy`; `cli` adds only the port default.
+Both verbs accept an optional `webBuild` hook (`() => webApp.cli.build()`): `dev` cold-builds the web site with it, `deploy` builds it once before `wrangler deploy`. `dev` additionally accepts an `onChange` hook (`changes => webApp.cli.update(changes)`) — the **incremental** per-change rebuild that recompiles only the changed paths instead of a full `webBuild()` every keystroke (omit it for the prior full-rebuild behavior). The hooks are threaded straight through to `deploy`; `cli` adds only the port default.
 
 The resource plugins (`storage`/R2, `kv`, `d1`, `queues`, `durableObjects`) are reached only **transitively**, through `deploy`. `cli` never imports or requires them: `deploy` is the one that declares `depends: [storagePlugin, kvPlugin, d1Plugin, queuesPlugin, durableObjectsPlugin]`, assembles each resource's `deployManifest()`, provisions, writes the wrangler config, uploads, and runs `wrangler deploy` — emitting the global events `cli` renders. `cli` reads neither `deploy`'s config nor any sibling `pluginConfigs`; `ctx.require` returns a plugin's API, never its config.
 

@@ -2,7 +2,7 @@
  * @file cli plugin — type definitions (Config, Api).
  */
 
-import type { WebBuild } from "../deploy/types";
+import type { OnChange, WebBuild } from "../deploy/types";
 
 /**
  * Resolved configuration for the cli plugin. The cli surface is configuration-free: the dev port is
@@ -19,19 +19,27 @@ export type Api = {
    * when omitted. A failure renders a branded `✗` line and sets a non-zero exit code rather than
    * throwing a raw stack trace.
    *
-   * @param opts - Optional port, stage, and web build hook.
+   * @param opts - Optional port, stage, cold-build hook, and incremental change hook.
    * @param opts.port - Local dev port to bind. Defaults to 8787 when omitted.
    * @param opts.stage - Stage for the generated wrangler config's resource names. Falls back to the
    *   `--stage` CLI flag, then the app's configured stage. Pass it explicitly from a script for a
    *   self-documenting `dev({ stage })` instead of relying on the hidden flag.
-   * @param opts.webBuild - Rebuild the web site on change (e.g. `() => webApp.cli.build()`).
+   * @param opts.webBuild - Cold-build the web site (e.g. `() => webApp.cli.build()`); also the
+   *   per-change rebuild when `onChange` is omitted.
+   * @param opts.onChange - Incremental per-change rebuild (e.g. `changes => webApp.cli.update(changes)`),
+   *   so each change rebuilds only the changed paths instead of a full `webBuild()` every keystroke.
    * @returns Resolves when the dev session ends.
    * @example
    * ```ts
-   * await app.cli.dev({ stage: "dev", port: 7878, webBuild: () => web.cli.build() });
+   * await app.cli.dev({ stage: "dev", port: 7878, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) });
    * ```
    */
-  dev(opts?: { port?: number; stage?: string; webBuild?: WebBuild }): Promise<void>;
+  dev(opts?: {
+    port?: number;
+    stage?: string;
+    webBuild?: WebBuild;
+    onChange?: OnChange;
+  }): Promise<void>;
 
   /**
    * One-command Cloudflare deploy (delegates to deploy.run). Guided/interactive by default; pass

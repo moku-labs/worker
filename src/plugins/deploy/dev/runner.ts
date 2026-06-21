@@ -12,8 +12,8 @@ import { spawn } from "node:child_process";
 
 import { d1Plugin } from "../../d1";
 import { runWrangler } from "../runner";
-import type { Ctx, WebBuild } from "../types";
-import { buildSite } from "./build";
+import type { Ctx, OnChange, WebBuild } from "../types";
+import { buildSite, fileCountOf } from "./build";
 import { watchPaths } from "./watch";
 
 /** Grace period (ms) before escalating a hung `wrangler dev` shutdown from SIGINT to SIGKILL. */
@@ -30,11 +30,11 @@ export type DevDeps = {
    * fails to spawn; `stop()` shuts it down (and throws a branded spawn failure) once it is gone.
    */
   spawnDev: (args: string[]) => { stop: () => Promise<void>; whenExited: Promise<void> };
-  /** Watch the globs, firing a debounced change callback. */
+  /** Watch the globs, firing a debounced change callback with the changed-path set. */
   watch: (
     globs: string[],
     debounceMs: number,
-    onChange: (changedPath: string) => unknown
+    onChange: (changedPaths: string[]) => unknown
   ) => { close: () => void };
   /** Resolves when the user interrupts the session (SIGINT). */
   untilSignal: () => Promise<void>;
@@ -162,29 +162,58 @@ const d1MigrationBindings = (ctx: Ctx): string[] =>
     : [];
 
 /**
- * Rebuild the site once and announce the result. A failed build keeps the session alive (it just
- * emits dev:error and serves the last good build).
+ * One-line description of a changed-path batch for the `dev:phase rebuild` detail: the single path,
+ * or the first path plus a `(+N more)` tail. Empty batches (defensive) read as "site".
+ *
+ * @param paths - The changed paths the watcher coalesced for this rebuild.
+ * @returns The detail string for the rebuild phase event.
+ * @example
+ * ```ts
+ * describeChanges(["src/a.ts", "src/b.css"]); // "src/a.ts (+1 more)"
+ * ```
+ */
+const describeChanges = (paths: readonly string[]): string => {
+  const [first, ...rest] = paths;
+  if (first === undefined) return "site";
+  return rest.length === 0 ? first : `${first} (+${String(rest.length)} more)`;
+};
+
+/**
+ * Rebuild the site once for a changed-path batch and announce the result. The FAST path is the
+ * incremental `onChange(changedPaths)` hook (e.g. `web.cli.update`) when wired; otherwise it falls
+ * back to a full `webBuild()` rebuild (via deps.build) — the prior behavior. A failed rebuild keeps
+ * the session alive (it just emits dev:error and serves the last good build). Both paths share one
+ * `dev:phase rebuild` → `dev:rebuilt`/`dev:error` envelope so the branded dev TUI is identical.
  *
  * @param ctx - The deploy plugin context.
  * @param deps - The injected dev deps.
- * @param changedPath - The path that triggered the rebuild.
- * @param webBuild - Optional call-time web build hook threaded into the rebuild.
+ * @param changedPaths - The paths that triggered the rebuild (the watcher's debounced set).
+ * @param hooks - The consumer rebuild hooks.
+ * @param hooks.webBuild - Full rebuild (used when `onChange` is absent — the prior behavior).
+ * @param hooks.onChange - Incremental rebuild for the changed set (the fast path when wired).
  * @returns Resolves once the rebuild attempt completes.
  * @example
  * ```ts
- * await rebuild(ctx, deps, "src/app.tsx", () => web.cli.build());
+ * await rebuild(ctx, deps, ["src/app.tsx"], { onChange: c => web.cli.update(c) });
  * ```
  */
 const rebuild = async (
   ctx: Ctx,
   deps: DevDeps,
-  changedPath: string,
-  webBuild?: WebBuild
+  changedPaths: string[],
+  hooks: { webBuild?: WebBuild | undefined; onChange?: OnChange | undefined }
 ): Promise<void> => {
-  ctx.emit("dev:phase", { phase: "rebuild", detail: changedPath });
+  ctx.emit("dev:phase", { phase: "rebuild", detail: describeChanges(changedPaths) });
   const started = deps.now();
   try {
-    const { files } = await deps.build(ctx, webBuild);
+    // Incremental hook wins when wired (rebuild only what changed); else a full webBuild().
+    let files: number;
+    if (hooks.onChange) {
+      files = fileCountOf(await hooks.onChange(changedPaths));
+    } else {
+      const built = await deps.build(ctx, hooks.webBuild);
+      files = built.files;
+    }
     ctx.emit("dev:rebuilt", { files, ms: deps.now() - started });
   } catch (error) {
     ctx.emit("dev:error", { message: error instanceof Error ? error.message : String(error) });
@@ -198,21 +227,24 @@ const rebuild = async (
  * @param ctx - The deploy plugin context (config + emit + require/has).
  * @param opts - Optional options.
  * @param opts.port - Local dev port (default 8787).
- * @param opts.webBuild - Web build hook (re)run on cold build + each change (e.g. `() => web.cli.build()`).
+ * @param opts.webBuild - Cold-build hook (also the per-change rebuild when `onChange` is omitted).
+ * @param opts.onChange - Incremental per-change rebuild hook (e.g. `c => web.cli.update(c)`); when
+ *   set, each debounced change rebuilds only the changed paths instead of a full `webBuild()`.
  * @param deps - Injected side effects (real ones from realDevDeps in production).
  * @returns Resolves when the session ends (SIGINT).
  * @example
  * ```ts
- * await runDev(ctx, { port: 8787, webBuild: () => web.cli.build() }, realDevDeps());
+ * await runDev(ctx, { port: 8787, webBuild: () => web.cli.build(), onChange: c => web.cli.update(c) }, realDevDeps());
  * ```
  */
 export const runDev = async (
   ctx: Ctx,
-  opts: { port?: number; webBuild?: WebBuild } | undefined,
+  opts: { port?: number; webBuild?: WebBuild; onChange?: OnChange } | undefined,
   deps: DevDeps
 ): Promise<void> => {
   const port = opts?.port ?? 8787;
   const webBuild = opts?.webBuild;
+  const onChange = opts?.onChange;
 
   // Cold build so the ASSETS dir has content before wrangler serves it.
   ctx.emit("dev:phase", { phase: "build", detail: "site" });
@@ -239,8 +271,9 @@ export const runDev = async (
   ]);
 
   // Watch the site sources; each change rebuilds (wrangler is never restarted for a site change).
-  const watcher = deps.watch(ctx.config.watch, ctx.config.debounceMs, changedPath =>
-    rebuild(ctx, deps, changedPath, webBuild)
+  // The fast incremental `onChange` hook wins when wired; otherwise a full `webBuild()` rebuild.
+  const watcher = deps.watch(ctx.config.watch, ctx.config.debounceMs, changedPaths =>
+    rebuild(ctx, deps, changedPaths, { webBuild, onChange })
   );
 
   // Block until the user interrupts (SIGINT) OR wrangler exits on its own — a crash, a spawn

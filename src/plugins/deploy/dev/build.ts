@@ -28,7 +28,7 @@ const AUTO_DETECT = "scripts/build.ts";
  * fileCountOf({ outDir: "dist", pageCount: 4 }); // 0
  * ```
  */
-const fileCountOf = (result: unknown): number => {
+export const fileCountOf = (result: unknown): number => {
   if (typeof result === "object" && result !== null && "files" in result) {
     const { files } = result as { files: unknown };
     return typeof files === "number" ? files : 0;

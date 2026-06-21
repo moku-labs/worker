@@ -8,6 +8,7 @@ import type { deployPlugin } from "../../../deploy";
 import type {
   AuthStatus,
   InfraPlan,
+  OnChange,
   PermissionGroup,
   ProvisionResult,
   TokenRequirement,
@@ -22,7 +23,7 @@ import { createCliApi } from "../../api";
 
 const makeDeployStub = () => ({
   dev: vi
-    .fn<(opts?: { port?: number; webBuild?: WebBuild }) => Promise<void>>()
+    .fn<(opts?: { port?: number; webBuild?: WebBuild; onChange?: OnChange }) => Promise<void>>()
     .mockResolvedValue(undefined),
   run: vi
     .fn<(opts?: { ci?: boolean; webBuild?: WebBuild }) => Promise<void>>()
@@ -118,6 +119,27 @@ describe("createCliApi", () => {
       await api.dev({ port: 3000, webBuild });
 
       expect(deployStub.dev).toHaveBeenCalledWith({ port: 3000, webBuild });
+    });
+
+    it("forwards an onChange hook (and no port) when only onChange is given", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+      const onChange = vi.fn<OnChange>().mockResolvedValue({ files: 2 });
+
+      await api.dev({ onChange });
+
+      expect(deployStub.dev).toHaveBeenCalledWith({ onChange });
+    });
+
+    it("forwards webBuild + onChange together alongside an explicit port", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+      const webBuild = vi.fn<WebBuild>().mockResolvedValue({ files: 4 });
+      const onChange = vi.fn<OnChange>().mockResolvedValue({ files: 2 });
+
+      await api.dev({ port: 3000, webBuild, onChange });
+
+      expect(deployStub.dev).toHaveBeenCalledWith({ port: 3000, webBuild, onChange });
     });
 
     it("resolves to undefined on the happy path", async () => {

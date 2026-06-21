@@ -27,7 +27,7 @@ const makeCtx = (overrides?: { hasD1?: boolean; migrateLocal?: boolean }): Ctx =
   }) as unknown as Ctx;
 
 type Captured = {
-  onChange?: (changedPath: string) => unknown;
+  onChange?: (changedPaths: string[]) => unknown;
   close: Mock<() => void>;
   stop: Mock<() => Promise<void>>;
 };
@@ -127,7 +127,7 @@ describe("runDev", () => {
 
     const promise = runDev(ctx, {}, deps);
     await vi.waitFor(() => expect(captured.onChange).toBeDefined());
-    await captured.onChange?.("src/app.tsx");
+    await captured.onChange?.(["src/app.tsx"]);
     resolveSignal?.();
     await promise;
 
@@ -148,7 +148,7 @@ describe("runDev", () => {
 
     const promise = runDev(ctx, { webBuild }, deps);
     await vi.waitFor(() => expect(captured.onChange).toBeDefined());
-    await captured.onChange?.("src/app.tsx");
+    await captured.onChange?.(["src/app.tsx"]);
     resolveSignal?.();
     await promise;
 
@@ -173,13 +173,77 @@ describe("runDev", () => {
 
     const promise = runDev(ctx, {}, deps);
     await vi.waitFor(() => expect(captured.onChange).toBeDefined());
-    await captured.onChange?.("src/app.tsx");
+    await captured.onChange?.(["src/app.tsx"]);
     resolveSignal?.();
     await promise;
 
     expect(ctx.emit).toHaveBeenCalledWith(
       "dev:error",
       expect.objectContaining({ message: "boom" })
+    );
+    expect(deps.spawnDev).toHaveBeenCalledTimes(1); // wrangler never restarted
+  });
+
+  it("calls opts.onChange with the changed set on a change — NOT a full webBuild rebuild", async () => {
+    let resolveSignal: (() => void) | undefined;
+    const { deps, captured } = makeDeps({
+      untilSignal: () =>
+        new Promise<void>(resolve => {
+          resolveSignal = resolve;
+        })
+    });
+    const ctx = makeCtx();
+    const webBuild = vi.fn().mockResolvedValue({ files: 5 });
+    const onChange = vi.fn().mockResolvedValue({ files: 7 });
+
+    const promise = runDev(ctx, { webBuild, onChange }, deps);
+    await vi.waitFor(() => expect(captured.onChange).toBeDefined());
+    await captured.onChange?.(["src/islands/board.ts", "src/app.css"]);
+    resolveSignal?.();
+    await promise;
+
+    // The incremental hook handles the rebuild with the full changed set …
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(["src/islands/board.ts", "src/app.css"]);
+    // … so deps.build runs ONLY for the cold build (no full webBuild rebuild), and the
+    // dev:rebuilt count is read from the onChange result.
+    expect(deps.build).toHaveBeenCalledTimes(1);
+    expect(ctx.emit).toHaveBeenCalledWith("dev:rebuilt", expect.objectContaining({ files: 7 }));
+  });
+
+  it("still cold-builds via webBuild even when onChange is wired", async () => {
+    const { deps } = makeDeps();
+    const ctx = makeCtx();
+    const webBuild = vi.fn().mockResolvedValue({ files: 5 });
+    const onChange = vi.fn().mockResolvedValue({ files: 7 });
+
+    await runDev(ctx, { webBuild, onChange }, deps);
+
+    // The cold build always uses webBuild; onChange is never called without a change.
+    expect(deps.build).toHaveBeenNthCalledWith(1, ctx, webBuild);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("emits dev:error and keeps serving when an onChange rebuild fails", async () => {
+    let resolveSignal: (() => void) | undefined;
+    const { deps, captured } = makeDeps({
+      untilSignal: () =>
+        new Promise<void>(resolve => {
+          resolveSignal = resolve;
+        })
+    });
+    const ctx = makeCtx();
+    const onChange = vi.fn().mockRejectedValue(new Error("update boom"));
+
+    const promise = runDev(ctx, { onChange }, deps);
+    await vi.waitFor(() => expect(captured.onChange).toBeDefined());
+    await captured.onChange?.(["src/app.tsx"]);
+    resolveSignal?.();
+    await promise;
+
+    expect(ctx.emit).toHaveBeenCalledWith(
+      "dev:error",
+      expect.objectContaining({ message: "update boom" })
     );
     expect(deps.spawnDev).toHaveBeenCalledTimes(1); // wrangler never restarted
   });

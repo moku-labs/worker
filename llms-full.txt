@@ -379,8 +379,15 @@ API (app.deploy):
     Manifest source: omit opts.manifest → assembled from each PRESENT resource plugin's
     deployManifest() (gated by ctx.has); supply opts.manifest → used verbatim (universal/non-moku path).
     Throws the [moku-worker] wrangler subprocess Error on failure.
-  dev(opts?: { port?: number }): Promise<void>     wrangler dev --port <port> --config <configFile>
-                                                   (default port 8787).
+  dev(opts?: { port?: number; stage?: string; webBuild?: WebBuild; onChange?: OnChange }): Promise<void>
+                                                   Cold-builds the site (webBuild), spawns wrangler dev
+                                                   --port <port> --config <configFile> (default 8787), then
+                                                   watches + rebuilds on change. webBuild = () => Promise<unknown>
+                                                   (full cold build, e.g. () => web.cli.build()). onChange =
+                                                   (changes: readonly string[]) => Promise<unknown> — the
+                                                   INCREMENTAL per-change rebuild (e.g. c => web.cli.update(c));
+                                                   when wired, each debounced change rebuilds only the changed
+                                                   paths instead of a full webBuild().
   init(opts?: { ci?: boolean }): Promise<void>     Scaffolds a starter wrangler config at configFile
                                                    (and CI files when ci). IDEMPOTENT — an existing
                                                    config file is left untouched.
@@ -407,8 +414,10 @@ Events:  none of its own. Hooks the three global deploy events for the TUI:
   deploy:complete     → "done -> <url>"
 
 API (app.cli):
-  dev(opts?: { port?: number }): Promise<void>
-    → ctx.require(deployPlugin).dev(opts ?? { port: ctx.config.port })   (forwards configured port if none)
+  dev(opts?: { port?: number; stage?: string; webBuild?: WebBuild; onChange?: OnChange }): Promise<void>
+    → ctx.require(deployPlugin).dev(opts)   (forwards port/stage/webBuild/onChange)
+      onChange = incremental per-change rebuild hook, e.g. changes => web.cli.update(changes); when omitted
+      each change runs a full webBuild() instead (the prior behavior — backward compatible).
   deploy(opts?: { guided?: boolean; yes?: boolean }): Promise<void>
     → ctx.require(deployPlugin).run(opts)   (forwards opts verbatim; no opts → passes undefined)
     Surfaces only { guided?, yes? }; for the universal/manifest path call app.deploy.run({ manifest })

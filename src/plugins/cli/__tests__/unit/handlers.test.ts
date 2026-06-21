@@ -168,13 +168,13 @@ describe("createCliHooks", () => {
   // ─── deploy:complete ──────────────────────────────────────────────────────
 
   describe("deploy:complete handler", () => {
-    it('logs "deployed → <url>" with the deployed URL', () => {
+    it("no longer logs a deployed → url line (the deploy plugin's panel owns the URL)", () => {
       const { ctx, logInfo } = makeMockCtx();
       const hooks = createCliHooks(ctx);
 
       hooks["deploy:complete"]({ url: "https://my-worker.workers.dev" });
 
-      expect(logInfo).toHaveBeenCalledWith("deployed → https://my-worker.workers.dev");
+      expect(logInfo).not.toHaveBeenCalledWith("deployed → https://my-worker.workers.dev");
     });
 
     it("returns void and never throws", () => {
@@ -200,8 +200,7 @@ describe("createCliHooks", () => {
         expect(writeSpy).toHaveBeenCalled(); // a braille frame was painted
 
         hooks["deploy:complete"]({ url: "https://x.workers.dev" });
-        expect(logInfo).toHaveBeenCalledWith("deploy"); // settled phase line
-        expect(logInfo).toHaveBeenCalledWith("deployed → https://x.workers.dev");
+        expect(logInfo).toHaveBeenCalledWith("deploy"); // settled phase line (URL now in the panel)
         writeSpy.mockRestore();
       });
     });

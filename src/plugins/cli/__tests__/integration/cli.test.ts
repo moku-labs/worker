@@ -192,7 +192,7 @@ describe("cli plugin (integration)", () => {
       const out = consoleOut.join("\n");
       expect(out).toContain("› detect");
       expect(out).toContain("Provisioned"); // the result panel heading
-      expect(out).toContain("› deployed → https://cli-test.workers.dev");
+      expect(out).toContain("Deployed"); // the deploy summary panel (URL is its headline, not a › line)
     });
 
     it("cli hooks log detect when deploy:phase(detect) is emitted", async () => {
@@ -224,18 +224,17 @@ describe("cli plugin (integration)", () => {
       expect(events).toContain("provision");
     });
 
-    it("cli hooks log deployed → <url> when deploy:complete is emitted", async () => {
+    it("renders the deploy summary panel (URL headline + took) on completion", async () => {
       const app = createTestApp();
-
-      const traceBeforeLen = app.log.trace().length;
 
       await app.cli.deploy();
 
-      const events = app.log
-        .trace()
-        .slice(traceBeforeLen)
-        .map(e => e.event);
-      expect(events).toContain("deployed → https://cli-test.workers.dev");
+      // The deployed URL is now the headline of a branded panel (deploy plugin → renderDeploySummary),
+      // not a `deployed → url` log line — assert the panel on the console.
+      const out = consoleOut.join("\n");
+      expect(out).toContain("Deployed"); // the summary panel heading
+      expect(out).toContain("https://cli-test.workers.dev"); // the URL headline
+      expect(out).toContain("took"); // the elapsed-time row
     });
 
     it("renders the infra plan + provision result as branded panels on the console", async () => {

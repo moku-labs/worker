@@ -48,7 +48,7 @@ export type CliHooks = {
   "dev:rebuilt": (payload: WorkerEvents["dev:rebuilt"]) => void;
   /** Log a non-fatal dev build failure (the session keeps serving). */
   "dev:error": (payload: WorkerEvents["dev:error"]) => void;
-  /** Log the terminal success line with the deployed URL. */
+  /** Settle the final deploy spinner (the deployed URL renders as a panel via the deploy plugin). */
   "deploy:complete": (payload: WorkerEvents["deploy:complete"]) => void;
 };
 
@@ -66,7 +66,7 @@ export type CliHooks = {
  * const hooks = createCliHooks(ctx);
  * hooks["deploy:phase"]({ phase: "detect" }); // logs "detect" → renders "  › detect"
  * hooks["dev:phase"]({ phase: "serve", detail: "http://localhost:8787" }); // "serve · …"
- * hooks["deploy:complete"]({ url: "https://x.workers.dev" }); // "deployed → https://x.workers.dev"
+ * hooks["deploy:complete"](); // settles the deploy spinner; the "Deployed" panel renders separately
  * ```
  */
 export const createCliHooks = (ctx: CliCtx): CliHooks => {
@@ -179,17 +179,16 @@ export const createCliHooks = (ctx: CliCtx): CliHooks => {
     },
 
     /**
-     * Log the terminal success line with the deployed URL.
+     * Settle the final deploy spinner. The deployed URL + summary now render as a branded panel (the
+     * deploy plugin's renderDeploySummary), so the cli no longer logs a duplicate `deployed → url`.
      *
-     * @param p - The deploy:complete event payload.
      * @example
      * ```ts
-     * handler({ url: "https://my-worker.workers.dev" }); // "deployed → https://my-worker.workers.dev"
+     * handler(); // clears the `deploy` spinner; the "Deployed" panel follows from the deploy plugin
      * ```
      */
-    "deploy:complete"(p: WorkerEvents["deploy:complete"]): void {
-      stopSpinner(); // settle the final deploy spinner
-      ctx.log.info(`deployed → ${p.url}`);
+    "deploy:complete"(): void {
+      stopSpinner();
     }
   };
 };

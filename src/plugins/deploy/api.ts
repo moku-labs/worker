@@ -23,7 +23,12 @@ import { envLocalScaffold, tokenInstructions as renderTokenInstructions } from "
 import { verifyAuth as runVerifyAuth } from "./auth/verify";
 import { realDevDeps, runDev } from "./dev/runner";
 import { planInfra } from "./infra/plan";
-import { renderPlan, renderProvisionResult, resourceName } from "./infra/render";
+import {
+  renderDeploySummary,
+  renderPlan,
+  renderProvisionResult,
+  resourceName
+} from "./infra/render";
 import { stageName } from "./naming";
 import { provisionResource } from "./providers";
 import { uploadDirToR2 } from "./providers/r2";
@@ -423,16 +428,18 @@ const guidedUpload = async (
 
 /**
  * The final deploy step: confirm the target (guided only), run `wrangler deploy` with interactive
- * retry, then emit deploy:complete. Resolves false when the target gate or a deploy retry is declined.
+ * retry, then emit deploy:complete. Returns the deployed URL, or undefined when the target gate or a
+ * deploy retry is declined (so the caller renders the summary panel only on a real success).
  *
  * @param ctx - The deploy plugin context.
  * @param manifest - The assembled (or caller-supplied) deploy manifest.
  * @param stage - The resolved deploy stage (for the confirm prompt).
  * @param deps - Interactivity + the confirm prompt.
- * @returns True once deployed; false when the user declined the gate or a retry (abort).
+ * @returns The deployed URL once live; undefined when the user declined the gate or a retry (abort).
  * @example
  * ```ts
- * if (!(await guidedDeployStep(ctx, manifest, stage, deps))) return emitAborted(ctx);
+ * const url = await guidedDeployStep(ctx, manifest, stage, deps);
+ * if (url === undefined) return emitAborted(ctx);
  * ```
  */
 const guidedDeployStep = async (
@@ -440,8 +447,8 @@ const guidedDeployStep = async (
   manifest: ExternalManifest,
   stage: string,
   deps: GuidedDeps
-): Promise<boolean> => {
-  if (!(await deps.confirm(`Deploy "${manifest.name}" to ${stage}?`))) return false;
+): Promise<string | undefined> => {
+  if (!(await deps.confirm(`Deploy "${manifest.name}" to ${stage}?`))) return undefined;
 
   ctx.emit("deploy:phase", { phase: "deploy" });
   const url = await guidedStep(
@@ -449,10 +456,10 @@ const guidedDeployStep = async (
     HINTS.deploy,
     deps
   );
-  if (url === ABORTED) return false;
+  if (url === ABORTED) return undefined;
 
   ctx.emit("deploy:complete", { url });
-  return true;
+  return url;
 };
 
 /**
@@ -512,6 +519,9 @@ export const createDeployApi = (ctx: Ctx) => ({
       : async (_question: string): Promise<boolean> => true;
     const deps: GuidedDeps = { interactive, confirm };
 
+    // Wall-clock start — the terminal summary panel reports how long the whole deploy took.
+    const startedAt = Date.now();
+
     // Auth preflight — verify the .env token up front. A missing/invalid token is guided (offer
     // `auth setup`, then point at the re-run), not a silent stack trace.
     ctx.emit("deploy:phase", { phase: "auth" });
@@ -545,7 +555,19 @@ export const createDeployApi = (ctx: Ctx) => ({
     if (!(await guidedUpload(ctx, manifest, deps))) return emitAborted(ctx);
 
     // Confirm the deploy target (guided only), then hand off to `wrangler deploy` (with retry).
-    if (!(await guidedDeployStep(ctx, manifest, stage, deps))) return emitAborted(ctx);
+    const url = await guidedDeployStep(ctx, manifest, stage, deps);
+    if (url === undefined) return emitAborted(ctx);
+
+    // Terminal summary panel — the deployed URL leads (the headline), then stage, the resource tally,
+    // and how long the whole deploy took.
+    renderDeploySummary(createBrandConsole(), {
+      url,
+      stage,
+      created: provisioned.created.length,
+      exists: provisioned.skipped.length,
+      failed: provisioned.failed.length,
+      elapsedMs: Date.now() - startedAt
+    });
   },
 
   /**

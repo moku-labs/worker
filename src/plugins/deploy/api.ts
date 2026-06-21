@@ -25,15 +25,17 @@ import { realDevDeps, runDev } from "./dev/runner";
 import { planInfra } from "./infra/plan";
 import {
   renderDeploySummary,
+  renderMigrateSummary,
   renderPlan,
   renderProvisionResult,
+  renderSeedSummary,
   resourceName
 } from "./infra/render";
 import { stageName } from "./naming";
 import { provisionResource } from "./providers";
 import { uploadDirToR2 } from "./providers/r2";
 import { runWrangler, runWranglerInherit } from "./runner";
-import { resolveD1, runConfiguredSeed } from "./seed";
+import { parseMigrationsApplied, parseSeedStats, resolveD1, runConfiguredSeed } from "./seed";
 import { stdoutIsTty } from "./tty";
 import type {
   AuthStatus,
@@ -41,6 +43,7 @@ import type {
   DeployReport,
   ExternalManifest,
   InfraPlan,
+  MigrationOutcome,
   OnChange,
   PermissionGroup,
   ProvisionedRef,
@@ -522,24 +525,28 @@ const guidedDeployStep = async (
  * migrations dir — the generic, deploy-owned analogue of `wrangler d1 migrations apply <binding>
  * --remote`. The wrangler config was written earlier in the pipeline, so each binding resolves. The
  * caller runs this only AFTER a successful deploy, so a deploy that never happened never migrates a
- * remote DB. Streams wrangler's output; throws on the first non-zero exit (the caller folds it into
- * the report).
+ * remote DB. CAPTURES wrangler's output (the raw TUI is hidden; {@link parseMigrationsApplied} turns
+ * it into the branded panel's facts); throws on the first non-zero exit (the caller folds it into the
+ * report, where the captured error is still surfaced).
  *
  * @param ctx - The deploy plugin context.
- * @returns Resolves once every configured database's remote migrations have been applied.
+ * @returns The per-database migration outcomes (one per d1 instance that declares migrations).
  * @example
  * ```ts
- * await applyRemoteMigrations(ctx);
+ * const outcomes = await applyRemoteMigrations(ctx);
  * ```
  */
-const applyRemoteMigrations = async (ctx: Ctx): Promise<void> => {
-  if (!ctx.has("d1")) return;
+const applyRemoteMigrations = async (ctx: Ctx): Promise<MigrationOutcome[]> => {
+  if (!ctx.has("d1")) return [];
 
+  const outcomes: MigrationOutcome[] = [];
   for (const database of ctx.require(d1Plugin).deployManifest()) {
     if (database.migrations !== undefined) {
-      await runWranglerInherit(["d1", "migrations", "apply", database.binding, "--remote"]);
+      const output = await runWrangler(["d1", "migrations", "apply", database.binding, "--remote"]);
+      outcomes.push({ binding: database.binding, ...parseMigrationsApplied(output) });
     }
   }
+  return outcomes;
 };
 
 /** The migration + seed outcome of the post-deploy stage, folded into the {@link DeployReport}. */
@@ -601,13 +608,15 @@ const runPostDeploy = async (
   const ui = createBrandConsole();
   const errors: string[] = [];
 
-  // Apply remote migrations first — the seed below depends on the schema they create.
+  // Apply remote migrations first — the seed below depends on the schema they create. Wrangler's raw
+  // migration TUI is captured (hidden); the branded panel reports exactly what applied.
   let migration: DeployReport["migration"] = "skipped";
   if (want.migration) {
     try {
-      await applyRemoteMigrations(ctx);
+      ctx.emit("deploy:phase", { phase: "migrate", detail: "remote D1" });
+      const outcomes = await applyRemoteMigrations(ctx);
       migration = "applied";
-      ui.check(true, "migrated", "remote D1");
+      if (outcomes.length > 0) renderMigrateSummary(ui, outcomes, "remote");
     } catch (error) {
       migration = "failed";
       captureFailure(ui, errors, error);
@@ -636,9 +645,10 @@ const runPostDeploy = async (
       );
     } else {
       try {
-        await runConfiguredSeed(ctx, runWranglerInherit, config, "--remote");
+        ctx.emit("deploy:phase", { phase: "seed", detail: config.file });
+        const outcome = await runConfiguredSeed(ctx, runWrangler, config, "--remote");
         seed = "applied";
-        ui.check(true, "seeded", config.file);
+        renderSeedSummary(ui, outcome, "remote");
       } catch (error) {
         seed = "failed";
         captureFailure(ui, errors, error);
@@ -831,14 +841,16 @@ export const createDeployApi = (ctx: Ctx) => ({
    * Execute a SQL file against a configured D1 database via `wrangler d1 execute` — for seeding dev
    * data. Local by default (applies that database's migrations first so the file's tables exist);
    * `opts.remote` seeds Cloudflare (schema is applied by `deploy`). Generates the wrangler config up
-   * front so the binding resolves even on a first run. Streams wrangler's output.
+   * front so the binding resolves even on a first run. CAPTURES wrangler's output and renders a
+   * branded "Migrated" / "Seeded" summary (the raw migration/execute TUI is hidden) so the command
+   * reads the same as the rest of the deploy UX; a failure still surfaces the real wrangler error.
    *
    * @param sqlFile - Path to the SQL file to execute (e.g. "db/seed.sql").
    * @param opts - Optional options.
    * @param opts.stage - Stage for the generated config's resource names (defaults to the app stage).
    * @param opts.binding - The d1 binding to target when more than one is configured (e.g. "DB").
    * @param opts.remote - Seed the remote (Cloudflare) D1 instead of the local one.
-   * @returns Resolves once wrangler finishes executing the file.
+   * @returns Resolves once wrangler finishes executing the file and the summary is rendered.
    * @example
    * ```ts
    * await api.seed("db/seed.sql");                   // local default d1 (migrate, then execute)
@@ -865,14 +877,28 @@ export const createDeployApi = (ctx: Ctx) => ({
 
     // Resolve the target database: the only configured one, or the instance bound to opts.binding.
     const target = resolveD1(ctx, opts?.binding);
-
-    // Local seed (default): apply this database's migrations first so the file's tables exist, then
-    // run it. Remote seeds run against Cloudflare (schema is applied by `deploy`).
     const scope = opts?.remote === true ? "--remote" : "--local";
+    const where = opts?.remote === true ? "remote" : "local";
+    const ui = createBrandConsole();
+
+    // Local seed (default): apply this database's migrations first so the file's tables exist —
+    // capturing wrangler's output to brand it. Remote seeds run against the schema `deploy` applied.
     if (scope === "--local" && target.migrations !== undefined) {
-      await runWranglerInherit(["d1", "migrations", "apply", target.binding, "--local"]);
+      const migrated = await runWrangler(["d1", "migrations", "apply", target.binding, "--local"]);
+      renderMigrateSummary(
+        ui,
+        [{ binding: target.binding, ...parseMigrationsApplied(migrated) }],
+        where
+      );
     }
-    await runWranglerInherit(["d1", "execute", target.binding, scope, "--file", sqlFile]);
+
+    // Execute the SQL file, then brand WHAT was loaded (best-effort counts; this path resets no KV).
+    const executed = await runWrangler(["d1", "execute", target.binding, scope, "--file", sqlFile]);
+    renderSeedSummary(
+      ui,
+      { file: sqlFile, binding: target.binding, resetKv: [], ...parseSeedStats(executed) },
+      where
+    );
   },
 
   /**

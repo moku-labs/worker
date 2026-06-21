@@ -6,6 +6,13 @@ import { describe, expect, it, type Mock, vi } from "vitest";
 import { type DevDeps, runDev } from "../../../dev/runner";
 import type { Ctx, SeedConfig } from "../../../types";
 
+// The branded migrate/seed panels are covered by infra/render.test.ts; stub them here so runDev's
+// summary rendering stays a no-op (no boxes printed into the test runner's output).
+vi.mock("../../../infra/render", () => ({
+  renderMigrateSummary: vi.fn(),
+  renderSeedSummary: vi.fn()
+}));
+
 /** Build a mock deploy ctx with the config + has/require surface runDev uses. */
 const makeCtx = (overrides?: { hasD1?: boolean; migrateLocal?: boolean; seed?: SeedConfig }): Ctx =>
   ({

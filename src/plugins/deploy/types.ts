@@ -61,6 +61,50 @@ export type SeedConfig = {
   resetKv?: { binding: string; key: string }[];
 };
 
+/**
+ * The outcome of applying one D1 database's migrations (remote or local), parsed from wrangler's
+ * captured output so the branded migrate panel can report exactly what ran — instead of streaming
+ * wrangler's raw migration TUI. `applied` lists the migration filenames wrangler reported applying
+ * this run (in order, newest last); `upToDate` is true when none were pending.
+ *
+ * @example
+ * ```ts
+ * { binding: "DB", applied: ["0003_add_boards.sql", "0004_add_index.sql"], upToDate: false }
+ * ```
+ */
+export type MigrationOutcome = {
+  /** The d1 binding whose migrations were applied (e.g. "DB"). */
+  binding: string;
+  /** The migration filenames wrangler reported applying this run (empty when already up to date). */
+  applied: string[];
+  /** True when no migrations were pending (wrangler reported "No migrations to apply"). */
+  upToDate: boolean;
+};
+
+/**
+ * The outcome of running a configured seed against one scope, surfaced so the branded seed panel can
+ * confirm WHAT was loaded and WHICH cached KV keys were dropped — instead of streaming wrangler's raw
+ * `d1 execute` / `kv key delete` TUI. The counts are best-effort (parsed when wrangler prints them,
+ * omitted otherwise); `resetKv` echoes the keys that were deleted so the panel can list them.
+ *
+ * @example
+ * ```ts
+ * { file: "db/seed.sql", binding: "DB", rowsWritten: 18, resetKv: [{ binding: "BOARDS_KV", key: "boards:index" }] }
+ * ```
+ */
+export type SeedOutcome = {
+  /** The SQL file that was executed (e.g. "db/seed.sql"). */
+  file: string;
+  /** The d1 binding the file was executed against (e.g. "DB"). */
+  binding: string;
+  /** Statements executed, when wrangler reported a command count (best-effort). */
+  statements?: number;
+  /** Rows written, when wrangler reported a write count (best-effort). */
+  rowsWritten?: number;
+  /** The cached KV keys deleted after seeding, so the panel can show what was dropped. */
+  resetKv: { binding: string; key: string }[];
+};
+
 /** deploy plugin configuration. Flat; complete defaults so omission never yields undefined. */
 export type Config = {
   /**
@@ -352,7 +396,8 @@ export type Api = {
    * Cloudflare. Resolves the database to the single configured d1 instance, or the one bound to
    * `opts.binding` when more than one exists. Generates/updates the wrangler config first (so the
    * binding resolves on a first run) and, locally, applies that database's migrations before the file
-   * so its tables exist (the usual seed file only inserts rows). Streams wrangler's output.
+   * so its tables exist (the usual seed file only inserts rows). Captures wrangler's output and
+   * renders a branded "Migrated" / "Seeded" summary (the raw TUI is hidden); failures still surface.
    *
    * @param sqlFile - Path to the SQL file to execute (e.g. "db/seed.sql").
    * @param opts - Optional options.

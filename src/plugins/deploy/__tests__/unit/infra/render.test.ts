@@ -7,11 +7,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   renderDeploySummary,
+  renderMigrateSummary,
   renderPlan,
   renderProvisionResult,
+  renderSeedSummary,
   resourceName
 } from "../../../infra/render";
-import type { InfraPlan, ProvisionResult } from "../../../types";
+import type { InfraPlan, MigrationOutcome, ProvisionResult, SeedOutcome } from "../../../types";
 
 /** A BrandConsole wired to a capturing sink (color off → plain text) + a joined-output reader. */
 const capture = (): { ui: ReturnType<typeof createBrandConsole>; text: () => string } => {
@@ -195,5 +197,74 @@ describe("renderDeploySummary", () => {
       elapsedMs: 64_000
     });
     expect(long.text()).toContain("1m04s"); // minutes once past 60s
+  });
+});
+
+describe("renderMigrateSummary", () => {
+  it("lists the applied migration filenames with a count and the scope footer", () => {
+    const { ui, text } = capture();
+    const outcomes: MigrationOutcome[] = [
+      { binding: "DB", applied: ["0003_add_boards.sql", "0004_add_index.sql"], upToDate: false }
+    ];
+
+    renderMigrateSummary(ui, outcomes, "remote");
+    const out = text();
+
+    expect(out).toContain("Migrated"); // panel heading
+    expect(out).toContain("DB"); // the database binding
+    expect(out).toContain("2 applied"); // the count
+    expect(out).toContain("0003_add_boards.sql"); // each applied migration is named
+    expect(out).toContain("0004_add_index.sql");
+    expect(out).toContain("remote"); // scope footer (which database)
+  });
+
+  it("reads 'up to date' (no count) when nothing was pending, tagging the local scope", () => {
+    const { ui, text } = capture();
+
+    renderMigrateSummary(ui, [{ binding: "DB", applied: [], upToDate: true }], "local");
+    const out = text();
+
+    expect(out).toContain("up to date");
+    expect(out).toContain("local");
+    expect(out).not.toContain("applied"); // no "N applied" row when up to date
+  });
+});
+
+describe("renderSeedSummary", () => {
+  it("shows file → binding, the counts, and the KV keys that were reset", () => {
+    const { ui, text } = capture();
+    const outcome: SeedOutcome = {
+      file: "db/seed.sql",
+      binding: "DB",
+      statements: 5,
+      rowsWritten: 18,
+      resetKv: [{ binding: "BOARDS_KV", key: "boards:index" }]
+    };
+
+    renderSeedSummary(ui, outcome, "remote");
+    const out = text();
+
+    expect(out).toContain("Seeded"); // panel heading
+    expect(out).toContain("db/seed.sql"); // the loaded file
+    expect(out).toContain("→"); // file → binding
+    expect(out).toContain("DB");
+    expect(out).toContain("18 rows written"); // best-effort counts
+    expect(out).toContain("5 statements");
+    expect(out).toContain("KV reset"); // the "what KV was dropped" block
+    expect(out).toContain("BOARDS_KV");
+    expect(out).toContain("boards:index");
+    expect(out).toContain("remote");
+  });
+
+  it("omits the counts and the KV block when there are none (local scope)", () => {
+    const { ui, text } = capture();
+
+    renderSeedSummary(ui, { file: "db/seed.sql", binding: "DB", resetKv: [] }, "local");
+    const out = text();
+
+    expect(out).toContain("db/seed.sql");
+    expect(out).toContain("local");
+    expect(out).not.toContain("KV reset"); // no KV block when nothing was reset
+    expect(out).not.toContain("rows written"); // no stats line when wrangler reported none
   });
 });

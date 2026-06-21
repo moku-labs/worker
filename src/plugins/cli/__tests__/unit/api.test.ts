@@ -29,7 +29,7 @@ const DEPLOYED_REPORT: DeployReport = {
   status: "deployed",
   stage: "production",
   url: "https://test.workers.dev",
-  resources: { created: 0, exists: 0, failed: 0 },
+  resources: { created: 0, exists: 0, bundled: 0, failed: 0 },
   migration: "skipped",
   seed: "skipped",
   elapsedMs: 0,
@@ -70,10 +70,10 @@ const makeDeployStub = () => ({
   init: vi.fn<(opts?: { ci?: boolean }) => Promise<void>>().mockResolvedValue(undefined),
   checkInfra: vi
     .fn<() => Promise<InfraPlan>>()
-    .mockResolvedValue({ account: "", accountId: "", exists: [], missing: [] }),
+    .mockResolvedValue({ account: "", accountId: "", exists: [], missing: [], ships: [] }),
   provisionInfra: vi
     .fn<(plan: InfraPlan) => Promise<ProvisionResult>>()
-    .mockResolvedValue({ created: [], skipped: [], failed: [], ids: {} }),
+    .mockResolvedValue({ created: [], skipped: [], bundled: [], failed: [], ids: {} }),
   verifyAuth: vi
     .fn<() => Promise<AuthStatus>>()
     .mockResolvedValue({ ok: true, account: "Play Co", accountId: "acc-1", scopes: [] }),
@@ -266,7 +266,7 @@ describe("createCliApi", () => {
         status: "failed",
         stage: "production",
         url: "https://test.workers.dev",
-        resources: { created: 0, exists: 0, failed: 0 },
+        resources: { created: 0, exists: 0, bundled: 0, failed: 0 },
         migration: "applied",
         seed: "failed",
         elapsedMs: 1,

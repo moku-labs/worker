@@ -54,7 +54,8 @@ vi.mock("../../infra/plan", () => ({
     account: "test-account",
     accountId: "acct-test",
     exists: [],
-    missing: manifest.resources
+    missing: manifest.resources,
+    ships: []
   }))
 }));
 
@@ -635,7 +636,8 @@ describe("createDeployApi", () => {
         account: "acct",
         accountId: "acct",
         exists: [{ resource: { kind: "kv", name: "cache", binding: "KV" }, id: "ns-existing" }],
-        missing: []
+        missing: [],
+        ships: []
       });
       const api = createDeployApi(ctx);
 
@@ -668,7 +670,8 @@ describe("createDeployApi", () => {
         account: "acct",
         accountId: "acct",
         exists: [],
-        missing: [{ kind: "kv", name: "cache", binding: "KV" }]
+        missing: [{ kind: "kv", name: "cache", binding: "KV" }],
+        ships: []
       });
 
       expect(provisionResource).toHaveBeenCalledWith(
@@ -676,6 +679,27 @@ describe("createDeployApi", () => {
         false
       );
       expect(result.created).toEqual([{ resource: { kind: "kv", name: "cache", binding: "KV" } }]);
+    });
+
+    it("provisionInfra bundles DOs (ships) — never creates them, but still emits provision:skip", async () => {
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+      const doResource = { kind: "do" as const, binding: "BOARD", className: "BoardChannel" };
+
+      const result = await api.provisionInfra({
+        account: "acct",
+        accountId: "acct",
+        exists: [],
+        missing: [],
+        ships: [doResource]
+      });
+
+      // A DO is created by `wrangler deploy`, never at the provision step.
+      expect(provisionResource).not.toHaveBeenCalled();
+      expect(result.created).toEqual([]);
+      expect(result.bundled).toEqual([doResource]);
+      // Still announced as skipped so a consumer hooking provision:skip sees it.
+      expect(ctx.emit).toHaveBeenCalledWith("provision:skip", { kind: "do", name: "BoardChannel" });
     });
   });
 

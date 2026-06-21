@@ -52,7 +52,8 @@ vi.mock("../../src/plugins/deploy/infra/plan", () => ({
     account: "test-account",
     accountId: "acct-test",
     exists: [],
-    missing: manifest.resources
+    missing: manifest.resources,
+    ships: []
   }))
 }));
 

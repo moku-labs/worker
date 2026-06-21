@@ -87,15 +87,59 @@ const assembleManifest = (ctx: Ctx, stage: string): ExternalManifest => {
 };
 
 /**
- * Act on an infra plan: skip the resources that already exist (reusing their ids), create the
- * missing ones (capturing each new id), and announce each via provision:skip / :resource. Resilient
- * — a single resource that fails to create is CAPTURED in `failed` (not thrown), so one bad resource
- * (e.g. an invalid bucket name) never aborts the whole run and the caller can report a clear result.
+ * Create the still-missing resources one at a time: provision each, fold its captured id (kv/d1) into
+ * the shared `ids` map, and announce it via provision:resource. Resilient — a single failure is
+ * CAPTURED (not thrown), so one bad resource never aborts the rest. Extracted from {@link applyPlan}
+ * so that orchestrator stays flat (skip existing, skip DOs, create missing).
  *
  * @param ctx - The deploy plugin context.
- * @param plan - The infra plan from planInfra (existing vs missing).
+ * @param missing - The resources the plan flagged as not-yet-existing.
  * @param ci - Whether provisioning runs non-interactively (forwarded to each provider).
- * @returns The provisioning result: created, skipped, failed, and the merged binding → id map.
+ * @param ids - The binding → Cloudflare id map, mutated in place with each created kv/d1 id.
+ * @returns The created refs and any captured per-resource failures.
+ * @example
+ * ```ts
+ * const { created, failed } = await provisionMissing(ctx, plan.missing, false, ids);
+ * ```
+ */
+const provisionMissing = async (
+  ctx: Ctx,
+  missing: ResourceManifest[],
+  ci: boolean,
+  ids: Record<string, string>
+): Promise<{ created: ProvisionedRef[]; failed: ProvisionFailure[] }> => {
+  // Create the missing resources one by one, capturing each new id (kv/d1) — and capturing any
+  // failure instead of throwing, so the remaining resources still get a chance to provision.
+  const created: ProvisionedRef[] = [];
+  const failed: ProvisionFailure[] = [];
+  for (const resource of missing) {
+    try {
+      const { id } = await provisionResource(resource, ci);
+
+      if (id !== undefined && (resource.kind === "kv" || resource.kind === "d1")) {
+        ids[resource.binding] = id;
+      }
+
+      created.push(id === undefined ? { resource } : { resource, id });
+      ctx.emit("provision:resource", { kind: resource.kind, name: resourceName(resource) });
+    } catch (error) {
+      failed.push({ resource, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { created, failed };
+};
+
+/**
+ * Act on an infra plan: skip the resources that already exist (reusing their ids), skip the Durable
+ * Objects that ship with the Worker, create the missing ones (capturing each new id), and announce
+ * each via provision:skip / :resource. Resilient — a single resource that fails to create is CAPTURED
+ * in `failed` (not thrown), so one bad resource (e.g. an invalid bucket name) never aborts the whole
+ * run and the caller can report a clear result.
+ *
+ * @param ctx - The deploy plugin context.
+ * @param plan - The infra plan from planInfra (existing vs missing vs ships-with-Worker).
+ * @param ci - Whether provisioning runs non-interactively (forwarded to each provider).
+ * @returns The provisioning result: created, skipped, bundled, failed, and the merged binding → id map.
  * @example
  * ```ts
  * const { created, failed } = await applyPlan(ctx, plan, false);
@@ -112,26 +156,16 @@ const applyPlan = async (ctx: Ctx, plan: InfraPlan, ci: boolean): Promise<Provis
     ctx.emit("provision:skip", { kind: ref.resource.kind, name: resourceName(ref.resource) });
   }
 
-  // Create the missing resources one by one, capturing each new id (kv/d1) — and capturing any
-  // failure instead of throwing, so the remaining resources still get a chance to provision.
-  const created: ProvisionedRef[] = [];
-  const failed: ProvisionFailure[] = [];
-  for (const resource of plan.missing) {
-    try {
-      const { id } = await provisionResource(resource, ci);
-
-      if (id !== undefined && (resource.kind === "kv" || resource.kind === "d1")) {
-        ids[resource.binding] = id;
-      }
-
-      created.push(id === undefined ? { resource } : { resource, id });
-      ctx.emit("provision:resource", { kind: resource.kind, name: resourceName(resource) });
-    } catch (error) {
-      failed.push({ resource, error: error instanceof Error ? error.message : String(error) });
-    }
+  // Durable Objects ship with the Worker (`wrangler deploy` creates the namespace) — never created at
+  // this step. Announce each as skipped too, so a consumer hooking provision:skip still sees them.
+  for (const resource of plan.ships) {
+    ctx.emit("provision:skip", { kind: resource.kind, name: resourceName(resource) });
   }
 
-  return { created, skipped: plan.exists, failed, ids };
+  // Create the missing resources resiliently (one failure never aborts the rest).
+  const { created, failed } = await provisionMissing(ctx, plan.missing, ci, ids);
+
+  return { created, skipped: plan.exists, bundled: plan.ships, failed, ids };
 };
 
 /**
@@ -728,6 +762,7 @@ export const createDeployApi = (ctx: Ctx) => ({
     const resources = {
       created: provisioned.created.length,
       exists: provisioned.skipped.length,
+      bundled: provisioned.bundled.length,
       failed: provisioned.failed.length
     };
     renderDeploySummary(createBrandConsole(), {

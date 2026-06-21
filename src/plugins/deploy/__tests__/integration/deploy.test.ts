@@ -78,7 +78,7 @@ beforeEach(() => {
 // Test-local coreConfig — isolates from sibling plugins that may still be stubs.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("moku-worker", {
+const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("worker", {
   config: {
     stage: "test",
     name: "deploy-test-worker",

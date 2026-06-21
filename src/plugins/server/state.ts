@@ -200,7 +200,7 @@ const findBestMatch = (
  * `state.compiled = true` to guard re-entry.
  *
  * @param state - The mutable server state whose `table` should be compiled.
- * @throws {Error} With `[moku-worker]` prefix when a path has duplicate param
+ * @throws {Error} With `[worker]` prefix when a path has duplicate param
  *   names, or uses the old `{name?}` optional syntax (now `{name:?}`).
  * @example
  * ```typescript
@@ -226,13 +226,13 @@ export const compileServerState = (state: ServerState): void => {
       if (segment.value.endsWith("?")) {
         const name = segment.value.slice(0, -1);
         throw new Error(
-          `[moku-worker] endpoint path "${compiled.endpoint.path}" uses the old optional-param syntax "{${segment.value}}".\n` +
+          `[worker] endpoint path "${compiled.endpoint.path}" uses the old optional-param syntax "{${segment.value}}".\n` +
             `  Optional params now use the colon form (matching @moku-labs/web): write "{${name}:?}" instead of "{${name}?}".`
         );
       }
       if (seen.has(segment.value)) {
         throw new Error(
-          `[moku-worker] endpoint path "${compiled.endpoint.path}" has duplicate param "{${segment.value}}".\n` +
+          `[worker] endpoint path "${compiled.endpoint.path}" has duplicate param "{${segment.value}}".\n` +
             `  Each {param} name in a path must be unique.`
         );
       }

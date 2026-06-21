@@ -3,7 +3,7 @@
  */
 import { envPlugin, logPlugin } from "@moku-labs/common";
 import { createCoreConfig, type PluginCtx } from "@moku-labs/core";
-import { stagePlugin } from "./plugins/stage";
+import { workerSafeProcessEnv } from "./env-provider";
 
 /** Per-request Cloudflare bindings object (env). Framework-level shared type. */
 export type WorkerEnv = Record<string, unknown>;
@@ -62,17 +62,26 @@ export type WorkerPluginCtx<
 
 const defaultConfig: WorkerConfig = {
   stage: "production",
-  name: "moku-worker",
+  name: "worker",
   compatibilityDate: ""
 };
 
 export const coreConfig = createCoreConfig<
   WorkerConfig,
   WorkerEvents,
-  [typeof logPlugin, typeof envPlugin, typeof stagePlugin]
->("moku-worker", {
+  [typeof logPlugin, typeof envPlugin]
+>("worker", {
   config: defaultConfig,
-  plugins: [logPlugin, envPlugin, stagePlugin]
+  plugins: [logPlugin, envPlugin],
+  pluginConfigs: {
+    // Core-plugin default (levels 1–2 of the 4-level core cascade, spec/03 §5).
+    // A workerd-safe provider so `ctx.env.get("CLOUDFLARE_API_TOKEN")` (and every
+    // other var) resolves out of the box — the `env` core plugin ships with zero
+    // providers, which is what left `deploy` unable to read the token. Seeded here,
+    // exactly as `@moku-labs/web` seeds `log: { mode }`, rather than injected at
+    // createApp time (core-plugin config is sealed from `createApp` — spec/05 §1b).
+    env: { providers: [workerSafeProcessEnv()] }
+  }
 });
 
 export const { createPlugin, createCore } = coreConfig;

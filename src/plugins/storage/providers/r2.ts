@@ -17,7 +17,7 @@ import type { StorageProvider } from "./types";
 type BindingsResolver = {
   /**
    * Resolve a named binding off the request env, narrowed to T. Throws a
-   * `[moku-worker]`-prefixed error when the binding is nullish.
+   * `[worker]`-prefixed error when the binding is nullish.
    *
    * @param env - The per-request Cloudflare bindings object.
    * @param name - The binding name to resolve.

@@ -52,7 +52,7 @@ describe("resolveAccount", () => {
   it("throws a branded error when no account is accessible", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ success: true, result: [] })));
 
-    await expect(resolveAccount("token")).rejects.toThrow("[moku-worker]");
+    await expect(resolveAccount("token")).rejects.toThrow("[worker]");
   });
 
   it("throws with the API error message when the request reports failure", async () => {
@@ -91,7 +91,7 @@ describe("verifyToken", () => {
         )
     );
 
-    await expect(verifyToken("bad")).rejects.toThrow("[moku-worker]");
+    await expect(verifyToken("bad")).rejects.toThrow("[worker]");
   });
 });
 

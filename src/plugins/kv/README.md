@@ -33,7 +33,7 @@ const app = createApp({
 });
 ```
 
-`kv` declares `depends: [bindingsPlugin]`, so `bindings` must be present — but you do **not** list it in your `plugins` array. `bindings` is a framework default (it ships in every `createApp` from `@moku-labs/worker`), so the dependency is already satisfied; adding `bindingsPlugin` yourself would throw `TypeError: [moku-worker] Duplicate plugin name: "bindings"`.
+`kv` declares `depends: [bindingsPlugin]`, so `bindings` must be present — but you do **not** list it in your `plugins` array. `bindings` is a framework default (it ships in every `createApp` from `@moku-labs/worker`), so the dependency is already satisfied; adding `bindingsPlugin` yourself would throw `TypeError: [worker] Duplicate plugin name: "bindings"`.
 
 ## API
 
@@ -45,7 +45,7 @@ The `app.kv` surface (type `KvApi`). Every runtime method takes the per-request 
 get(env: WorkerEnv, key: string): Promise<string | null>
 ```
 
-Reads a value by key from the namespace, returning `null` when the key is absent. Delegates to `KVNamespace.get`. Throws the `[moku-worker]` bindings error if `binding` is not bound on `env`.
+Reads a value by key from the namespace, returning `null` when the key is absent. Delegates to `KVNamespace.get`. Throws the `[worker]` bindings error if `binding` is not bound on `env`.
 
 ```typescript
 const value = await app.kv.get(env, "feature-flags");
@@ -166,7 +166,7 @@ const flags = await app.kv.get(env, "feature-flags");
 
 ## Integration
 
-- **`bindings`** — `kv`'s sole dependency and the reason it is a regular plugin. On every api call, `kv` resolves its namespace with `ctx.require(bindingsPlugin).require<KVNamespace>(env, ctx.config.binding)`. If `binding` is `null`/`undefined` on `env`, the bindings resolver throws a `[moku-worker]`-prefixed error naming the missing binding. `bindings` is a framework default, so the `depends: [bindingsPlugin]` requirement is satisfied automatically — you never add `bindingsPlugin` to your `plugins` array.
+- **`bindings`** — `kv`'s sole dependency and the reason it is a regular plugin. On every api call, `kv` resolves its namespace with `ctx.require(bindingsPlugin).require<KVNamespace>(env, ctx.config.binding)`. If `binding` is `null`/`undefined` on `env`, the bindings resolver throws a `[worker]`-prefixed error naming the missing binding. `bindings` is a framework default, so the `depends: [bindingsPlugin]` requirement is satisfied automatically — you never add `bindingsPlugin` to your `plugins` array.
 - **`server`** — handlers receive `env` and `require` on the per-request `RequestContext`; they reach `kv` through `require(kvPlugin)` and thread `env` into each call. `kv` never imports `server` — the coupling is one-way, through the handler context.
 - **deploy** — the deploy plugin calls `app.kv.deployManifest()` to collect `{ kind: "kv", binding }` without reading `kv`'s config directly.
 

@@ -74,7 +74,7 @@ const makeMockCtx = (
         return kvFake as unknown as T;
       }
       throw new Error(
-        `[moku-worker] binding "${lookup}" is not bound.\n  Declare it in wrangler config.`
+        `[worker] binding "${lookup}" is not bound.\n  Declare it in wrangler config.`
       );
     },
     has: (env: WorkerEnv, lookup: string): boolean => env[lookup] !== undefined
@@ -357,12 +357,10 @@ describe("kv plugin — unit", () => {
       expect(await api.get({}, "k")).toBe("from-cache");
     });
 
-    it("rejects with a [moku-worker] error naming the missing key when use(key) is unconfigured", async () => {
+    it("rejects with a [worker] error naming the missing key when use(key) is unconfigured", async () => {
       const api = createKvApi(twoInstanceCtx(makeKvFake(), makeKvFake()));
 
-      await expect(api.use("nope").get({}, "k")).rejects.toThrow(
-        '[moku-worker] No kv instance "nope"'
-      );
+      await expect(api.use("nope").get({}, "k")).rejects.toThrow('[worker] No kv instance "nope"');
     });
   });
 

@@ -15,7 +15,7 @@ import type { Config } from "../../types";
 // Test-local coreConfig — isolates from siblings that may still be stubs.
 // ---------------------------------------------------------------------------
 
-const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("moku-worker", {
+const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("worker", {
   config: {
     stage: "test",
     name: "do-test",
@@ -146,7 +146,7 @@ describe("durableObjects plugin (integration)", () => {
       const app = createTestApp();
 
       expect(() => app.durableObjects.get(env, "nope", "room")).toThrow(
-        '[moku-worker] No durableObjects instance "nope".'
+        '[worker] No durableObjects instance "nope".'
       );
     });
   });

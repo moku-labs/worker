@@ -9,12 +9,12 @@
  * of any consumer bundle that does not actually add those two plugins.
  *
  * `createApp(options?)` boots a fully-typed, synchronous, per-isolate app. The
- * framework defaults `[logPlugin, envPlugin, stagePlugin, bindingsPlugin, serverPlugin]`
+ * framework defaults `[logPlugin, envPlugin, bindingsPlugin, serverPlugin]`
  * are applied first, then the `options` below are shallow-merged on top:
  *
- * - `config` — `Partial<WorkerConfig>`; defaults `{ stage: "production", name: "moku-worker", compatibilityDate: "" }`.
- *   `config.stage` is the single stage source: the framework mirrors it into the `stage` core
- *   plugin so `ctx.stage.*` / `app.stage.*` stay in lockstep with `ctx.global.stage` (see {@link createApp}).
+ * - `config` — `Partial<WorkerConfig>`; defaults `{ stage: "production", name: "worker", compatibilityDate: "" }`.
+ *   `config.stage` is the single stage source, read off `ctx.global.stage`; `deploy`/`cli` use it to
+ *   suffix resource names (`production` = bare). There is no stage plugin.
  * - `pluginConfigs` — per-plugin config overrides keyed by plugin name (e.g. `server.endpoints`, `bindings.required`); default `{}`.
  * - `plugins` — extra `PluginInstance[]` appended to the defaults; default `[]`. Do NOT re-list a default plugin.
  * - `onReady` — optional `(app) => void`, runs after every plugin's `onInit`.
@@ -22,7 +22,7 @@
  * - `onStart` / `onStop` — optional `() => void | Promise<void>` runtime lifecycle hooks (`app.start()` / `app.stop()`).
  *
  * Re-listing a default plugin name in `plugins` throws
- * `TypeError: [moku-worker] Duplicate plugin name: "<name>"` — `bindings` and `server`
+ * `TypeError: [worker] Duplicate plugin name: "<name>"` — `bindings` and `server`
  * are already wired, so consumers list only the resource plugins they add (`kv`, `d1`, …).
  *
  * Minimal HTTP Worker (shape taken from the server integration test):
@@ -44,10 +44,8 @@
  * } satisfies ExportedHandler;
  * ```
  */
-import type { EnvProvider } from "@moku-labs/common";
 import { coreConfig, createCore } from "./config";
 import { bindingsPlugin, serverPlugin } from "./plugins";
-import { workerSafeProcessEnv } from "./plugins/stage/env-provider";
 
 const framework = createCore(coreConfig, {
   plugins: [bindingsPlugin, serverPlugin]
@@ -60,57 +58,27 @@ const framework = createCore(coreConfig, {
 // consumer-facing options/defaults live in the module JSDoc above.
 export const { createPlugin } = framework;
 
-/** The core-bound app factory; wrapped by {@link createApp} to bridge `config.stage`. */
-const boundCreateApp = framework.createApp;
-
 /**
  * Boots a fully-typed, synchronous, per-isolate Worker app — the Layer-3 entry point.
  *
- * Wraps the core-bound factory to BRIDGE the single consumer-facing `config.stage`
- * into the `stage` core plugin's own config, so the typed accessors
- * (`ctx.stage.isDev()` / `app.stage.current()` / …) can never diverge from the
- * global `ctx.global.stage`. Global config and core-plugin config resolve on two
- * SEPARATE cascades (spec/05 §1b), and a core plugin cannot read global config (its
- * context is `{ config, state }` only — spec/02 §6). `createApp` is the only layer
- * that sees the consumer's chosen stage, so it mirrors `config.stage` into the stage
- * plugin's level-4 `pluginConfigs` override (`WorkerConfig.stage → pluginConfigs.stage.stage`).
- * When `config.stage` is omitted, the global config and the stage plugin both fall back
- * to their identical `"production"` default. It ALSO wires a default workerd-safe
- * {@link workerSafeProcessEnv} provider into the `env` core plugin (same bridge mechanism) so
- * deploy/auth can read `CLOUDFLARE_API_TOKEN` and friends via `ctx.env` — without it the env plugin
- * has zero providers and every `ctx.env` read is undefined. See the module JSDoc above for the
- * full options/defaults table.
+ * The framework defaults (`log`/`env` core + `bindings`, `server`) are wired first;
+ * your `options` are merged over them through the 4-level config cascade, every
+ * plugin's `onInit` runs, and a fully-typed, frozen app is returned. Deployment stage
+ * is the single global `config.stage` (read via `ctx.global.stage`). The `env` core
+ * plugin's default workerd-safe provider is seeded in {@link coreConfig} (not injected
+ * here), so deploy/auth can read `CLOUDFLARE_API_TOKEN` and friends via `ctx.env` with
+ * no extra wiring.
  *
- * @param options - The createApp options (`config`, `pluginConfigs`, `plugins`, and lifecycle callbacks).
+ * @param options - The createApp options (`config`, `pluginConfigs`, `plugins`, and lifecycle
+ *   callbacks). See the module JSDoc above for the full options/defaults table.
  * @returns The initialized app — every plugin's `onInit` has already run.
  * @example
  * ```typescript
  * const app = createApp({ config: { stage: "development", name: "my-worker" } });
- * app.stage.isDev(); // true — bridged from config.stage
  * app.env.get("CLOUDFLARE_API_TOKEN"); // read from process.env via the default env provider
  * ```
  */
-export const createApp: typeof boundCreateApp = options => {
-  const explicitStage = options?.config?.stage;
-
-  // Bridge two pieces of CORE-plugin config the public `pluginConfigs` type excludes (core
-  // plugins are not consumer-configurable — spec/05 §1b). `createApp` is the only layer that sees
-  // the consumer's options, so it injects them here, then re-asserts the bound options type:
-  //   • env — a default workerd-safe provider (workerSafeProcessEnv) so
-  //     `ctx.env.get("CLOUDFLARE_API_TOKEN")` (and every other var) resolves; the env plugin ships
-  //     with zero providers, which is what left `deploy` unable to read the token. A provider array
-  //     supplied via the cast is kept.
-  //   • stage — mirror the single global `config.stage` so `ctx.stage.*` never diverges from
-  //     `ctx.global.stage` (omitted → both fall to the shared "production" default).
-  const provided = options?.pluginConfigs as { env?: { providers?: EnvProvider[] } } | undefined;
-  const pluginConfigs: Record<string, unknown> = {
-    ...options?.pluginConfigs,
-    env: { ...provided?.env, providers: provided?.env?.providers ?? [workerSafeProcessEnv()] }
-  };
-  if (explicitStage !== undefined) pluginConfigs.stage = { stage: explicitStage };
-
-  return boundCreateApp({ ...options, pluginConfigs } as typeof options);
-};
+export const createApp = framework.createApp;
 
 // ─── Plugins + Types ─────────────────────────────────────────
 export * from "./plugins";
@@ -128,10 +96,9 @@ export type {
   SeedConfig
 } from "./plugins/deploy/types";
 
-// Core plugins (log + env from @moku-labs/common; stage is worker-local).
+// Core plugins (log + env from @moku-labs/common). The deployment stage lives on
+// the global `WorkerConfig.stage`; deploy/cli read it directly (no stage plugin).
 export { envPlugin, logPlugin } from "@moku-labs/common";
-export { stagePlugin } from "./plugins/stage";
-export type { StageApi } from "./plugins/stage";
 
 // ─── Helpers ─────────────────────────────────────────────────
 export { endpoint } from "./plugins/server/helpers";

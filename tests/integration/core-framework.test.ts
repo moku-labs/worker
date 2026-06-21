@@ -3,8 +3,8 @@
  * exercised end-to-end (build Step 5.8).
  *
  * These are framework-level tests, NOT plugin-specific ones: they drive the
- * shipped `createApp` (which already wires the defaults — core log/env/stage +
- * bindings + server) and assert plugin composition, config resolution, the
+ * shipped `createApp` (which already wires the defaults — core log/env +
+ * bindings/server) and assert plugin composition, config resolution, the
  * duplicate-name guard, missing-dependency rejection, and lifecycle.
  *
  * The Cloudflare Workers runtime is absent under vitest, so the runtime EDGE
@@ -85,14 +85,12 @@ describe("core framework (root integration)", () => {
       expect(app.bindings).toBeDefined();
     });
 
-    it("surfaces core plugin apis (log/env/stage) on the app object", () => {
+    it("surfaces the log/env core apis on the app object", () => {
       const app = createApp() as Record<string, unknown>;
 
-      // Core plugins are BOTH flat-injected on every plugin's ctx (ctx.log/env/stage)
-      // AND mounted as app.<name> like any other plugin — so app.log/env/stage exist.
+      // log/env are core plugins — flat-injected on every plugin's ctx AND mounted as app.<name>.
       expect(app.log).toBeDefined();
       expect(app.env).toBeDefined();
-      expect(app.stage).toBeDefined();
     });
   });
 
@@ -135,14 +133,14 @@ describe("core framework (root integration)", () => {
       expect(result).toBe("v");
     });
 
-    it("resolving the overridden binding against an env lacking it throws [moku-worker]", async () => {
+    it("resolving the overridden binding against an env lacking it throws [worker]", async () => {
       const app = createApp({
         plugins: [kvPlugin],
         pluginConfigs: { kv: { cache: { name: "core-cache", binding: "CUSTOM_KV" } } }
       });
       const env: WorkerEnv = {}; // CUSTOM_KV absent
 
-      await expect(app.kv.get(env, "k")).rejects.toThrow("[moku-worker]");
+      await expect(app.kv.get(env, "k")).rejects.toThrow("[worker]");
     });
 
     it("the not-bound error names the overridden binding", async () => {
@@ -194,53 +192,35 @@ describe("core framework (root integration)", () => {
     });
   });
 
-  // ─── Stage bridge: global config.stage drives the stage core plugin ───────
+  // ─── Stage: single source of truth is the global config.stage ────────────
   //
-  // `config.stage` is the single stage source. The framework mirrors it into the
-  // `stage` core plugin's config so the flat-injected `ctx.stage.*` accessors and
-  // the `app.stage.*` mount can never diverge from `ctx.global.stage` (the two
-  // otherwise resolve on SEPARATE config cascades — spec/05 §1b).
+  // `config.stage` is the ONE stage value, read off `ctx.global.stage`. There is no
+  // stage plugin — `deploy`/`cli` consume it directly to suffix resource names.
 
-  describe("stage bridge (config.stage -> ctx.stage / app.stage)", () => {
-    // Probe reads BOTH stage paths off one regular plugin's ctx — proving they
-    // resolve to the same value (the anti-divergence contract). Contextual typing:
-    // ctx.global is Readonly<WorkerConfig>; ctx.stage is the flat-injected core api.
-    const stageProbe = createPlugin("stageProbe", {
-      config: {},
-      api: ctx => ({
-        global: (): string => ctx.global.stage,
-        plugin: (): string => ctx.stage.current()
-      })
-    });
+  describe("stage (single source: config.stage)", () => {
+    it("a plugin api reads the global config.stage off ctx.global", () => {
+      const stageProbe = createPlugin("stageProbe", {
+        config: {},
+        api: ctx => ({ stage: (): string => ctx.global.stage })
+      });
 
-    it("ctx.global.stage and ctx.stage.current() agree on an overridden stage", () => {
       const app = createApp({
         plugins: [stageProbe],
         config: { stage: "development", name: "x", compatibilityDate: "" }
       });
 
-      expect(app.stageProbe.global()).toBe("development");
-      expect(app.stageProbe.plugin()).toBe("development");
-      expect(app.stageProbe.global()).toBe(app.stageProbe.plugin());
+      expect(app.stageProbe.stage()).toBe("development");
     });
 
-    it("app.stage reflects an explicit 'test' stage (isDev + isProduction both false)", () => {
-      const app = createApp({
-        config: { stage: "test", name: "x", compatibilityDate: "" }
+    it("config.stage defaults to 'production' when omitted", () => {
+      const stageProbe = createPlugin("stageProbe", {
+        config: {},
+        api: ctx => ({ stage: (): string => ctx.global.stage })
       });
 
-      expect(app.stage.current()).toBe("test");
-      expect(app.stage.isDev()).toBe(false);
-      expect(app.stage.isProduction()).toBe(false);
-    });
-
-    it("both paths default to 'production' when config.stage is omitted", () => {
       const app = createApp({ plugins: [stageProbe] });
 
-      expect(app.stage.current()).toBe("production");
-      expect(app.stage.isProduction()).toBe(true);
-      expect(app.stageProbe.global()).toBe("production");
-      expect(app.stageProbe.plugin()).toBe("production");
+      expect(app.stageProbe.stage()).toBe("production");
     });
   });
 
@@ -259,13 +239,13 @@ describe("core framework (root integration)", () => {
 
   // ─── Missing dependency (pattern B — fresh core) ──────────────────────────
   //
-  // A fresh core's defaults are ONLY log/env/stage, so bindings/server must be
-  // listed explicitly. Omitting bindings leaves server's `depends:[bindingsPlugin]`
+  // This fresh core registers no resource defaults, so bindings/server are listed
+  // explicitly. Omitting bindings leaves server's `depends:[bindingsPlugin]`
   // unresolved — createApp must reject. Mirrors server.test.ts ~lines 57-65.
 
   describe("missing dependency", () => {
     it("server without bindings (fresh core) throws on unresolved dependency", () => {
-      const cc = createCoreConfig<WorkerConfig, WorkerEvents>("moku-worker", {
+      const cc = createCoreConfig<WorkerConfig, WorkerEvents>("worker", {
         config: { stage: "test", name: "core-test", compatibilityDate: "" }
       });
       const { createApp: createBare } = cc.createCore(cc, { plugins: [serverPlugin] });
@@ -274,7 +254,7 @@ describe("core framework (root integration)", () => {
     });
 
     it("server WITH bindings (fresh core) does not throw — positive control", () => {
-      const cc = createCoreConfig<WorkerConfig, WorkerEvents>("moku-worker", {
+      const cc = createCoreConfig<WorkerConfig, WorkerEvents>("worker", {
         config: { stage: "test", name: "core-test", compatibilityDate: "" }
       });
       const { createApp: createWired } = cc.createCore(cc, {

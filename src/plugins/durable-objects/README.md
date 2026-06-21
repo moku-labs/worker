@@ -54,7 +54,7 @@ Resolves the `DurableObjectNamespace` for `logicalName` off the per-request `env
 
 - **Synchronous** — returns a stub directly, not a `Promise`. The stub is the handle on which the caller then invokes `.fetch(...)`.
 - The namespace is resolved via `ctx.require(bindingsPlugin).require<DurableObjectNamespace>(env, binding)` — the spec-correct cross-plugin pull.
-- **Throws** (via the bindings resolver) a `[moku-worker]`-prefixed `Error` when the binding is not present on `env`.
+- **Throws** (via the bindings resolver) a `[worker]`-prefixed `Error` when the binding is not present on `env`.
 
 ```typescript
 // In a server endpoint handler — pull the api the spec way, pass the request env:
@@ -198,7 +198,7 @@ A request to `/count/room-42` resolves the `COUNTER` namespace off `env`, addres
 
 ## Integration
 
-- **`bindings`** — the hard dependency. Listed in `depends: [bindingsPlugin] as const` so bindings is guaranteed registered first and `ctx.require(bindingsPlugin)` is typed. `get()` resolves namespaces through `ctx.require(bindingsPlugin).require<DurableObjectNamespace>(env, binding)`. If a binding is unbound on `env`, the bindings resolver throws the `[moku-worker]`-prefixed error.
+- **`bindings`** — the hard dependency. Listed in `depends: [bindingsPlugin] as const` so bindings is guaranteed registered first and `ctx.require(bindingsPlugin)` is typed. `get()` resolves namespaces through `ctx.require(bindingsPlugin).require<DurableObjectNamespace>(env, binding)`. If a binding is unbound on `env`, the bindings resolver throws the `[worker]`-prefixed error.
 - **`server`** — the request layer threads `env` and `require` into each endpoint handler; that is where you call `require(durableObjectsPlugin).get(env, …)`. The plugin never owns a request; it is reached per-request through the server.
 - **`deploy`** — reads `deployManifest()` via `ctx.require(durableObjectsPlugin)` to declare `durable_objects` bindings (and the corresponding migrations) in wrangler config. The logical-to-binding map you put in `config.bindings` is exactly what `deployManifest()` surfaces, so the same map drives both runtime resolution and the generated wrangler bindings.
 

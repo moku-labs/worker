@@ -13,7 +13,7 @@ import { kvPlugin } from "../../index";
 // Test-local coreConfig — isolates from siblings that may still be stubs.
 // ---------------------------------------------------------------------------
 
-const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("moku-worker", {
+const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("worker", {
   config: {
     stage: "test",
     name: "kv-test",
@@ -233,14 +233,14 @@ describe("kv plugin (integration)", () => {
     });
   });
 
-  // ─── missing binding throws [moku-worker] ─────────────────────────────────
+  // ─── missing binding throws [worker] ─────────────────────────────────
 
   describe("missing binding", () => {
-    it("throws the [moku-worker] error when the binding is absent from env", async () => {
+    it("throws the [worker] error when the binding is absent from env", async () => {
       const app = createTestApp("SESSIONS");
       const env: WorkerEnv = {}; // SESSIONS not present
 
-      await expect(app.kv.get(env, "any-key")).rejects.toThrow("[moku-worker]");
+      await expect(app.kv.get(env, "any-key")).rejects.toThrow("[worker]");
     });
 
     it("error message includes the binding name", async () => {

@@ -53,14 +53,14 @@ const runShellBuild = (command: string): Promise<void> => {
     const child = spawn(command, { shell: true, stdio: "inherit" });
 
     child.on("error", error => {
-      reject(new Error(`[moku-worker] site build failed to start.\n  ${error.message}`));
+      reject(new Error(`[worker] site build failed to start.\n  ${error.message}`));
     });
     child.on("close", code => {
       if (code === 0) {
         resolve();
         return;
       }
-      reject(new Error(`[moku-worker] site build exited with code ${String(code)}.`));
+      reject(new Error(`[worker] site build exited with code ${String(code)}.`));
     });
   });
 };

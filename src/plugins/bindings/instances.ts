@@ -21,7 +21,7 @@ export type ResourceInstance = {
  * @param instances - The keyed-map config (`Record<key, instance>`).
  * @param kind - The resource kind, for the error message (e.g. "kv", "d1").
  * @returns The default instance's key.
- * @throws {Error} With a `[moku-worker]` prefix when no single default can be resolved.
+ * @throws {Error} With a `[worker]` prefix when no single default can be resolved.
  * @example
  * ```ts
  * defaultInstanceKey({ main: { name: "db", binding: "DB" } }, "d1"); // "main"
@@ -33,7 +33,7 @@ export const defaultInstanceKey = <T extends ResourceInstance>(
 ): string => {
   const keys = Object.keys(instances);
   if (keys.length === 0) {
-    throw new Error(`[moku-worker] No ${kind} instance is configured.`);
+    throw new Error(`[worker] No ${kind} instance is configured.`);
   }
   if (keys.length === 1) {
     return keys[0] as string;
@@ -44,7 +44,7 @@ export const defaultInstanceKey = <T extends ResourceInstance>(
     return flagged[0] as string;
   }
   throw new Error(
-    `[moku-worker] ${kind} has ${String(keys.length)} instances — mark exactly one with \`default: true\`.`
+    `[worker] ${kind} has ${String(keys.length)} instances — mark exactly one with \`default: true\`.`
   );
 };
 
@@ -55,7 +55,7 @@ export const defaultInstanceKey = <T extends ResourceInstance>(
  * @param key - The instance key to resolve (the `use(key)` selector).
  * @param kind - The resource kind, for the error message.
  * @returns The instance at `key`.
- * @throws {Error} With a `[moku-worker]` prefix when `key` is not configured.
+ * @throws {Error} With a `[worker]` prefix when `key` is not configured.
  * @example
  * ```ts
  * pickInstance(cfg, "analytics", "d1");
@@ -65,7 +65,7 @@ export const pickInstance = <T>(instances: Record<string, T>, key: string, kind:
   const instance = instances[key];
   if (instance === undefined) {
     const configured = Object.keys(instances).join(", ") || "(none)";
-    throw new Error(`[moku-worker] No ${kind} instance "${key}". Configured: ${configured}.`);
+    throw new Error(`[worker] No ${kind} instance "${key}". Configured: ${configured}.`);
   }
   return instance;
 };

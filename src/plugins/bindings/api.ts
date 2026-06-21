@@ -21,13 +21,13 @@ const isNullish = (value: unknown): value is null | undefined =>
 
 /**
  * Resolves binding `name` off a request-supplied env object, narrowed to T.
- * Throws a `[moku-worker]`-prefixed error when the binding is nullish.
+ * Throws a `[worker]`-prefixed error when the binding is nullish.
  * The env argument is read but never retained.
  *
  * @param env - The Cloudflare request env object passed to fetch/scheduled/queue.
  * @param name - The binding name to resolve.
  * @returns The binding value narrowed to T.
- * @throws {Error} With a `[moku-worker]` prefix when the binding is null or undefined.
+ * @throws {Error} With a `[worker]` prefix when the binding is null or undefined.
  * @example
  * ```typescript
  * const kv = requireBinding<KVNamespace>(env, "MY_KV");
@@ -37,7 +37,7 @@ const requireBinding = <T>(env: WorkerEnvironment, name: string): T => {
   const value = env[name];
   if (isNullish(value)) {
     throw new Error(
-      `[moku-worker] binding "${name}" is not bound.\n` +
+      `[worker] binding "${name}" is not bound.\n` +
         `  Declare it in wrangler config and pass it in via the request env.`
     );
   }

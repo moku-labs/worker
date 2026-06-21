@@ -32,7 +32,7 @@ const app = createApp({
 });
 ```
 
-`storage` declares `depends: [bindingsPlugin]`, but you do **not** list `bindingsPlugin` in your `plugins` array: `bindings` is a framework default shipped by every `createApp` from `@moku-labs/worker`, so the dependency is already satisfied. Adding it yourself throws `TypeError: [moku-worker] Duplicate plugin name: "bindings"`.
+`storage` declares `depends: [bindingsPlugin]`, but you do **not** list `bindingsPlugin` in your `plugins` array: `bindings` is a framework default shipped by every `createApp` from `@moku-labs/worker`, so the dependency is already satisfied. Adding it yourself throws `TypeError: [worker] Duplicate plugin name: "bindings"`.
 
 ## API
 
@@ -42,7 +42,7 @@ All four runtime methods are **env-first**: the per-request `env` (the Cloudflar
 
 ### `get(env, key): Promise<R2ObjectBody | null>`
 
-Reads object `key` from the bucket. Resolves to the `R2ObjectBody` (whose `.body` is a `ReadableStream`), or `null` when the key is absent. Rejects if the bucket binding is missing on `env` (the `[moku-worker]`-prefixed error from `bindings.require`).
+Reads object `key` from the bucket. Resolves to the `R2ObjectBody` (whose `.body` is a `ReadableStream`), or `null` when the key is absent. Rejects if the bucket binding is missing on `env` (the `[worker]`-prefixed error from `bindings.require`).
 
 ```typescript
 const body = await app.storage.get(env, "assets/logo.png");

@@ -11,7 +11,7 @@
  * plugin — so NO real wrangler invocation or fs access occurs.
  *
  * App construction uses the REAL exported framework: `createApp` (which pre-wires the
- * defaults — core log/env/stage + bindings + server) plus the node-only deploy tooling
+ * defaults — core log/env + stage/bindings/server) plus the node-only deploy tooling
  * (deployPlugin + cliPlugin) from the package root. The five resource plugins are registered before deploy
  * (deploy depends on all five), and cli is registered after deploy (cli depends on deploy).
  */
@@ -173,7 +173,7 @@ beforeEach(() => {
 
 /**
  * Build the deploy/cli app: five resource plugins → deploy → cli, plus the inline
- * recorder. bindings/server/log/env/stage are pre-wired by the exported createApp,
+ * recorder. log/env/stage/bindings/server are pre-wired by the exported createApp,
  * so they are intentionally NOT listed here.
  *
  * @returns The composed app exposing app.deploy and app.cli.

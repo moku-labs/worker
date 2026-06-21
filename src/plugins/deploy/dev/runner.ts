@@ -81,7 +81,7 @@ const spawnWranglerDev = (
       resolve();
     });
     child.once("error", error => {
-      spawnError = new Error(`[moku-worker] Failed to spawn wrangler.\n  ${error.message}`);
+      spawnError = new Error(`[worker] Failed to spawn wrangler.\n  ${error.message}`);
       resolve();
     });
   });
@@ -243,7 +243,7 @@ const seedLocal = async (ctx: Ctx, deps: DevDeps): Promise<void> => {
   const config = ctx.config.seed;
   if (config === undefined) {
     throw new Error(
-      "[moku-worker] dev({ seed: true }) but no seed is configured — set pluginConfigs.deploy.seed."
+      "[worker] dev({ seed: true }) but no seed is configured — set pluginConfigs.deploy.seed."
     );
   }
   ctx.emit("dev:phase", { phase: "seed", detail: config.file });

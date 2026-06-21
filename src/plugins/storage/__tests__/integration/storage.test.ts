@@ -12,7 +12,7 @@ import { createMemoryProvider } from "../helpers/memory-provider";
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Test-local coreConfig — isolates from sibling plugins that may still be stubs.
-const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("moku-worker", {
+const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("worker", {
   config: {
     stage: "test",
     name: "storage-test",
@@ -171,11 +171,11 @@ describe("storage plugin (integration)", () => {
   // ───────── missing binding ─────────────────────────────────────────────────
 
   describe("missing binding", () => {
-    it("throws the [moku-worker] error when the binding is absent from env", async () => {
+    it("throws the [worker] error when the binding is absent from env", async () => {
       const app = createTestApp();
       const emptyEnv: Record<string, unknown> = {}; // no FILES key
 
-      await expect(app.storage.get(emptyEnv, "k")).rejects.toThrow("[moku-worker]");
+      await expect(app.storage.get(emptyEnv, "k")).rejects.toThrow("[worker]");
     });
   });
 

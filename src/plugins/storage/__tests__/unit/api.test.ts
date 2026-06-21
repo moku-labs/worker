@@ -30,7 +30,7 @@ const createMockCtx = (
   const memProvider = createMemoryProvider();
   const bindingsRequire = vi.fn(<T>(_env: Record<string, unknown>, name: string): T => {
     if (!bindingNames.has(name)) {
-      throw new Error(`[moku-worker] binding "${name}" is not bound.`);
+      throw new Error(`[worker] binding "${name}" is not bound.`);
     }
     return memProvider as unknown as T;
   });
@@ -185,12 +185,12 @@ describe("createStorageApi", () => {
       expect(body).not.toBeNull();
     });
 
-    it("throws a [moku-worker] error for an unknown instance key", () => {
+    it("throws a [worker] error for an unknown instance key", () => {
       const ctx = createMockCtx();
       const api = createStorageApi(ctx);
       const env: Record<string, unknown> = { FILES: "stub" };
 
-      expect(() => api.use("nope").get(env, "k")).toThrow("[moku-worker]");
+      expect(() => api.use("nope").get(env, "k")).toThrow("[worker]");
     });
   });
 

@@ -1,3 +1,5 @@
+<div align="center">
+
 # @moku-labs/worker
 
 **The Cloudflare Workers backend for Moku — Durable Objects, Queues, R2, D1, and KV, each a composable plugin.**
@@ -16,6 +18,8 @@ Every Cloudflare primitive is a Moku plugin that resolves its binding **per requ
 <br/>
 
 [Why](#why-moku-labsworker) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Plugins](#plugins) · [Configuration](#configuration) · [Scripts](#scripts)
+
+</div>
 
 ---
 

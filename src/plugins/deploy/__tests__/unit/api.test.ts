@@ -24,7 +24,17 @@ import type {
 // ─────────────────────────────────────────────────────────────────────────────
 
 vi.mock("../../runner", () => ({
-  runWrangler: vi.fn().mockResolvedValue("https://test.workers.dev"),
+  // Branch on the wrangler verb so the post-deploy migrate/seed steps get realistic, parseable
+  // output (the panels read counts/names from it) while `deploy` still yields the URL. The deploy
+  // retry/abort tests' `*ValueOnce` overrides still win for their queued call, then fall back here.
+  runWrangler: vi.fn((args: string[]) => {
+    if (args[0] === "deploy") return Promise.resolve("https://test.workers.dev");
+    if (args[1] === "migrations") {
+      return Promise.resolve("Applying 0001_init.sql\n0002_boards.sql\n✅ 2 migrations applied");
+    }
+    if (args[1] === "execute") return Promise.resolve("🚣 5 commands executed\n12 rows written");
+    return Promise.resolve("");
+  }),
   runWranglerInherit: vi.fn().mockResolvedValue(undefined)
 }));
 
@@ -1146,14 +1156,8 @@ describe("createDeployApi", () => {
 
       // Config first (so the binding resolves), then migrate (DB declares migrations), then execute.
       expect(writeWranglerConfig).toHaveBeenCalled();
-      expect(runWranglerInherit).toHaveBeenCalledWith([
-        "d1",
-        "migrations",
-        "apply",
-        "DB",
-        "--local"
-      ]);
-      expect(runWranglerInherit).toHaveBeenCalledWith([
+      expect(runWrangler).toHaveBeenCalledWith(["d1", "migrations", "apply", "DB", "--local"]);
+      expect(runWrangler).toHaveBeenCalledWith([
         "d1",
         "execute",
         "DB",
@@ -1169,10 +1173,8 @@ describe("createDeployApi", () => {
 
       await api.seed("db/seed.sql", { remote: true });
 
-      expect(runWranglerInherit).not.toHaveBeenCalledWith(
-        expect.arrayContaining(["migrations", "apply"])
-      );
-      expect(runWranglerInherit).toHaveBeenCalledWith([
+      expect(runWrangler).not.toHaveBeenCalledWith(expect.arrayContaining(["migrations", "apply"]));
+      expect(runWrangler).toHaveBeenCalledWith([
         "d1",
         "execute",
         "DB",
@@ -1210,7 +1212,7 @@ describe("createDeployApi", () => {
 
       await api.seed("db/analytics.sql", { binding: "ANALYTICS" });
 
-      expect(runWranglerInherit).toHaveBeenCalledWith([
+      expect(runWrangler).toHaveBeenCalledWith([
         "d1",
         "execute",
         "ANALYTICS",
@@ -1218,7 +1220,7 @@ describe("createDeployApi", () => {
         "--file",
         "db/analytics.sql"
       ]);
-      expect(runWranglerInherit).not.toHaveBeenCalledWith(
+      expect(runWrangler).not.toHaveBeenCalledWith(
         expect.arrayContaining(["migrations", "apply", "ANALYTICS"])
       );
     });
@@ -1242,13 +1244,7 @@ describe("createDeployApi", () => {
 
       const report = await api.run({ migration: true });
 
-      expect(runWranglerInherit).toHaveBeenCalledWith([
-        "d1",
-        "migrations",
-        "apply",
-        "DB",
-        "--remote"
-      ]);
+      expect(runWrangler).toHaveBeenCalledWith(["d1", "migrations", "apply", "DB", "--remote"]);
       expect(report.migration).toBe("applied");
       expect(report.status).toBe("deployed");
       expect(report.ok).toBe(true);
@@ -1262,7 +1258,7 @@ describe("createDeployApi", () => {
 
       const report = await api.run({ seed: true });
 
-      expect(runWranglerInherit).toHaveBeenCalledWith([
+      expect(runWrangler).toHaveBeenCalledWith([
         "d1",
         "execute",
         "DB",
@@ -1270,7 +1266,7 @@ describe("createDeployApi", () => {
         "--file",
         "db/seed.sql"
       ]);
-      expect(runWranglerInherit).toHaveBeenCalledWith([
+      expect(runWrangler).toHaveBeenCalledWith([
         "kv",
         "key",
         "delete",
@@ -1289,7 +1285,8 @@ describe("createDeployApi", () => {
 
       const report = await api.run();
 
-      expect(runWranglerInherit).not.toHaveBeenCalled();
+      expect(runWrangler).not.toHaveBeenCalledWith(expect.arrayContaining(["migrations"]));
+      expect(runWrangler).not.toHaveBeenCalledWith(expect.arrayContaining(["execute"]));
       expect(report.migration).toBe("skipped");
       expect(report.seed).toBe("skipped");
       expect(report.status).toBe("deployed");
@@ -1326,15 +1323,15 @@ describe("createDeployApi", () => {
       expect(report.status).toBe("failed");
       expect(report.ok).toBe(false);
       expect(report.errors.join(" ")).toContain("no seed is configured");
-      expect(runWranglerInherit).not.toHaveBeenCalledWith(expect.arrayContaining(["execute"]));
+      expect(runWrangler).not.toHaveBeenCalledWith(expect.arrayContaining(["execute"]));
     });
 
     it("skips the seed and reports failure when the remote migration fails", async () => {
       const ctx = createMockCtx({ seed: { file: "db/seed.sql" } });
-      // The first runWranglerInherit call IS the migration apply — make it fail.
-      vi.mocked(runWranglerInherit).mockRejectedValueOnce(
-        new Error("[moku-worker] wrangler exited with code 1.")
-      );
+      // runWrangler #1 is `deploy` (resolve it); #2 is the migration apply — make THAT one fail.
+      vi.mocked(runWrangler)
+        .mockResolvedValueOnce("https://test.workers.dev")
+        .mockRejectedValueOnce(new Error("[moku-worker] wrangler exited with code 1."));
       const api = createDeployApi(ctx);
 
       const report = await api.run({ migration: true, seed: true });
@@ -1343,7 +1340,7 @@ describe("createDeployApi", () => {
       expect(report.seed).toBe("failed");
       expect(report.status).toBe("failed");
       // The seed execute must NOT run after a failed migration.
-      expect(runWranglerInherit).not.toHaveBeenCalledWith(expect.arrayContaining(["execute"]));
+      expect(runWrangler).not.toHaveBeenCalledWith(expect.arrayContaining(["execute"]));
     });
   });
 

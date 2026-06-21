@@ -7,7 +7,13 @@
  * of flat lines. Pure: takes a {@link BrandConsole} + structured data. Node-only; not in the bundle.
  */
 import type { BrandConsole } from "@moku-labs/common/cli";
-import type { InfraPlan, ProvisionResult, ResourceManifest } from "../types";
+import type {
+  InfraPlan,
+  MigrationOutcome,
+  ProvisionResult,
+  ResourceManifest,
+  SeedOutcome
+} from "../types";
 
 /**
  * Derive a human-readable name from a resource descriptor: the Cloudflare resource `name` for the
@@ -282,4 +288,86 @@ export const renderDeploySummary = (
     `${palette.dim("resources".padEnd(10))}${resources}`,
     `${palette.dim("took".padEnd(10))}${formatDuration(summary.elapsedMs)}`
   ]);
+};
+
+/**
+ * Render the D1 migration outcome as a branded panel — the readable replacement for wrangler's raw
+ * `d1 migrations apply` TUI. One row per database: the `d1 <binding>` cell plus a pink `N applied`
+ * count (or a dim `up to date` when nothing was pending), with each applied migration filename listed
+ * beneath as a green `✓`. A dim scope footer (`remote` / `local`) names which database was touched.
+ * The caller renders this only when at least one database actually ran migrations.
+ *
+ * @param ui - The branded console to render through.
+ * @param outcomes - The per-database migration outcomes (one per d1 instance that declares migrations).
+ * @param scope - Which database the migrations ran against: `remote` (Cloudflare) or `local` (dev).
+ * @example
+ * ```ts
+ * renderMigrateSummary(ui, [{ binding: "DB", applied: ["0003_x.sql"], upToDate: false }], "remote");
+ * ```
+ */
+export const renderMigrateSummary = (
+  ui: BrandConsole,
+  outcomes: MigrationOutcome[],
+  scope: "remote" | "local"
+): void => {
+  const { palette } = ui;
+
+  // One header row per database, then its applied migration filenames listed beneath as green ✓.
+  const rows: string[] = [];
+  for (const outcome of outcomes) {
+    // `up to date` when nothing was pending; else the count (or a bare "applied" when, defensively,
+    // the names could not be parsed) so a row never misreads as "0 applied".
+    const count = outcome.applied.length;
+    const appliedLabel = palette.pink(count > 0 ? `${String(count)} applied` : "applied");
+    const status = outcome.upToDate ? palette.dim("up to date") : appliedLabel;
+    rows.push(`${cell("d1", outcome.binding)}  ${status}`);
+    for (const name of outcome.applied) {
+      rows.push(`  ${palette.green("✓")} ${palette.dim(name)}`);
+    }
+  }
+
+  ui.heading("Migrated");
+  ui.box([...rows, "", palette.dim(scope)]);
+};
+
+/**
+ * Render the seed outcome as a branded panel — the readable replacement for wrangler's raw
+ * `d1 execute` / `kv key delete` TUI. Leads with the loaded `file → binding` (pink file), an optional
+ * dim stats line (rows written / statements, only the parts wrangler reported), then — when the seed
+ * cleared cached KV keys — a `KV reset` block listing each `~ binding key` so the user sees exactly
+ * what was dropped. A dim scope footer (`remote` / `local`) names which database was seeded.
+ *
+ * @param ui - The branded console to render through.
+ * @param outcome - The seed outcome (file, target binding, best-effort counts, the KV keys reset).
+ * @param scope - Which database the seed ran against: `remote` (Cloudflare) or `local` (dev).
+ * @example
+ * ```ts
+ * renderSeedSummary(ui, { file: "db/seed.sql", binding: "DB", rowsWritten: 18, resetKv: [] }, "remote");
+ * ```
+ */
+export const renderSeedSummary = (
+  ui: BrandConsole,
+  outcome: SeedOutcome,
+  scope: "remote" | "local"
+): void => {
+  const { palette } = ui;
+
+  const lines: string[] = [`${palette.pink(outcome.file)} ${palette.dim("→")} ${outcome.binding}`];
+
+  // Best-effort counts — show only the parts wrangler actually reported.
+  const stats: string[] = [];
+  if (outcome.rowsWritten !== undefined) stats.push(`${String(outcome.rowsWritten)} rows written`);
+  if (outcome.statements !== undefined) stats.push(`${String(outcome.statements)} statements`);
+  if (stats.length > 0) lines.push(palette.dim(stats.join(" · ")));
+
+  // The cleared cache keys — "what KV was dropped" — listed so the user can confirm each one.
+  if (outcome.resetKv.length > 0) {
+    lines.push("", palette.dim("KV reset"));
+    for (const entry of outcome.resetKv) {
+      lines.push(`${palette.dim("~")} ${entry.binding}  ${palette.dim(entry.key)}`);
+    }
+  }
+
+  ui.heading("Seeded");
+  ui.box([...lines, "", palette.dim(scope)]);
 };

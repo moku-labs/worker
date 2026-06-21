@@ -10,10 +10,13 @@
  */
 import { spawn } from "node:child_process";
 
+import { createBrandConsole } from "@moku-labs/common/cli";
+
 import { d1Plugin } from "../../d1";
+import { renderMigrateSummary, renderSeedSummary } from "../infra/render";
 import { runWrangler } from "../runner";
-import { runConfiguredSeed } from "../seed";
-import type { Ctx, OnChange, WebBuild } from "../types";
+import { parseMigrationsApplied, runConfiguredSeed } from "../seed";
+import type { Ctx, MigrationOutcome, OnChange, WebBuild } from "../types";
 import { buildSite, fileCountOf } from "./build";
 import { watchPaths } from "./watch";
 
@@ -244,7 +247,8 @@ const seedLocal = async (ctx: Ctx, deps: DevDeps): Promise<void> => {
     );
   }
   ctx.emit("dev:phase", { phase: "seed", detail: config.file });
-  await runConfiguredSeed(ctx, deps.runWrangler, config, "--local");
+  const outcome = await runConfiguredSeed(ctx, deps.runWrangler, config, "--local");
+  renderSeedSummary(createBrandConsole(), outcome, "local");
 };
 
 /**
@@ -284,9 +288,13 @@ export const runDev = async (
   const migrationBindings = ctx.config.migrateLocal || seed ? d1MigrationBindings(ctx) : [];
   if (migrationBindings.length > 0) {
     ctx.emit("dev:phase", { phase: "migrate", detail: "d1 (local)" });
+    // Capture each apply (wrangler's raw migration TUI is hidden), then brand what applied.
+    const outcomes: MigrationOutcome[] = [];
     for (const binding of migrationBindings) {
-      await deps.runWrangler(["d1", "migrations", "apply", binding, "--local"]);
+      const output = await deps.runWrangler(["d1", "migrations", "apply", binding, "--local"]);
+      outcomes.push({ binding, ...parseMigrationsApplied(output) });
     }
+    renderMigrateSummary(createBrandConsole(), outcomes, "local");
   }
 
   // Load the local seed when `--seed` is set (tables now exist) — the local twin of `deploy --seed`.

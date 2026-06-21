@@ -170,17 +170,23 @@ export type ProvisionedRef = {
 
 /**
  * Read-only infra preflight result: which declared resources already exist in the Cloudflare
- * account versus which are still missing and must be created. Produced by `checkInfra()`.
+ * account, which are still missing and must be created, and which ship with the Worker. Produced by
+ * `checkInfra()`. Durable Objects are neither "exists" nor "missing" — the planner never queries the
+ * account for them and never API-provisions them; they are created by `wrangler deploy` (the
+ * auto-derived DO migration), so they get their own `ships` bucket instead of masquerading as
+ * already-existing.
  */
 export type InfraPlan = {
   /** Resolved account display name (or id when the name is unknown). */
   account: string;
   /** Resolved Cloudflare account id used for the existence checks. */
   accountId: string;
-  /** Declared resources that already exist (with their captured ids where applicable). */
+  /** Declared resources the account listing confirmed already exist (with captured ids where applicable). */
   exists: ProvisionedRef[];
   /** Declared resources that do not yet exist and must be created. */
   missing: ResourceManifest[];
+  /** Durable Objects that ship with the Worker — created by `wrangler deploy`, never API-provisioned. */
+  ships: ResourceManifest[];
 };
 
 /**
@@ -196,15 +202,18 @@ export type ProvisionFailure = {
 
 /**
  * Outcome of acting on an {@link InfraPlan}: the resources just created, those skipped because they
- * already existed, those that FAILED to create, and the merged id map (binding → Cloudflare id) for
- * the config writer. Provisioning is resilient — a single resource failure is captured here, not
- * thrown, so the guided flow can report a clear per-resource result.
+ * already existed, those that ship with the Worker (Durable Objects — not created here), those that
+ * FAILED to create, and the merged id map (binding → Cloudflare id) for the config writer.
+ * Provisioning is resilient — a single resource failure is captured here, not thrown, so the guided
+ * flow can report a clear per-resource result.
  */
 export type ProvisionResult = {
   /** Resources created during this run. */
   created: ProvisionedRef[];
   /** Resources skipped because they already existed. */
   skipped: ProvisionedRef[];
+  /** Durable Objects that ship with the Worker — not created at the provision step (`wrangler deploy` does). */
+  bundled: ResourceManifest[];
   /** Resources that failed to create (captured, not thrown). */
   failed: ProvisionFailure[];
   /** Merged binding → Cloudflare id map (existing + created) for writeWranglerConfig. */
@@ -231,8 +240,8 @@ export type DeployReport = {
   stage: string;
   /** The live worker URL once `wrangler deploy` succeeded — set even if a later migration/seed failed. */
   url?: string;
-  /** Provisioning tally: resources created, already-existing, and failed to create. */
-  resources?: { created: number; exists: number; failed: number };
+  /** Provisioning tally: resources created, already-existing, shipped-with-the-Worker (DOs), and failed to create. */
+  resources?: { created: number; exists: number; bundled: number; failed: number };
   /** Remote D1 migration outcome — "skipped" (not requested), "applied", or "failed". */
   migration: "skipped" | "applied" | "failed";
   /** Remote seed outcome — "skipped" (not requested), "applied", or "failed". */

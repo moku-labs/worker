@@ -38,6 +38,13 @@ export const resourceName = (resource: ResourceManifest): string =>
 const cell = (kind: string, name: string): string => `${kind.padEnd(6)}${name}`;
 
 /**
+ * Row tag for a Durable Object — it ships with the Worker (`wrangler deploy` creates the namespace),
+ * so it is NEVER labelled `(exists)` (the planner never queried the account for it). Shared by the
+ * plan and provision-result panels so the two always read the same.
+ */
+const SHIPS_WITH_WORKER = "(ships with worker)";
+
+/**
  * ANSI SGR matcher — built from `String.fromCharCode(27)` (the ESC byte) so no control character
  * appears in a regex literal (which both linters reject).
  */
@@ -113,10 +120,11 @@ const wrapText = (text: string, width: number): string[] => {
 /**
  * Render the infra preflight plan as a branded panel: a dim summary line (counts + account) then one
  * row per declared resource — a pink `+` for those to create, a dim `~ (exists)` for those already
- * present. When nothing needs creating it still renders, so the user sees the full picture.
+ * present, and a dim `~ (ships with worker)` for Durable Objects (created by `wrangler deploy`, never
+ * pre-provisioned). When nothing needs creating it still renders, so the user sees the full picture.
  *
  * @param ui - The branded console to render through.
- * @param plan - The infra plan (existing vs missing) from checkInfra()/planInfra().
+ * @param plan - The infra plan (existing vs missing vs ships-with-Worker) from checkInfra()/planInfra().
  * @example
  * ```ts
  * renderPlan(ui, await planInfra(ctx, manifest));
@@ -125,26 +133,35 @@ const wrapText = (text: string, width: number): string[] => {
 export const renderPlan = (ui: BrandConsole, plan: InfraPlan): void => {
   const { palette } = ui;
 
-  const summary = palette.dim(
-    `${String(plan.missing.length)} to create · ${String(plan.exists.length)} exist · ${plan.account}`
+  const counts = [
+    `${String(plan.missing.length)} to create`,
+    `${String(plan.exists.length)} exist`
+  ];
+  if (plan.ships.length > 0) counts.push(`${String(plan.ships.length)} with worker`);
+  const summary = palette.dim(`${counts.join(" · ")} · ${plan.account}`);
+
+  const createRows = plan.missing.map(
+    resource => `${palette.pink("+")} ${cell(resource.kind, resourceName(resource))}`
   );
   const existsRows = plan.exists.map(
     ref =>
       `${palette.dim("~")} ${cell(ref.resource.kind, resourceName(ref.resource))} ${palette.dim("(exists)")}`
   );
-  const createRows = plan.missing.map(
-    resource => `${palette.pink("+")} ${cell(resource.kind, resourceName(resource))}`
+  const shipsRows = plan.ships.map(
+    resource =>
+      `${palette.dim("~")} ${cell(resource.kind, resourceName(resource))} ${palette.dim(SHIPS_WITH_WORKER)}`
   );
 
   ui.heading("Infra plan");
-  ui.box([summary, "", ...createRows, ...existsRows]);
+  ui.box([summary, "", ...createRows, ...existsRows, ...shipsRows]);
 };
 
 /**
  * Render the provision result as a branded panel — a green `✓` per created resource, a dim `~` per
- * skipped, a red `✗` per failure, then a summary line (failed count red when non-zero) — followed,
- * when anything failed, by a detail block printing each failure's FULL reason (ANSI-stripped and
- * word-wrapped) so it is actually readable instead of truncated inside the box.
+ * skipped, a dim `~ (ships with worker)` per Durable Object, a red `✗` per failure, then a summary
+ * line (failed count red when non-zero) — followed, when anything failed, by a detail block printing
+ * each failure's FULL reason (ANSI-stripped and word-wrapped) so it is actually readable instead of
+ * truncated inside the box.
  *
  * @param ui - The branded console to render through.
  * @param result - The provision result from provisionInfra()/the deploy pipeline.
@@ -164,16 +181,25 @@ export const renderProvisionResult = (ui: BrandConsole, result: ProvisionResult)
     ref =>
       `${palette.dim("~")} ${cell(ref.resource.kind, resourceName(ref.resource))} ${palette.dim("(exists)")}`
   );
+  const bundledRows = result.bundled.map(
+    resource =>
+      `${palette.dim("~")} ${cell(resource.kind, resourceName(resource))} ${palette.dim(SHIPS_WITH_WORKER)}`
+  );
   const failedRows = result.failed.map(
     failure => `${palette.red("✗")} ${cell(failure.resource.kind, resourceName(failure.resource))}`
   );
 
   const failedCount =
     result.failed.length > 0 ? palette.red(`${String(result.failed.length)} failed`) : "0 failed";
-  const summary = `${String(result.created.length)} created · ${String(result.skipped.length)} exist · ${failedCount}`;
+  const counts = [
+    `${String(result.created.length)} created`,
+    `${String(result.skipped.length)} exist`
+  ];
+  if (result.bundled.length > 0) counts.push(`${String(result.bundled.length)} with worker`);
+  const summary = `${counts.join(" · ")} · ${failedCount}`;
 
   ui.heading("Provisioned");
-  ui.box([...createdRows, ...skippedRows, ...failedRows, "", summary]);
+  ui.box([...createdRows, ...skippedRows, ...bundledRows, ...failedRows, "", summary]);
 
   // Full, readable failure detail under the box — each reason word-wrapped to the console width.
   if (result.failed.length > 0) {
@@ -220,11 +246,12 @@ const formatDuration = (ms: number): string => {
  * @param summary.stage - The target stage the worker deployed to.
  * @param summary.created - How many resources were created this run.
  * @param summary.exists - How many resources already existed (skipped).
+ * @param summary.bundled - How many Durable Objects shipped with the Worker.
  * @param summary.failed - How many resources failed to provision.
  * @param summary.elapsedMs - The wall-clock deploy duration in milliseconds.
  * @example
  * ```ts
- * renderDeploySummary(ui, { url, stage: "production", created: 0, exists: 5, failed: 0, elapsedMs: 4234 });
+ * renderDeploySummary(ui, { url, stage: "production", created: 0, exists: 5, bundled: 1, failed: 0, elapsedMs: 4234 });
  * ```
  */
 export const renderDeploySummary = (
@@ -234,13 +261,16 @@ export const renderDeploySummary = (
     stage: string;
     created: number;
     exists: number;
+    bundled: number;
     failed: number;
     elapsedMs: number;
   }
 ): void => {
   const { palette } = ui;
 
-  const tally = `${String(summary.exists)} exist · ${String(summary.created)} created`;
+  const parts = [`${String(summary.exists)} exist`, `${String(summary.created)} created`];
+  if (summary.bundled > 0) parts.push(`${String(summary.bundled)} with worker`);
+  const tally = parts.join(" · ");
   const failedLabel = palette.red(`${String(summary.failed)} failed`);
   const resources = summary.failed > 0 ? `${tally} · ${failedLabel}` : tally;
 

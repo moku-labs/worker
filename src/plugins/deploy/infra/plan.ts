@@ -2,20 +2,24 @@
  * @file deploy plugin — infra preflight planner.
  *
  * Reads the `.env` Cloudflare token, lists what already exists in the account, and diffs it
- * against the assembled manifest to produce an InfraPlan (existing vs missing). Read-only: emits
- * `provision:plan` and writes nothing. Node-only; never imported by the runtime Worker bundle.
+ * against the assembled manifest to produce an InfraPlan (existing vs missing vs ships-with-Worker
+ * for Durable Objects). Read-only: emits `provision:plan` and writes nothing. Node-only; never
+ * imported by the runtime Worker bundle.
  */
 import type { Ctx, ExternalManifest, InfraPlan, ProvisionedRef, ResourceManifest } from "../types";
 import type { ExistingResources, ListableKind } from "./cloudflare";
 import { listExisting, resolveAccount } from "./cloudflare";
 
+/** A provisionable resource — every kind EXCEPT a Durable Object, which ships with the Worker. */
+type ProvisionableManifest = Exclude<ResourceManifest, { kind: "do" }>;
+
 /**
- * Decide whether a single declared resource already exists in the account, recovering its id
- * (kv/d1) when it does. Durable Objects are config-only — they ship with the Worker (`wrangler
- * deploy` + the auto-derived DO migration create the namespace), never provisioned via the API — so
- * they are treated as already EXISTING, and the plan never re-offers to "create" them each deploy.
+ * Decide whether a single API-provisioned resource already exists in the account, recovering its id
+ * (kv/d1) when it does. Durable Objects are NOT handled here — they ship with the Worker (`wrangler
+ * deploy` + the auto-derived DO migration create the namespace), are never provisioned via the API,
+ * and are partitioned into the plan's `ships` bucket by {@link planInfra} before this is ever called.
  *
- * @param resource - The declared resource descriptor.
+ * @param resource - The declared (provisionable) resource descriptor.
  * @param existing - The indexed set of resources already in the account.
  * @returns Whether it exists, plus the captured id for kv/d1.
  * @example
@@ -24,7 +28,7 @@ import { listExisting, resolveAccount } from "./cloudflare";
  * ```
  */
 const checkExisting = (
-  resource: ResourceManifest,
+  resource: ProvisionableManifest,
   existing: ExistingResources
 ): { exists: boolean; id?: string } => {
   switch (resource.kind) {
@@ -42,10 +46,6 @@ const checkExisting = (
     case "queue": {
       return { exists: existing.queue.has(resource.name) };
     }
-    case "do": {
-      // Created by `wrangler deploy` (the DO migration), never API-provisioned — treat as existing.
-      return { exists: true };
-    }
   }
 };
 
@@ -55,7 +55,7 @@ const checkExisting = (
  *
  * @param ctx - The deploy plugin context (env + emit).
  * @param manifest - The assembled (or caller-supplied) deploy manifest.
- * @returns The infra plan: existing (with ids) vs missing resources.
+ * @returns The infra plan: existing (with ids) vs missing vs ships-with-Worker (Durable Objects).
  * @throws {Error} When the token is absent/invalid or a Cloudflare listing fails.
  * @example
  * ```ts
@@ -79,10 +79,17 @@ export const planInfra = async (ctx: Ctx, manifest: ExternalManifest): Promise<I
   }
   const existing = await listExisting(token, account.id, kinds);
 
-  // Partition the declared resources into already-existing vs still-missing.
+  // Partition the declared resources: DOs ship with the Worker; the rest are already-existing vs
+  // still-missing per the account listing.
   const exists: ProvisionedRef[] = [];
   const missing: ResourceManifest[] = [];
+  const ships: ResourceManifest[] = [];
   for (const resource of manifest.resources) {
+    if (resource.kind === "do") {
+      ships.push(resource);
+      continue;
+    }
+
     const check = checkExisting(resource, existing);
     if (check.exists) {
       exists.push(check.id === undefined ? { resource } : { resource, id: check.id });
@@ -94,8 +101,9 @@ export const planInfra = async (ctx: Ctx, manifest: ExternalManifest): Promise<I
   ctx.emit("provision:plan", {
     exists: exists.length,
     missing: missing.length,
+    ships: ships.length,
     account: account.name
   });
 
-  return { account: account.name, accountId: account.id, exists, missing };
+  return { account: account.name, accountId: account.id, exists, missing, ships };
 };

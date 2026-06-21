@@ -41,7 +41,7 @@ describe("resourceName", () => {
 });
 
 describe("renderPlan", () => {
-  it("lists resources to create (+) and existing ones (~), with a counts + account summary", () => {
+  it("lists resources to create (+), existing ones (~ exists), and DOs (~ ships with worker)", () => {
     const { ui, text } = capture();
     const plan: InfraPlan = {
       account: "acct-123",
@@ -50,18 +50,42 @@ describe("renderPlan", () => {
       missing: [
         { kind: "kv", name: "tracker-kv", binding: "KV" },
         { kind: "d1", name: "tracker-db", binding: "DB" }
-      ]
+      ],
+      ships: [{ kind: "do", binding: "BOARD", className: "BoardChannel" }]
     };
 
     renderPlan(ui, plan);
     const out = text();
 
     expect(out).toContain("Infra plan");
-    expect(out).toContain("2 to create · 1 exist · acct-123");
+    // The DO counts under "with worker", never under "exist".
+    expect(out).toContain("2 to create · 1 exist · 1 with worker · acct-123");
     expect(out).toContain("+ kv");
     expect(out).toContain("tracker-kv");
     expect(out).toContain("~ r2");
     expect(out).toContain("(exists)");
+    // The DO row is labelled "ships with worker", not "(exists)".
+    expect(out).toContain("~ do");
+    expect(out).toContain("BoardChannel");
+    expect(out).toContain("(ships with worker)");
+  });
+
+  it("omits the 'with worker' segment when no DOs ship", () => {
+    const { ui, text } = capture();
+    const plan: InfraPlan = {
+      account: "acct-123",
+      accountId: "acct-123",
+      exists: [],
+      missing: [{ kind: "kv", name: "tracker-kv", binding: "KV" }],
+      ships: []
+    };
+
+    renderPlan(ui, plan);
+    const out = text();
+
+    expect(out).toContain("1 to create · 0 exist · acct-123");
+    expect(out).not.toContain("with worker");
+    expect(out).not.toContain("ships with worker");
   });
 });
 
@@ -72,6 +96,7 @@ describe("renderProvisionResult", () => {
     const result: ProvisionResult = {
       created: [{ resource: { kind: "kv", name: "tracker-kv", binding: "KV" } }],
       skipped: [{ resource: { kind: "d1", name: "tracker-db", binding: "DB" } }],
+      bundled: [{ kind: "do", binding: "BOARD", className: "BoardChannel" }],
       failed: [
         {
           resource: { kind: "r2", name: "ATTACHMENTS", binding: "ATTACHMENTS" },
@@ -89,7 +114,11 @@ describe("renderProvisionResult", () => {
     expect(out).toContain("✓ kv");
     expect(out).toContain("~ d1");
     expect(out).toContain("✗ r2");
-    expect(out).toContain("1 created · 1 exist · 1 failed");
+    // The DO is reported as bundled (ships with worker), not created/skipped-as-existing.
+    expect(out).toContain("~ do");
+    expect(out).toContain("BoardChannel");
+    expect(out).toContain("(ships with worker)");
+    expect(out).toContain("1 created · 1 exist · 1 with worker · 1 failed");
 
     // The full reason is printed below the box — not truncated, ANSI + wrapper + [ERROR] stripped.
     expect(flat).toContain(
@@ -101,11 +130,12 @@ describe("renderProvisionResult", () => {
     expect(out).not.toContain("Logs were written to"); // wrangler's log-file pointer dropped
   });
 
-  it("reports 0 failed cleanly when everything provisioned", () => {
+  it("reports 0 failed cleanly when everything provisioned (and omits 'with worker' with no DOs)", () => {
     const { ui, text } = capture();
     const result: ProvisionResult = {
       created: [{ resource: { kind: "kv", name: "tracker-kv", binding: "KV" } }],
       skipped: [],
+      bundled: [],
       failed: [],
       ids: {}
     };
@@ -113,6 +143,7 @@ describe("renderProvisionResult", () => {
     renderProvisionResult(ui, result);
 
     expect(text()).toContain("1 created · 0 exist · 0 failed");
+    expect(text()).not.toContain("with worker");
   });
 });
 
@@ -124,7 +155,8 @@ describe("renderDeploySummary", () => {
       url: "https://tracker.example.workers.dev",
       stage: "production",
       created: 0,
-      exists: 5,
+      exists: 4,
+      bundled: 1,
       failed: 0,
       elapsedMs: 4234
     });
@@ -133,7 +165,7 @@ describe("renderDeploySummary", () => {
     expect(out).toContain("Deployed"); // the panel heading
     expect(out).toContain("https://tracker.example.workers.dev"); // the URL headline
     expect(out).toContain("production"); // the target stage
-    expect(out).toContain("5 exist · 0 created"); // the resource tally
+    expect(out).toContain("4 exist · 0 created · 1 with worker"); // the resource tally incl. DOs
     expect(out).toContain("4.2s"); // elapsed, one-decimal seconds
   });
 
@@ -144,11 +176,13 @@ describe("renderDeploySummary", () => {
       stage: "staging",
       created: 2,
       exists: 1,
+      bundled: 0,
       failed: 1,
       elapsedMs: 820
     });
     expect(sub.text()).toContain("820ms"); // sub-second
     expect(sub.text()).toContain("1 failed"); // failed count surfaced in the tally
+    expect(sub.text()).not.toContain("with worker"); // omitted when no DOs ship
 
     const long = capture();
     renderDeploySummary(long.ui, {
@@ -156,6 +190,7 @@ describe("renderDeploySummary", () => {
       stage: "production",
       created: 0,
       exists: 0,
+      bundled: 0,
       failed: 0,
       elapsedMs: 64_000
     });

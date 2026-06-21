@@ -69,7 +69,7 @@ describe("planInfra", () => {
     expect(plan.missing).toEqual([]);
   });
 
-  it("treats durable objects as already existing (they ship with the Worker, never pre-created)", async () => {
+  it("partitions durable objects into `ships` — never exists/missing (they ship with the Worker)", async () => {
     vi.mocked(listExisting).mockResolvedValue(emptyExisting());
 
     const plan = await planInfra(
@@ -77,11 +77,11 @@ describe("planInfra", () => {
       manifest([{ kind: "do", binding: "COUNTER", className: "Counter" }])
     );
 
-    // The DO is never "to create" — it deploys with the Worker, so the plan never re-offers it.
+    // The DO is never "to create" (it deploys with the Worker) and never "exists" (the planner never
+    // queried the account for it) — it gets its own `ships` bucket.
     expect(plan.missing).toEqual([]);
-    expect(plan.exists).toEqual([
-      { resource: { kind: "do", binding: "COUNTER", className: "Counter" } }
-    ]);
+    expect(plan.exists).toEqual([]);
+    expect(plan.ships).toEqual([{ kind: "do", binding: "COUNTER", className: "Counter" }]);
   });
 
   it("treats a queue as existing only when its name already exists", async () => {
@@ -102,7 +102,7 @@ describe("planInfra", () => {
     expect(full.exists).toHaveLength(1);
   });
 
-  it("emits provision:plan with the counts and account", async () => {
+  it("emits provision:plan with the counts (incl. ships) and account", async () => {
     const existing = emptyExisting();
     existing.kv.set("cache-a", "id-a");
     vi.mocked(listExisting).mockResolvedValue(existing);
@@ -112,13 +112,15 @@ describe("planInfra", () => {
       ctx,
       manifest([
         { kind: "kv", name: "cache-a", binding: "A" },
-        { kind: "kv", name: "cache-b", binding: "B" }
+        { kind: "kv", name: "cache-b", binding: "B" },
+        { kind: "do", binding: "COUNTER", className: "Counter" }
       ])
     );
 
     expect(ctx.emit).toHaveBeenCalledWith("provision:plan", {
       exists: 1,
       missing: 1,
+      ships: 1,
       account: "acc-123"
     });
   });

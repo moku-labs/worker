@@ -422,6 +422,31 @@ describe("createQueuesApi", () => {
 
       expect(api.deployManifest()).toEqual([]);
     });
+
+    it("carries maxBatchTimeout through when configured (and omits it otherwise)", () => {
+      const config: Config = {
+        activity: {
+          name: "tracker-activity",
+          binding: "ACTIVITY",
+          onMessage: async () => undefined,
+          maxBatchTimeout: 1
+        },
+        orders: { name: "tracker-orders", binding: "ORDERS" }
+      };
+      const { ctx } = createMockCtx(config);
+      const api = createQueuesApi(ctx as unknown as Ctx);
+
+      expect(api.deployManifest()).toEqual([
+        {
+          kind: "queue",
+          name: "tracker-activity",
+          binding: "ACTIVITY",
+          consumer: true,
+          maxBatchTimeout: 1
+        },
+        { kind: "queue", name: "tracker-orders", binding: "ORDERS" }
+      ]);
+    });
   });
 
   // ─── per-call env resolution ─────────────────────────────────────────────
@@ -512,7 +537,13 @@ describe("createQueuesApi", () => {
       const api = createQueuesApi(ctx as unknown as Ctx);
 
       expectTypeOf(api.deployManifest()).toEqualTypeOf<
-        Array<{ kind: "queue"; name: string; binding: string; consumer?: boolean }>
+        Array<{
+          kind: "queue";
+          name: string;
+          binding: string;
+          consumer?: boolean;
+          maxBatchTimeout?: number;
+        }>
       >();
     });
   });

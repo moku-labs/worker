@@ -21,6 +21,13 @@ export type QueueInstance = {
   binding: string;
   /** Per-instance consumer handler — awaited once per message in `consume()`. Optional → no-op. */
   onMessage?: (message: Message, env: WorkerEnv) => Promise<void>;
+  /**
+   * Max seconds the consumer waits to fill a batch before delivering it (Cloudflare's
+   * `max_batch_timeout`, 0–60). Lower means lower delivery latency and smaller batches; omit to use
+   * Cloudflare's default (~5s). Written to the generated wrangler `consumers` entry, so it only has
+   * an effect on an instance that also declares an `onMessage` handler.
+   */
+  maxBatchTimeout?: number;
   /** Marks this instance the default when more than one is configured. */
   default?: boolean;
 };
@@ -107,6 +114,7 @@ export type Api = QueueProducerApi & {
     name: string;
     binding: string;
     consumer?: boolean;
+    maxBatchTimeout?: number;
   }>;
 };
 

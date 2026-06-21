@@ -153,7 +153,11 @@ export const createQueuesApi = (ctx: Ctx): Api => {
         binding: instance.binding,
         // A queue that declares an onMessage handler is also CONSUMED by this Worker — flag it so the
         // deploy plugin writes a wrangler `consumers` entry (without it, messages are never delivered).
-        ...(instance.onMessage ? { consumer: true } : {})
+        ...(instance.onMessage ? { consumer: true } : {}),
+        // Carry an explicit batch-timeout through to the generated wrangler `consumers` entry.
+        ...(instance.maxBatchTimeout === undefined
+          ? {}
+          : { maxBatchTimeout: instance.maxBatchTimeout })
       }))
   };
 };

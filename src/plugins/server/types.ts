@@ -139,10 +139,15 @@ export type PathParams<Path extends string> = string extends Path
  *   from the path template ({@link PathParams}) — a required `{name}` is
  *   `string`, an optional `{name:?}` is `string | undefined`. Defaults to the
  *   permissive `Record<string, string | undefined>` for hand-written handler types.
+ * @template Extension - Context extension contributed by the endpoint's guard chain
+ *   (e.g. `{ actor: Actor }` from an authenticating guard). Defaults to the empty
+ *   object (no enrichment); a guard accumulates its `Extension` onto this. See
+ *   {@link EndpointGuard} + `endpoint.new`.
  */
-export type EndpointHandler<Params = Record<string, string | undefined>> = (
-  ctx: RequestContext<Params>
-) => Response | Promise<Response>;
+export type EndpointHandler<
+  Params = Record<string, string | undefined>,
+  Extension = Record<never, never>
+> = (ctx: RequestContext<Params> & Extension) => Response | Promise<Response>;
 
 /**
  * Fresh per-request object threaded to each EndpointHandler.
@@ -171,22 +176,39 @@ export type RequestContext<Params = Record<string, string | undefined>> = {
 /**
  * A guard run before an endpoint's handler — the building block of an
  * `endpoint.new(guard)` chain. Receives the same per-request {@link RequestContext}
- * the handler does. Returning a `Response` (or a `Promise<Response>`) short-circuits:
- * that response is sent and neither the handler nor any later guard runs. Returning
- * `undefined` / `void` continues to the next guard, then the handler. Sync or async —
- * the server `await`s every guard, so the two mix freely; a guard that throws
- * propagates exactly like a throwing handler (no extra try/catch).
+ * the handler does. A guard may:
+ * - return a `Response` (or `Promise<Response>`) → **short-circuit**: that response is
+ *   sent and neither the handler nor any later guard runs;
+ * - return an `Extension` object → **enrich**: the object is merged into the context handed to
+ *   later guards AND the handler, which then reads it as a typed field (e.g. `ctx.actor`).
+ *   Inferred into the handler's ctx via `endpoint.new` — so the guard resolves a value
+ *   ONCE and the handler reuses it (no re-resolve, no defensive null-check);
+ * - return `undefined` / `void` → **continue** to the next guard, then the handler.
  *
- * @example
+ * Sync or async — the server `await`s every guard, so the two mix freely; a guard that
+ * throws propagates exactly like a throwing handler (no extra try/catch).
+ *
+ * @template Extension - The context extension this guard contributes. Defaults to `never`, so
+ *   a bare `EndpointGuard` is gate-only (`Response | void`) — exactly the prior contract.
+ * @example Gate only
  * ```typescript
  * const requireAuth: EndpointGuard = async (ctx) => {
- *   const session = await verifySession(ctx.request.headers.get("authorization"));
- *   if (!session) return new Response("Unauthorized", { status: 401 });
+ *   if (!ctx.request.headers.has("authorization")) return new Response("Unauthorized", { status: 401 });
  * };
+ * ```
+ * @example Gate + enrich (the handler then reads `ctx.actor`)
+ * ```typescript
+ * const authed = endpoint.new(async (ctx) => {
+ *   const actor = await ctx.require(authPlugin).resolveActor(ctx.request, ctx.env);
+ *   if (!actor) return new Response("Unauthorized", { status: 401 });
+ *   return { actor };
+ * });
  * ```
  */
 // biome-ignore lint/suspicious/noConfusingVoidType: `void` is required — a guard with a no-return body (the common "do auth, fall through" case) yields `void`/`Promise<void>`, which assigns only to a `void` union; `undefined` would reject it.
-export type EndpointGuard = (ctx: RequestContext) => Response | void | Promise<Response | void>;
+export type EndpointGuard<Extension = never> = (
+  ctx: RequestContext
+) => Response | void | Extension | Promise<Response | void | Extension>;
 
 /** Per-plugin event map merged into the server context. */
 export type ServerEvents = { "server:matched": { path: string; method: string } };

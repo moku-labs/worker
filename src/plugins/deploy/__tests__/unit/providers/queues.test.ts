@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { deleteQueue, provisionQueue } from "../../../providers/queues";
+import { deleteQueue, detachQueueConsumer, provisionQueue } from "../../../providers/queues";
 
 vi.mock("../../../runner", () => ({
   runWrangler: vi.fn().mockResolvedValue("queue created: orders"),
@@ -43,5 +43,23 @@ describe("deleteQueue", () => {
 
   it("resolves without throwing", async () => {
     await expect(deleteQueue("orders")).resolves.toBeUndefined();
+  });
+});
+
+describe("detachQueueConsumer", () => {
+  it("calls runWrangler with queues consumer remove <queue> <script>", async () => {
+    await detachQueueConsumer("tracker-activity-dev", "tracker-worker-dev");
+
+    expect(runWrangler).toHaveBeenCalledWith([
+      "queues",
+      "consumer",
+      "remove",
+      "tracker-activity-dev",
+      "tracker-worker-dev"
+    ]);
+  });
+
+  it("resolves without throwing", async () => {
+    await expect(detachQueueConsumer("orders", "app")).resolves.toBeUndefined();
   });
 });

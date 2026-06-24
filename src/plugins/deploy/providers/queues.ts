@@ -29,6 +29,26 @@ export const deleteQueue = async (name: string): Promise<void> => {
 };
 
 /**
+ * Detach a Worker as a consumer of a queue via `wrangler queues consumer remove <queue> <script>`.
+ * Teardown runs this BEFORE deleting the Worker to break the queue↔Worker cycle: Cloudflare refuses
+ * to delete a Worker while it is a queue consumer, and refuses to delete a queue while a Worker still
+ * binds it — so the consumer is detached first, then the Worker delete clears the producer binding,
+ * then the queue can be deleted. No confirmation prompt (it removes a binding, not data).
+ *
+ * @param queue - The stage-qualified queue name (e.g. "atlas-activity-dev").
+ * @param script - The consumer Worker (script) name (e.g. "atlas-dev").
+ * @returns Resolves once the consumer is detached.
+ * @throws {Error} When wrangler exits non-zero — notably when the Worker is not a consumer of the queue.
+ * @example
+ * ```ts
+ * await detachQueueConsumer("atlas-activity-dev", "atlas-dev");
+ * ```
+ */
+export const detachQueueConsumer = async (queue: string, script: string): Promise<void> => {
+  await runWrangler(["queues", "consumer", "remove", queue, script]);
+};
+
+/**
  * Provision the queue via `wrangler queues create <name>`.
  *
  * @param manifest - The queue resource descriptor.

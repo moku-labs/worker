@@ -1465,6 +1465,58 @@ describe("createDeployApi", () => {
       expect(workerOrder).toBeLessThan(firstResourceOrder);
     });
 
+    it("detaches the queue consumer before deleting the Worker (breaks the queue↔Worker cycle)", async () => {
+      vi.mocked(planInfra).mockResolvedValueOnce({
+        account: "acct",
+        accountId: "acct-1",
+        exists: [{ resource: { kind: "queue" as const, name: "activity-dev", binding: "Q" } }],
+        missing: [],
+        ships: []
+      });
+      vi.mocked(promptLine).mockResolvedValueOnce("dev");
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.destroy({ stage: "dev" });
+
+      // The consumer is removed first (`queues consumer remove <queue> <worker>`)…
+      expect(runWrangler).toHaveBeenCalledWith([
+        "queues",
+        "consumer",
+        "remove",
+        "activity-dev",
+        "test-worker-dev"
+      ]);
+      // …before the Worker delete (which then clears the producer binding)…
+      const detachOrder = vi.mocked(runWrangler).mock.invocationCallOrder[0] ?? 0;
+      const workerOrder = vi.mocked(deleteWorker).mock.invocationCallOrder[0] ?? 0;
+      expect(detachOrder).toBeLessThan(workerOrder);
+      // …and the queue itself is still deleted afterwards.
+      expect(destroyResource).toHaveBeenCalledTimes(1);
+      expect(report.status).toBe("destroyed");
+    });
+
+    it("continues past a consumer-detach failure (a queue the Worker doesn't consume)", async () => {
+      vi.mocked(planInfra).mockResolvedValueOnce({
+        account: "acct",
+        accountId: "acct-1",
+        exists: [{ resource: { kind: "queue" as const, name: "activity-dev", binding: "Q" } }],
+        missing: [],
+        ships: []
+      });
+      vi.mocked(promptLine).mockResolvedValueOnce("dev");
+      // The detach is best-effort — a "not a consumer" error must not abort the teardown.
+      vi.mocked(runWrangler).mockRejectedValueOnce(new Error("[worker] not a consumer"));
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.destroy({ stage: "dev" });
+
+      expect(deleteWorker).toHaveBeenCalledWith("test-worker-dev");
+      expect(destroyResource).toHaveBeenCalledTimes(1);
+      expect(report.status).toBe("destroyed");
+    });
+
     it("skips the worker delete when the Worker is not deployed (data stores only)", async () => {
       vi.mocked(planInfra).mockResolvedValueOnce(planWithKv);
       vi.mocked(workerExists).mockResolvedValueOnce(false);

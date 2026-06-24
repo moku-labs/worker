@@ -4,7 +4,7 @@ import { coreConfig, createCore } from "../../../../config";
 import { bindingsPlugin } from "../../../bindings";
 import { endpoint } from "../../helpers";
 import { serverPlugin } from "../../index";
-import type { Endpoint, EndpointHandler } from "../../types";
+import type { Endpoint, EndpointGuard, EndpointHandler } from "../../types";
 
 /** Simple handler used for type-level test (hoisted — no closure). */
 const typeTestHandler: EndpointHandler = () => new Response("ok");
@@ -292,5 +292,138 @@ describe("server plugin (integration)", () => {
     expect(capturedParams).toBeDefined();
     // biome-ignore lint/style/noNonNullAssertion: capturedParams is asserted defined on the line above
     expectTypeOf(capturedParams!).toExtend<Record<string, string | undefined>>();
+  });
+});
+
+// ─── endpoint.new() guards through the full dispatch ──────────────────────────
+
+/** Guard that allows only requests carrying an Authorization header. */
+const requireAuth: EndpointGuard = ({ request }) =>
+  request.headers.has("authorization") ? undefined : new Response("Unauthorized", { status: 401 });
+
+describe("endpoint.new() guards (integration)", () => {
+  it("guarded route — allows the request when the guard passes", async () => {
+    const createApp = makeCreateApp();
+    const app = createApp({
+      pluginConfigs: {
+        server: {
+          endpoints: [
+            endpoint
+              .new(requireAuth)("/me")
+              .get(() => Response.json({ ok: true }))
+          ]
+        }
+      }
+    });
+    const res = await app.server.handle(
+      new Request("https://example.com/me", { headers: { authorization: "token" } }),
+      {},
+      makeExec()
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it("guarded route — short-circuits with the guard's Response when it fails", async () => {
+    const createApp = makeCreateApp();
+    const app = createApp({
+      pluginConfigs: {
+        server: {
+          endpoints: [
+            endpoint
+              .new(requireAuth)("/me")
+              .get(() => Response.json({ ok: true }))
+          ]
+        }
+      }
+    });
+    const res = await app.server.handle(new Request("https://example.com/me"), {}, makeExec());
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe("Unauthorized");
+  });
+
+  it("chained guards run in registration order before the handler", async () => {
+    const order: string[] = [];
+    const g1: EndpointGuard = () => {
+      order.push("auth");
+    };
+    const g2: EndpointGuard = () => {
+      order.push("rate");
+    };
+    const createApp = makeCreateApp();
+    const app = createApp({
+      pluginConfigs: {
+        server: {
+          endpoints: [
+            endpoint
+              .new(g1)
+              .new(g2)("/chain")
+              .get(() => {
+                order.push("handler");
+                return new Response("ok");
+              })
+          ]
+        }
+      }
+    });
+    const res = await app.server.handle(new Request("https://example.com/chain"), {}, makeExec());
+    expect(res.status).toBe(200);
+    expect(order).toEqual(["auth", "rate", "handler"]);
+  });
+
+  it("guarded and plain endpoints coexist in one table", async () => {
+    const createApp = makeCreateApp();
+    const app = createApp({
+      pluginConfigs: {
+        server: {
+          endpoints: [
+            endpoint("/open").get(() => new Response("open")),
+            endpoint
+              .new(requireAuth)("/closed")
+              .get(() => new Response("closed"))
+          ]
+        }
+      }
+    });
+    const open = await app.server.handle(new Request("https://example.com/open"), {}, makeExec());
+    expect(open.status).toBe(200);
+    const closed = await app.server.handle(
+      new Request("https://example.com/closed"),
+      {},
+      makeExec()
+    );
+    expect(closed.status).toBe(401);
+  });
+
+  it("a guarded cron endpoint runs its guard under scheduled()", async () => {
+    let guardRan = false;
+    let handlerRan = false;
+    const cronExpr = "0 0 * * *";
+    const markGuard: EndpointGuard = () => {
+      guardRan = true;
+    };
+    const createApp = makeCreateApp();
+    const app = createApp({
+      pluginConfigs: {
+        server: {
+          endpoints: [
+            endpoint
+              .new(markGuard)(cronExpr)
+              .all(async () => {
+                handlerRan = true;
+                return new Response("cron");
+              })
+          ]
+        }
+      }
+    });
+    const controller = {
+      cron: cronExpr,
+      scheduledTime: Date.now(),
+      noRetry: vi.fn()
+    } as unknown as ScheduledController;
+    await app.server.scheduled(controller, {}, makeExec());
+    expect(guardRan).toBe(true);
+    expect(handlerRan).toBe(true);
   });
 });

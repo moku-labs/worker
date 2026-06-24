@@ -168,6 +168,26 @@ export type RequestContext<Params = Record<string, string | undefined>> = {
   readonly has: (name: string) => boolean;
 };
 
+/**
+ * A guard run before an endpoint's handler — the building block of an
+ * `endpoint.new(guard)` chain. Receives the same per-request {@link RequestContext}
+ * the handler does. Returning a `Response` (or a `Promise<Response>`) short-circuits:
+ * that response is sent and neither the handler nor any later guard runs. Returning
+ * `undefined` / `void` continues to the next guard, then the handler. Sync or async —
+ * the server `await`s every guard, so the two mix freely; a guard that throws
+ * propagates exactly like a throwing handler (no extra try/catch).
+ *
+ * @example
+ * ```typescript
+ * const requireAuth: EndpointGuard = async (ctx) => {
+ *   const session = await verifySession(ctx.request.headers.get("authorization"));
+ *   if (!session) return new Response("Unauthorized", { status: 401 });
+ * };
+ * ```
+ */
+// biome-ignore lint/suspicious/noConfusingVoidType: `void` is required — a guard with a no-return body (the common "do auth, fall through" case) yields `void`/`Promise<void>`, which assigns only to a `void` union; `undefined` would reject it.
+export type EndpointGuard = (ctx: RequestContext) => Response | void | Promise<Response | void>;
+
 /** Per-plugin event map merged into the server context. */
 export type ServerEvents = { "server:matched": { path: string; method: string } };
 

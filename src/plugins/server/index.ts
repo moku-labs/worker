@@ -49,5 +49,6 @@ export const serverPlugin = createPlugin("server", {
   helpers: { endpoint }
 });
 
+export type { GuardedEndpointFactory } from "./helpers";
 export { endpoint } from "./helpers";
-export type { Endpoint, EndpointHandler, RequestContext } from "./types";
+export type { Endpoint, EndpointGuard, EndpointHandler, RequestContext } from "./types";

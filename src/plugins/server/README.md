@@ -121,6 +121,47 @@ endpoint("/api/data/{lang:?}").get(({ params }) =>
 
 The same builder is also reachable as `serverPlugin.endpoint(...)` on the plugin instance (it lives on `serverPlugin.helpers`); the top-level `endpoint` is the flat re-export.
 
+### `endpoint.new(guard)` — chainable guards
+
+`endpoint` is also a **chainable guard factory**. `endpoint.new(guard)` returns a NEW factory that is callable exactly like `endpoint` (give it a path, get the verb builder) but runs `guard` before every handler it builds. The plugin composes the guard chain into the stored handler at **build time**, so a guarded endpoint is an ordinary `Endpoint` — the matcher and dispatch are unchanged.
+
+A **guard** is an `EndpointGuard` — it receives the same `RequestContext` the handler does and returns:
+
+- a `Response` (or `Promise<Response>`) — **reject**: that response is returned and neither the handler nor any later guard runs;
+- nothing (`void` / `Promise<void>`) — **continue** to the next guard, then the handler.
+
+Guards may be sync or async (the chain is `await`ed, so the two mix freely), and a guard that throws propagates exactly like a throwing handler. Each `.new` appends to the chain and returns a **fresh** factory — the receiver is never mutated, so factories branch safely.
+
+```typescript
+import { createApp, endpoint, type EndpointGuard } from "@moku-labs/worker";
+
+// Reject unauthenticated requests; otherwise fall through to the handler.
+const requireAuth: EndpointGuard = async ({ request }) => {
+  const session = await verifySession(request.headers.get("authorization"));
+  if (!session) return new Response("Unauthorized", { status: 401 });
+};
+
+const authorized = endpoint.new(requireAuth); // bind once, reuse across routes
+
+export const app = createApp({
+  pluginConfigs: {
+    server: {
+      endpoints: [
+        endpoint("/health").get(() => new Response("ok")), // unguarded
+        authorized("/api/me").get(() => Response.json({ ok: true })), // guarded
+
+        // Chain guards: they run in order (auth, then rate-limit) before the handler.
+        authorized.new(rateLimit)("/api/messages").post(handler)
+      ]
+    }
+  }
+});
+```
+
+Guards run **inside** the matched handler, so the request-lifecycle events are unchanged: `request:start` and `server:matched` fire before the guards, and `request:end` fires after with the final status — including the short-circuit status when a guard rejects.
+
+> A guard only authorizes or rejects: it receives the immutable `RequestContext` and cannot attach typed data to it. Work the handler also needs is derived in the handler (or fetched via `ctx.require`).
+
 ### `RequestContext`
 
 The fresh per-request object threaded to every `EndpointHandler`:
@@ -267,5 +308,5 @@ The `depends: [bindingsPlugin]` edge guarantees `bindings` (and therefore any bi
 |---|---|---|
 | `serverPlugin` | plugin instance | `@moku-labs/worker` |
 | `endpoint` | helper | `@moku-labs/worker` |
-| `Server` | type namespace | `@moku-labs/worker` (`Server.RequestContext`, `Server.Endpoint`, `Server.EndpointHandler`, `Server.ServerConfig`, `Server.ServerEvents`, …) |
-| `Endpoint`, `EndpointHandler`, `RequestContext` | types | also re-exported directly from the plugin barrel |
+| `Server` | type namespace | `@moku-labs/worker` (`Server.RequestContext`, `Server.Endpoint`, `Server.EndpointHandler`, `Server.EndpointGuard`, `Server.ServerConfig`, `Server.ServerEvents`, …) |
+| `Endpoint`, `EndpointHandler`, `RequestContext`, `EndpointGuard`, `GuardedEndpointFactory` | types | also re-exported directly from the plugin barrel |

@@ -288,8 +288,9 @@ describe("renderTeardownPlan", () => {
 
     expect(out).toContain("Teardown plan");
     expect(out).toContain("4 resource(s) · Acme Co");
-    expect(out).toContain("worker");
-    expect(out).toContain("tracker-worker-dev");
+    // The 6-char "worker" label must not butt against the name (the `workeratlas-dev` bug).
+    expect(out).toContain("worker  tracker-worker-dev");
+    expect(out).not.toContain("workertracker-worker-dev");
     expect(out).toContain("tracker-files-dev");
     expect(out).toContain("Room");
     expect(out).toContain("(removed with worker)");

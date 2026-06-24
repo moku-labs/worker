@@ -31,17 +31,19 @@ export const resourceName = (resource: ResourceManifest): string =>
   resource.kind === "do" ? resource.className : resource.name;
 
 /**
- * Format a `kind name` cell, padding the kind so the names line up in a column.
+ * Format a `kind name` cell, padding the kind so the names line up in a column. The width (8) leaves
+ * a gap after the longest label — `worker` (used by the teardown panels) is 6 chars, so a narrower
+ * pad would butt it straight against the name (`workeratlas-dev`).
  *
- * @param kind - The resource kind (kv / r2 / d1 / queue / do).
+ * @param kind - The resource kind (kv / r2 / d1 / queue / do / worker).
  * @param name - The resource name.
  * @returns The aligned `kind  name` cell.
  * @example
  * ```ts
- * cell("kv", "CACHE"); // "kv     CACHE"
+ * cell("kv", "CACHE"); // "kv      CACHE"
  * ```
  */
-const cell = (kind: string, name: string): string => `${kind.padEnd(6)}${name}`;
+const cell = (kind: string, name: string): string => `${kind.padEnd(8)}${name}`;
 
 /**
  * Row tag for a Durable Object — it ships with the Worker (`wrangler deploy` creates the namespace),

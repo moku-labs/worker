@@ -38,6 +38,7 @@ import {
 import { stageName } from "./naming";
 import { promptLine } from "./prompt";
 import { destroyResource, provisionResource } from "./providers";
+import { detachQueueConsumer } from "./providers/queues";
 import { uploadDirToR2 } from "./providers/r2";
 import { deleteWorker } from "./providers/worker";
 import { runWrangler, runWranglerInherit } from "./runner";
@@ -697,6 +698,32 @@ const buildTeardownRows = (
 };
 
 /**
+ * Best-effort: detach the Worker as a consumer from every queue in the teardown set, clearing the
+ * queue↔Worker cycle so the Worker can be deleted. Cloudflare refuses to delete a Worker that still
+ * consumes a queue (and refuses to delete a queue still bound by a Worker), so the consumer link is
+ * removed first; the Worker delete that follows then clears the producer binding too. A queue the
+ * Worker does NOT consume errors harmlessly and is skipped — the goal is only to break the cycle.
+ *
+ * @param worker - The stage-qualified Worker (consumer script) name.
+ * @param resources - The teardown resources; only the queue entries are acted on.
+ * @returns Resolves once every queue has been (attempted to be) detached.
+ * @example
+ * ```ts
+ * await detachQueueConsumers("atlas-dev", plan.exists);
+ * ```
+ */
+const detachQueueConsumers = async (worker: string, resources: ProvisionedRef[]): Promise<void> => {
+  for (const ref of resources) {
+    if (ref.resource.kind !== "queue") continue;
+    try {
+      await detachQueueConsumer(ref.resource.name, worker);
+    } catch {
+      // Not a consumer of this queue (or already detached) — nothing to undo; continue.
+    }
+  }
+};
+
+/**
  * Delete the targeted infrastructure resiliently — the Worker FIRST (which also removes its routes
  * and Durable Object storage, so the DOs are then recorded as gone), then each data resource. A
  * single resource that fails to delete is CAPTURED in `failed` (not thrown), so one bad delete (e.g.
@@ -721,6 +748,9 @@ const destroyTargets = async (
 
   // Worker first — one delete takes the script, its routes, and all Durable Object storage with it.
   if (worker !== undefined) {
+    // Break the queue↔Worker cycle before deleting the Worker (see detachQueueConsumers).
+    await detachQueueConsumers(worker, resources);
+
     const row: TeardownRow = { kind: "worker", name: worker };
     try {
       await deleteWorker(worker);

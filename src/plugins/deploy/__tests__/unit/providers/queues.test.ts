@@ -3,13 +3,14 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { provisionQueue } from "../../../providers/queues";
+import { deleteQueue, provisionQueue } from "../../../providers/queues";
 
 vi.mock("../../../runner", () => ({
-  runWrangler: vi.fn().mockResolvedValue("queue created: orders")
+  runWrangler: vi.fn().mockResolvedValue("queue created: orders"),
+  runWranglerYes: vi.fn().mockResolvedValue("Deleted queue orders")
 }));
 
-import { runWrangler } from "../../../runner";
+import { runWrangler, runWranglerYes } from "../../../runner";
 
 describe("provisionQueue", () => {
   it("calls runWrangler with queues create args (by resource name)", async () => {
@@ -30,5 +31,17 @@ describe("provisionQueue", () => {
     await expect(
       provisionQueue({ kind: "queue", name: "jobs", binding: "JOBS" }, true)
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("deleteQueue", () => {
+  it("calls runWranglerYes with queues delete <name> (no -y flag exists; prompt is auto-answered)", async () => {
+    await deleteQueue("tracker-activity-dev");
+
+    expect(runWranglerYes).toHaveBeenCalledWith(["queues", "delete", "tracker-activity-dev"]);
+  });
+
+  it("resolves without throwing", async () => {
+    await expect(deleteQueue("orders")).resolves.toBeUndefined();
   });
 });

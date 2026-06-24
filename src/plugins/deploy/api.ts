@@ -22,6 +22,7 @@ import { renderAuthSetup } from "./auth/render";
 import { envLocalScaffold, tokenInstructions as renderTokenInstructions } from "./auth/setup";
 import { verifyAuth as runVerifyAuth } from "./auth/verify";
 import { realDevDeps, runDev } from "./dev/runner";
+import { workerExists } from "./infra/cloudflare";
 import { planInfra } from "./infra/plan";
 import {
   renderDeploySummary,
@@ -29,11 +30,16 @@ import {
   renderPlan,
   renderProvisionResult,
   renderSeedSummary,
-  resourceName
+  renderTeardownPlan,
+  renderTeardownResult,
+  resourceName,
+  type TeardownRow
 } from "./infra/render";
 import { stageName } from "./naming";
-import { provisionResource } from "./providers";
+import { promptLine } from "./prompt";
+import { destroyResource, provisionResource } from "./providers";
 import { uploadDirToR2 } from "./providers/r2";
+import { deleteWorker } from "./providers/worker";
 import { runWrangler, runWranglerInherit } from "./runner";
 import { parseMigrationsApplied, parseSeedStats, resolveD1, runConfiguredSeed } from "./seed";
 import { stdoutIsTty } from "./tty";
@@ -658,6 +664,91 @@ const runPostDeploy = async (
 };
 
 /**
+ * Build the teardown preview rows from the discovered infra: the Worker first (when deployed), then
+ * each existing data resource (kv/r2/d1/queue), then each Durable Object (display-only — removed
+ * with the Worker, never deleted on its own). Shared by the confirm preview and the deletion loop so
+ * the panel and the work agree on exactly what is targeted.
+ *
+ * @param resources - The existing data resources the preflight discovered (with captured ids).
+ * @param durableObjects - The Durable Object class names (present only when the Worker is deployed).
+ * @param worker - The stage-qualified Worker name, or undefined when it is not deployed.
+ * @returns The ordered teardown rows (worker → data stores → Durable Objects).
+ * @example
+ * ```ts
+ * const rows = buildTeardownRows(plan.exists, ["Room"], "app-dev");
+ * ```
+ */
+const buildTeardownRows = (
+  resources: ProvisionedRef[],
+  durableObjects: string[],
+  worker: string | undefined
+): TeardownRow[] => {
+  const rows: TeardownRow[] = [];
+
+  if (worker !== undefined) rows.push({ kind: "worker", name: worker });
+  for (const ref of resources) {
+    rows.push({ kind: ref.resource.kind, name: resourceName(ref.resource) });
+  }
+  for (const className of durableObjects) {
+    rows.push({ kind: "do", name: className, note: "removed with worker" });
+  }
+
+  return rows;
+};
+
+/**
+ * Delete the targeted infrastructure resiliently — the Worker FIRST (which also removes its routes
+ * and Durable Object storage, so the DOs are then recorded as gone), then each data resource. A
+ * single resource that fails to delete is CAPTURED in `failed` (not thrown), so one bad delete (e.g.
+ * a non-empty R2 bucket) never aborts the rest. Mirrors {@link provisionMissing} for teardown.
+ *
+ * @param worker - The stage-qualified Worker name to delete, or undefined when it is not deployed.
+ * @param resources - The existing data resources to delete (with captured ids for kv).
+ * @param durableObjects - The Durable Object class names, recorded as deleted once the Worker is gone.
+ * @returns The destroyed rows and any captured per-resource failures.
+ * @example
+ * ```ts
+ * const { deleted, failed } = await destroyTargets("app-dev", plan.exists, ["Room"]);
+ * ```
+ */
+const destroyTargets = async (
+  worker: string | undefined,
+  resources: ProvisionedRef[],
+  durableObjects: string[]
+): Promise<{ deleted: TeardownRow[]; failed: { row: TeardownRow; error: string }[] }> => {
+  const deleted: TeardownRow[] = [];
+  const failed: { row: TeardownRow; error: string }[] = [];
+
+  // Worker first — one delete takes the script, its routes, and all Durable Object storage with it.
+  if (worker !== undefined) {
+    const row: TeardownRow = { kind: "worker", name: worker };
+    try {
+      await deleteWorker(worker);
+      deleted.push(row);
+      // The DOs went with the Worker — record each as removed.
+      for (const className of durableObjects) {
+        deleted.push({ kind: "do", name: className, note: "removed with worker" });
+      }
+    } catch (error) {
+      failed.push({ row, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  // Then the data stores — capturing each failure so the remaining resources still get deleted.
+  for (const ref of resources) {
+    const row: TeardownRow = { kind: ref.resource.kind, name: resourceName(ref.resource) };
+    try {
+      await destroyResource(ref);
+      deleted.push(row);
+    } catch (error) {
+      failed.push({ row, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  return { deleted, failed };
+};
+
+/**
  * Create the deploy api. Assembles the manifest from each resource plugin's own deployManifest(),
  * runs an infra preflight (check-before-create + id capture), generates config, uploads, and runs
  * `wrangler deploy`, emitting global deploy events along the way.
@@ -798,6 +889,112 @@ export const createDeployApi = (ctx: Ctx) => ({
       seed: post.seed,
       elapsedMs: Date.now() - startedAt,
       errors: post.errors
+    };
+  },
+
+  /**
+   * Destroy ALL infrastructure provisioned for a stage — the inverse of {@link run}. Discovers what
+   * actually exists (the same preflight as checkInfra, so only real resources are touched), previews
+   * it, then — behind a DOUBLE confirmation (branded y/N, then the typed stage name) — deletes the
+   * Worker (which also removes its Durable Object storage), every existing kv/r2/d1/queue, and their
+   * data. INTERACTIVE-ONLY: off a TTY it refuses and destroys nothing. Deletion is resilient — one
+   * resource that fails (e.g. a non-empty R2 bucket, which wrangler cannot empty) is captured and the
+   * rest still go.
+   *
+   * @param opts - Optional teardown options.
+   * @param opts.stage - Target stage whose resources are destroyed (defaults to the app stage).
+   * @returns The teardown report: `status` is "destroyed" (all gone), "aborted" (a gate declined /
+   *   not a TTY — nothing deleted), or "failed" (a resource could not be deleted).
+   * @example
+   * ```ts
+   * const report = await api.destroy({ stage: "dev" });
+   * if (report.status !== "destroyed") process.exitCode = 1;
+   * ```
+   */
+  async destroy(opts?: { stage?: string }): Promise<DeployReport> {
+    const stage = opts?.stage ?? ctx.global.stage;
+    const startedAt = Date.now();
+    const ui = createBrandConsole();
+    ui.lockup({ wordmark: "moku worker", label: "destroy" });
+
+    // Teardown is interactive-only — off a TTY (CI/pipe) there is no human to double-confirm, so
+    // refuse outright rather than destroy infrastructure unattended.
+    if (!stdoutIsTty()) {
+      ui.error("[worker] Teardown is interactive-only — refusing to destroy without a TTY.");
+      return aborted(ctx, stage, startedAt);
+    }
+
+    // Verify the token up front (a missing/invalid token cannot have provisioned anything anyway).
+    ctx.emit("deploy:phase", { phase: "auth" });
+    try {
+      await runVerifyAuth(ctx);
+    } catch (error) {
+      ui.error(error instanceof Error ? error.message : String(error));
+      return aborted(ctx, stage, startedAt);
+    }
+
+    // Discover what actually exists for this stage, and whether the Worker is deployed (so its
+    // Durable Objects are torn down with it). A preflight failure aborts cleanly (nothing deleted).
+    ctx.emit("deploy:phase", { phase: "detect" });
+    const manifest = assembleManifest(ctx, stage);
+    let plan: InfraPlan;
+    try {
+      plan = await planInfra(ctx, manifest);
+    } catch (error) {
+      ui.error(error instanceof Error ? error.message : String(error));
+      return aborted(ctx, stage, startedAt);
+    }
+
+    const token = ctx.env.require("CLOUDFLARE_API_TOKEN");
+    const worker = (await workerExists(token, plan.accountId, manifest.name))
+      ? manifest.name
+      : undefined;
+    const durableObjects =
+      worker === undefined ? [] : plan.ships.map(resource => resourceName(resource));
+
+    // Nothing exists for this stage → idempotent no-op, not a failure.
+    const rows = buildTeardownRows(plan.exists, durableObjects, worker);
+    if (rows.length === 0) {
+      ui.check(true, "nothing to destroy", `stage "${stage}"`);
+      return {
+        ok: true,
+        status: "destroyed",
+        stage,
+        migration: "skipped",
+        seed: "skipped",
+        elapsedMs: Date.now() - startedAt,
+        errors: []
+      };
+    }
+
+    // Gate 1 — preview exactly what dies, then a branded y/N confirm.
+    renderTeardownPlan(ui, { account: plan.account, rows });
+    const confirm = createBrandPrompts().confirm;
+    const proceed = await confirm(
+      `Permanently destroy ${String(rows.length)} resource(s) in "${plan.account}"? This deletes ALL data and cannot be undone.`
+    );
+    if (!proceed) return aborted(ctx, stage, startedAt);
+
+    // Gate 2 — the typed stage name must match exactly (guards against muscle-memory confirms).
+    const typed = await promptLine(`Type the stage name "${stage}" to confirm: `);
+    if (typed !== stage) {
+      ui.warn(`Stage name did not match "${stage}" — teardown aborted.`);
+      return aborted(ctx, stage, startedAt);
+    }
+
+    // Destroy — Worker first (takes the DO storage with it), then the data stores; resilient.
+    ctx.emit("deploy:phase", { phase: "destroy" });
+    const { deleted, failed } = await destroyTargets(worker, plan.exists, durableObjects);
+    renderTeardownResult(ui, { deleted, failed });
+
+    return {
+      ok: failed.length === 0,
+      status: failed.length === 0 ? "destroyed" : "failed",
+      stage,
+      migration: "skipped",
+      seed: "skipped",
+      elapsedMs: Date.now() - startedAt,
+      errors: failed.map(failure => failure.error)
     };
   },
 

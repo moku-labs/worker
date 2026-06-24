@@ -14,6 +14,25 @@ import type { ProvisionOutcome, ResourceManifest } from "../types";
 type KvManifest = Extract<ResourceManifest, { kind: "kv" }>;
 
 /**
+ * Delete a KV namespace via `wrangler kv namespace delete --namespace-id <id> -y` (the namespace id
+ * is captured by the infra preflight, so deletion targets the exact namespace by id rather than a
+ * binding that would require a matching wrangler config). The `-y` flag skips wrangler's own
+ * confirmation — the teardown already double-confirmed with the user. Deletes the namespace and all
+ * of its keys.
+ *
+ * @param namespaceId - The Cloudflare KV namespace id to delete (from the preflight's existing-ids).
+ * @returns Resolves once wrangler reports the namespace deleted.
+ * @throws {Error} When wrangler exits non-zero (e.g. the namespace no longer exists).
+ * @example
+ * ```ts
+ * await deleteKv("ns_abc123");
+ * ```
+ */
+export const deleteKv = async (namespaceId: string): Promise<void> => {
+  await runWrangler(["kv", "namespace", "delete", "--namespace-id", namespaceId, "-y"]);
+};
+
+/**
  * Parse the created KV namespace id from `wrangler kv namespace create` output.
  * Wrangler prints the new binding as JSON (`"id": "..."`) or TOML (`id = "..."`); the leading
  * boundary (start / whitespace / `{` / `,`) keeps the match off a longer identifier such as

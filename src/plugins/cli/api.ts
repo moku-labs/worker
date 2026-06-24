@@ -105,11 +105,14 @@ export const createCliApi = (ctx: CliCtx): Api => ({
    * @param opts.migration - Apply pending remote D1 migrations after a successful deploy (skipped on abort).
    * @param opts.seed - Load the configured remote seed (`pluginConfigs.deploy.seed`) after a
    *   successful deploy (+ migration); skipped on an aborted deploy.
+   * @param opts.delete - Destroy all infrastructure for the stage instead of deploying
+   *   (double-confirmed, interactive-only). When true, every other option is ignored.
    * @returns The deploy report (status, url, resource tally, migration/seed outcome, errors).
    * @example
    * ```ts
    * const report = await api.deploy({ webBuild: () => web.cli.build(), migration: true, seed: true });
    * if (report.status === "aborted") return; // creds not set up yet — nothing shipped
+   * await api.deploy({ delete: true, stage: "dev" }); // tear the dev stage back down
    * ```
    */
   async deploy(opts?: {
@@ -118,8 +121,35 @@ export const createCliApi = (ctx: CliCtx): Api => ({
     webBuild?: WebBuild;
     migration?: boolean;
     seed?: boolean;
+    delete?: boolean;
   }): Promise<DeployReport> {
     const stage = opts?.stage ?? parseStageArg(process.argv);
+
+    // `{ delete: true }` is a teardown, not a deploy: bypass the pipeline (all other options are
+    // ignored) and route to deploy.destroy, which double-confirms before removing the stage.
+    if (opts?.delete === true) {
+      try {
+        const report = await ctx
+          .require(deployPlugin)
+          .destroy(stage === undefined ? {} : { stage });
+        if (report.status === "failed") process.exitCode = 1;
+        return report;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        createBrandConsole().error(message);
+        process.exitCode = 1;
+        return {
+          ok: false,
+          status: "failed",
+          stage: stage ?? "production",
+          migration: "skipped",
+          seed: "skipped",
+          elapsedMs: 0,
+          errors: [message]
+        };
+      }
+    }
+
     try {
       const report = await ctx
         .require(deployPlugin)

@@ -273,13 +273,14 @@ export type ProvisionResult = {
  *
  * `ok` is true only when the worker is live AND every requested post-step (migration, seed) also
  * succeeded. `status` is the coarse outcome: `"deployed"` (live, all post-steps ok), `"aborted"`
- * (a gate was declined or auth was never set up — nothing shipped), `"failed"` (a step errored).
+ * (a gate was declined or auth was never set up — nothing shipped), `"failed"` (a step errored), or
+ * `"destroyed"` (a `{ delete: true }` teardown removed the stage's infrastructure).
  */
 export type DeployReport = {
-  /** True only when the worker is live and every requested post-step (migration, seed) succeeded. */
+  /** True only when the worker is live and every requested post-step (migration, seed) succeeded — or, for a teardown, when every resource was destroyed. */
   ok: boolean;
-  /** Coarse outcome: "deployed" (live + post-steps ok), "aborted" (a gate declined / auth not set up), "failed" (a step errored). */
-  status: "deployed" | "aborted" | "failed";
+  /** Coarse outcome: "deployed" (live + post-steps ok), "aborted" (a gate declined / auth not set up), "failed" (a step errored), "destroyed" (teardown removed the stage). */
+  status: "deployed" | "aborted" | "failed" | "destroyed";
   /** The resolved deploy stage (resource-name suffix; "production" is bare). */
   stage: string;
   /** The live worker URL once `wrangler deploy` succeeded — set even if a later migration/seed failed. */
@@ -364,6 +365,32 @@ export type Api = {
     migration?: boolean;
     seed?: boolean;
   }): Promise<DeployReport>;
+
+  /**
+   * Destroy ALL infrastructure provisioned for a stage — the Worker (which also removes its Durable
+   * Object namespaces and their stored data), plus every existing KV namespace, R2 bucket, D1
+   * database, and Queue for that stage, with all their data. Irreversible, so it is gated behind a
+   * DOUBLE confirmation: a branded preview + y/N confirm, then a typed gate where the user must type
+   * the stage name. INTERACTIVE-ONLY: off a TTY it refuses and destroys nothing.
+   *
+   * Discovers what actually exists via the same preflight as {@link Api.checkInfra}, so only real
+   * resources are deleted, and deletion is resilient — one resource that fails to delete is captured
+   * (not thrown), so the rest still go. A non-empty R2 bucket cannot be emptied from the CLI
+   * (wrangler 4.x cannot list R2 objects); it is reported with a dashboard hint and the teardown
+   * continues. Resolves to a {@link DeployReport} (`status: "destroyed"` on success, `"aborted"` when
+   * a gate is declined / not a TTY, `"failed"` when a resource could not be deleted).
+   *
+   * @param opts - Optional teardown options.
+   * @param opts.stage - Target stage whose resources are destroyed ("production" = bare names).
+   *   Falls back to the app's configured stage.
+   * @returns The teardown report (status, stage, elapsed, errors).
+   * @example
+   * ```ts
+   * const report = await app.deploy.destroy({ stage: "dev" });
+   * if (report.status !== "destroyed") process.exitCode = 1; // aborted or a resource failed
+   * ```
+   */
+  destroy(opts?: { stage?: string }): Promise<DeployReport>;
 
   /**
    * Start a local Cloudflare dev session via `wrangler dev`: cold-build the web site, spawn

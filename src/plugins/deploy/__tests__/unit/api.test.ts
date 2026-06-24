@@ -50,12 +50,28 @@ vi.mock("../../wrangler-config", async importOriginal => {
 });
 
 vi.mock("../../providers", () => ({
-  provisionResource: vi.fn().mockResolvedValue({})
+  provisionResource: vi.fn().mockResolvedValue({}),
+  destroyResource: vi.fn().mockResolvedValue(undefined)
 }));
 
 vi.mock("../../providers/r2", () => ({
   uploadDirToR2: vi.fn().mockResolvedValue(3),
   provisionR2: vi.fn().mockResolvedValue(undefined)
+}));
+
+vi.mock("../../providers/worker", () => ({
+  deleteWorker: vi.fn().mockResolvedValue(undefined)
+}));
+
+// workerExists (network-bound) is mocked; the rest of infra/cloudflare is unused here (planInfra,
+// which wraps the real client, is itself mocked above).
+vi.mock("../../infra/cloudflare", () => ({
+  workerExists: vi.fn().mockResolvedValue(true)
+}));
+
+// The inline typed prompt — default resolves "" (a non-match); destroy tests set it per case.
+vi.mock("../../prompt", () => ({
+  promptLine: vi.fn().mockResolvedValue("")
 }));
 
 vi.mock("../../infra/plan", () => ({
@@ -150,9 +166,12 @@ import { beforeEach } from "vitest";
 import { ensureEnvLocal } from "../../auth/env-file";
 import { verifyAuth } from "../../auth/verify";
 import { runDev } from "../../dev/runner";
+import { workerExists } from "../../infra/cloudflare";
 import { planInfra } from "../../infra/plan";
-import { provisionResource } from "../../providers";
+import { promptLine } from "../../prompt";
+import { destroyResource, provisionResource } from "../../providers";
 import { uploadDirToR2 } from "../../providers/r2";
+import { deleteWorker } from "../../providers/worker";
 import { runWrangler, runWranglerInherit } from "../../runner";
 import { stdoutIsTty } from "../../tty";
 import { scaffoldWranglerAndCi, writeWranglerConfig } from "../../wrangler-config";
@@ -1339,6 +1358,191 @@ describe("createDeployApi", () => {
       expect(report.status).toBe("failed");
       // The seed execute must NOT run after a failed migration.
       expect(runWrangler).not.toHaveBeenCalledWith(expect.arrayContaining(["execute"]));
+    });
+  });
+
+  // ───────── destroy (teardown) ───────────────────────────────────────────────
+
+  describe("destroy", () => {
+    /** A plan with one existing kv (with id) — the common "something to delete" fixture. */
+    const planWithKv = {
+      account: "acct",
+      accountId: "acct-1",
+      exists: [{ resource: { kind: "kv" as const, name: "cache-dev", binding: "KV" }, id: "ns-1" }],
+      missing: [],
+      ships: []
+    };
+
+    it("refuses and destroys nothing off a TTY (interactive-only)", async () => {
+      vi.mocked(stdoutIsTty).mockReturnValueOnce(false);
+      const ui = makeUi();
+      vi.mocked(createBrandConsole).mockReturnValueOnce(asConsole(ui));
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.destroy({ stage: "dev" });
+
+      expect(report.status).toBe("aborted");
+      expect(verifyAuth).not.toHaveBeenCalled();
+      expect(planInfra).not.toHaveBeenCalled();
+      expect(deleteWorker).not.toHaveBeenCalled();
+      expect(destroyResource).not.toHaveBeenCalled();
+      expect(ui.error).toHaveBeenCalledWith(expect.stringContaining("interactive-only"));
+    });
+
+    it("aborts (destroys nothing) when the token is invalid", async () => {
+      vi.mocked(verifyAuth).mockRejectedValueOnce(new Error("[worker] token missing"));
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.destroy({ stage: "dev" });
+
+      expect(report.status).toBe("aborted");
+      expect(planInfra).not.toHaveBeenCalled();
+      expect(deleteWorker).not.toHaveBeenCalled();
+      expect(destroyResource).not.toHaveBeenCalled();
+    });
+
+    it("aborts at the confirm gate when declined — no typed prompt, nothing deleted", async () => {
+      vi.mocked(planInfra).mockResolvedValueOnce(planWithKv);
+      vi.mocked(createBrandPrompts).mockReturnValueOnce({
+        confirm: vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(false),
+        select: vi.fn<(question: string, choices: readonly string[]) => Promise<number>>()
+      });
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.destroy({ stage: "dev" });
+
+      expect(report.status).toBe("aborted");
+      expect(promptLine).not.toHaveBeenCalled();
+      expect(deleteWorker).not.toHaveBeenCalled();
+      expect(destroyResource).not.toHaveBeenCalled();
+    });
+
+    it("aborts when the typed stage name does not match — nothing deleted", async () => {
+      vi.mocked(planInfra).mockResolvedValueOnce(planWithKv);
+      vi.mocked(promptLine).mockResolvedValueOnce("not-the-stage");
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.destroy({ stage: "dev" });
+
+      // confirm defaults to true (gate 1 passes), but the typed gate rejects.
+      expect(report.status).toBe("aborted");
+      expect(promptLine).toHaveBeenCalledWith(expect.stringContaining('"dev"'));
+      expect(deleteWorker).not.toHaveBeenCalled();
+      expect(destroyResource).not.toHaveBeenCalled();
+    });
+
+    it("destroys the worker first, then every resource, when the typed name matches", async () => {
+      vi.mocked(planInfra).mockResolvedValueOnce({
+        account: "acct",
+        accountId: "acct-1",
+        exists: [
+          { resource: { kind: "r2" as const, name: "files-dev", binding: "FILES" } },
+          { resource: { kind: "kv" as const, name: "cache-dev", binding: "KV" }, id: "ns-1" }
+        ],
+        missing: [],
+        ships: [{ kind: "do" as const, binding: "ROOM", className: "Room" }]
+      });
+      vi.mocked(promptLine).mockResolvedValueOnce("dev");
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.destroy({ stage: "dev" });
+
+      // Worker name is stage-qualified: "test-worker" + "dev" → "test-worker-dev".
+      expect(deleteWorker).toHaveBeenCalledWith("test-worker-dev");
+      expect(destroyResource).toHaveBeenCalledTimes(2);
+      expect(report.status).toBe("destroyed");
+      expect(report.ok).toBe(true);
+      expect(report.stage).toBe("dev");
+
+      // The Worker is deleted before any data store (so its DO storage goes first).
+      const workerOrder = vi.mocked(deleteWorker).mock.invocationCallOrder[0] ?? 0;
+      const firstResourceOrder = vi.mocked(destroyResource).mock.invocationCallOrder[0] ?? 0;
+      expect(workerOrder).toBeLessThan(firstResourceOrder);
+    });
+
+    it("skips the worker delete when the Worker is not deployed (data stores only)", async () => {
+      vi.mocked(planInfra).mockResolvedValueOnce(planWithKv);
+      vi.mocked(workerExists).mockResolvedValueOnce(false);
+      vi.mocked(promptLine).mockResolvedValueOnce("dev");
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.destroy({ stage: "dev" });
+
+      expect(deleteWorker).not.toHaveBeenCalled();
+      expect(destroyResource).toHaveBeenCalledTimes(1);
+      expect(report.status).toBe("destroyed");
+    });
+
+    it("captures a failed resource and still deletes the rest (status failed)", async () => {
+      vi.mocked(planInfra).mockResolvedValueOnce({
+        account: "acct",
+        accountId: "acct-1",
+        exists: [
+          { resource: { kind: "r2" as const, name: "files-dev", binding: "FILES" } },
+          { resource: { kind: "kv" as const, name: "cache-dev", binding: "KV" }, id: "ns-1" }
+        ],
+        missing: [],
+        ships: []
+      });
+      vi.mocked(workerExists).mockResolvedValueOnce(false);
+      vi.mocked(promptLine).mockResolvedValueOnce("dev");
+      vi.mocked(destroyResource)
+        .mockRejectedValueOnce(
+          new Error(
+            "[worker] wrangler exited with code 1.\n  The bucket you tried to delete is not empty"
+          )
+        )
+        .mockResolvedValueOnce(undefined);
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.destroy({ stage: "dev" });
+
+      expect(destroyResource).toHaveBeenCalledTimes(2); // both attempted despite the first failing
+      expect(report.status).toBe("failed");
+      expect(report.ok).toBe(false);
+      expect(report.errors.join(" ")).toContain("not empty");
+    });
+
+    it("is a clean no-op (status destroyed) when nothing exists for the stage", async () => {
+      vi.mocked(planInfra).mockResolvedValueOnce({
+        account: "acct",
+        accountId: "acct-1",
+        exists: [],
+        missing: [],
+        ships: []
+      });
+      vi.mocked(workerExists).mockResolvedValueOnce(false);
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.destroy({ stage: "dev" });
+
+      expect(report.status).toBe("destroyed");
+      expect(report.ok).toBe(true);
+      expect(createBrandPrompts).not.toHaveBeenCalled(); // no confirm gate
+      expect(promptLine).not.toHaveBeenCalled(); // no typed gate
+      expect(deleteWorker).not.toHaveBeenCalled();
+      expect(destroyResource).not.toHaveBeenCalled();
+    });
+
+    it("falls back to ctx.global.stage when no stage is given", async () => {
+      vi.mocked(planInfra).mockResolvedValueOnce(planWithKv);
+      vi.mocked(workerExists).mockResolvedValueOnce(false);
+      vi.mocked(promptLine).mockResolvedValueOnce("test"); // default mock ctx stage is "test"
+      const ctx = createMockCtx();
+      const api = createDeployApi(ctx);
+
+      const report = await api.destroy();
+
+      expect(report.stage).toBe("test");
+      expect(report.status).toBe("destroyed");
     });
   });
 

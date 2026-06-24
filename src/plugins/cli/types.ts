@@ -51,7 +51,14 @@ export type Api = {
    * the structured {@link DeployReport} (so a script can branch on the outcome) AND, on a failure,
    * renders a branded `✗` line + sets a non-zero exit code rather than throwing a raw stack trace.
    *
-   * @param opts - Optional ci flag, stage, a web build hook, and the post-deploy migration/seed flags.
+   * Pass `{ delete: true }` to instead DESTROY all infrastructure provisioned for the stage (Worker
+   * + KV + R2 + D1 + Queues + Durable Objects, with all data). Teardown bypasses the deploy pipeline
+   * and ignores every other option; it is double-confirmed (branded y/N, then the typed stage name)
+   * and interactive-only — off a TTY it refuses and destroys nothing. The report's `status` is
+   * `"destroyed"` (all gone), `"aborted"` (a gate declined / not a TTY), or `"failed"` (a resource
+   * could not be deleted, e.g. a non-empty R2 bucket).
+   *
+   * @param opts - Optional ci flag, stage, a web build hook, the post-deploy migration/seed flags, and the delete (teardown) flag.
    * @param opts.ci - Automated mode: never prompts, auto-confirms. Omit/false → guided on a TTY.
    * @param opts.stage - Stage for the generated wrangler config's resource names (e.g. "production",
    *   "staging"). Falls back to the `--stage` CLI flag, then the app's configured stage. Pass it
@@ -60,11 +67,14 @@ export type Api = {
    * @param opts.migration - Apply pending remote D1 migrations after a successful deploy (skipped on abort).
    * @param opts.seed - Load the configured remote seed (`pluginConfigs.deploy.seed`) after a
    *   successful deploy (+ migration); skipped on an aborted deploy.
+   * @param opts.delete - Destroy all infrastructure for the stage instead of deploying (double-confirmed,
+   *   interactive-only). When true, every other option is ignored.
    * @returns The deploy report (status, url, resource tally, migration/seed outcome, errors).
    * @example
    * ```ts
    * const report = await app.cli.deploy({ webBuild: () => web.cli.build(), migration: true, seed: true });
    * if (report.status === "aborted") return; // creds not set up yet — nothing shipped
+   * await app.cli.deploy({ delete: true, stage: "dev" }); // tear the dev stage back down
    * ```
    */
   deploy(opts?: {
@@ -73,6 +83,7 @@ export type Api = {
     webBuild?: WebBuild;
     migration?: boolean;
     seed?: boolean;
+    delete?: boolean;
   }): Promise<DeployReport>;
 
   /**

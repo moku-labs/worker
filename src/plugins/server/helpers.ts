@@ -5,19 +5,55 @@
  * derives a factory that composes guards in front of each handler at build time, so the
  * stored `Endpoint.handler` stays a normal handler and the matcher/dispatch never change.
  */
-import type { Endpoint, EndpointGuard, EndpointHandler, PathParams } from "./types";
+import type { Endpoint, EndpointGuard, EndpointHandler, PathParams, RequestContext } from "./types";
+
+/** Internal erased guard form stored on a factory — may gate (Response), enrich (object), or fall through (void). */
+type StoredGuard = EndpointGuard<Record<string, unknown>>;
+
+/**
+ * Extract the context-enrichment an awaited guard return contributes: a `Response`
+ * (gate) or `void`/`undefined` (continue) contributes NOTHING (`never`); only an object
+ * return is the enrichment. Distributes over the guard's return union, so a guard typed
+ * `Response | { actor }` yields `{ actor }`.
+ */
+type GuardExtension<Awaited> = [Awaited] extends [never]
+  ? never
+  : Awaited extends Response
+    ? never
+    : Awaited extends void
+      ? never
+      : Awaited extends Record<string, unknown>
+        ? Awaited
+        : never;
+
+/**
+ * Merge a guard's contributed extension into the accumulated one, treating an EMPTY
+ * extension (a gate-only guard, `never` / `keyof === never`) as the identity — so a
+ * gate-only `.new` leaves the factory's `Extension` byte-identical (no `{} & {}` intersection
+ * noise), and the first real enrichment yields a clean extension (not `{} & NewExtension`).
+ */
+type Merge<Extension, NewExtension> = [NewExtension] extends [never]
+  ? Extension
+  : keyof NewExtension extends never
+    ? Extension
+    : keyof Extension extends never
+      ? NewExtension
+      : Extension & NewExtension;
 
 /**
  * Fluent builder whose verb methods each return a typed `Endpoint`.
  *
  * @template Path - The path template literal, used to infer each handler's
  *   typed `ctx.params` ({@link PathParams}).
+ * @template Extension - The context extension contributed by the factory's guard chain
+ *   (e.g. `{ actor: Actor }`); each handler's ctx is `RequestContext<Params> & Extension`.
+ *   Defaults to the empty object (no enrichment) so an unguarded builder is unchanged.
  * @example
  * ```typescript
  * const e = endpoint("/api/{id}").get(({ params }) => Response.json({ id: params.id }));
  * ```
  */
-export type EndpointBuilder<Path extends string> = {
+export type EndpointBuilder<Path extends string, Extension = Record<never, never>> = {
   /**
    * Build a GET endpoint bound to this path.
    *
@@ -28,7 +64,7 @@ export type EndpointBuilder<Path extends string> = {
    * endpoint("/health").get(() => new Response("ok"));
    * ```
    */
-  get(handler: EndpointHandler<PathParams<Path>>): Endpoint;
+  get(handler: EndpointHandler<PathParams<Path>, Extension>): Endpoint;
   /**
    * Build a POST endpoint bound to this path.
    *
@@ -39,7 +75,7 @@ export type EndpointBuilder<Path extends string> = {
    * endpoint("/users").post(({ request }) => Response.json({ created: true }, { status: 201 }));
    * ```
    */
-  post(handler: EndpointHandler<PathParams<Path>>): Endpoint;
+  post(handler: EndpointHandler<PathParams<Path>, Extension>): Endpoint;
   /**
    * Build a PUT endpoint bound to this path.
    *
@@ -50,7 +86,7 @@ export type EndpointBuilder<Path extends string> = {
    * endpoint("/users/{id}").put(({ params }) => Response.json({ updated: params.id }));
    * ```
    */
-  put(handler: EndpointHandler<PathParams<Path>>): Endpoint;
+  put(handler: EndpointHandler<PathParams<Path>, Extension>): Endpoint;
   /**
    * Build a PATCH endpoint bound to this path.
    *
@@ -61,7 +97,7 @@ export type EndpointBuilder<Path extends string> = {
    * endpoint("/users/{id}").patch(({ params }) => Response.json({ patched: params.id }));
    * ```
    */
-  patch(handler: EndpointHandler<PathParams<Path>>): Endpoint;
+  patch(handler: EndpointHandler<PathParams<Path>, Extension>): Endpoint;
   /**
    * Build a DELETE endpoint bound to this path.
    *
@@ -72,7 +108,7 @@ export type EndpointBuilder<Path extends string> = {
    * endpoint("/users/{id}").delete(() => new Response(null, { status: 204 }));
    * ```
    */
-  delete(handler: EndpointHandler<PathParams<Path>>): Endpoint;
+  delete(handler: EndpointHandler<PathParams<Path>, Extension>): Endpoint;
   /**
    * Build a HEAD endpoint bound to this path.
    *
@@ -83,7 +119,7 @@ export type EndpointBuilder<Path extends string> = {
    * endpoint("/health").head(() => new Response(null, { status: 200 }));
    * ```
    */
-  head(handler: EndpointHandler<PathParams<Path>>): Endpoint;
+  head(handler: EndpointHandler<PathParams<Path>, Extension>): Endpoint;
   /**
    * Build an OPTIONS endpoint bound to this path.
    *
@@ -94,7 +130,7 @@ export type EndpointBuilder<Path extends string> = {
    * endpoint("/api").options(() => new Response(null, { headers: { Allow: "GET, POST" } }));
    * ```
    */
-  options(handler: EndpointHandler<PathParams<Path>>): Endpoint;
+  options(handler: EndpointHandler<PathParams<Path>, Extension>): Endpoint;
   /**
    * Build an ALL-method endpoint bound to this path (`method: "ALL"` — matches any verb).
    *
@@ -105,7 +141,7 @@ export type EndpointBuilder<Path extends string> = {
    * endpoint("0 * * * *").all(async () => new Response("cron done"));
    * ```
    */
-  all(handler: EndpointHandler<PathParams<Path>>): Endpoint;
+  all(handler: EndpointHandler<PathParams<Path>, Extension>): Endpoint;
 };
 
 /**
@@ -122,33 +158,49 @@ export type EndpointBuilder<Path extends string> = {
  * authed("/me").get(() => Response.json({ ok: true }));
  * ```
  */
-export type GuardedEndpointFactory = {
+export type GuardedEndpointFactory<Extension = Record<never, never>> = {
   /**
    * Bind a path and return its verb builder (identical to {@link endpoint}); any
-   * guards accumulated on this factory run before the handler.
+   * guards accumulated on this factory run before the handler, and any context they
+   * enrich (`Extension`) is typed onto each handler's `ctx`.
    *
    * @template Path - The path template literal, inferred from `path`.
    * @param path - Endpoint path, optionally with `{name}` / `{name:?}` params.
    * @returns A builder whose verb methods each return a typed `Endpoint`.
    * @example
    * ```typescript
-   * authed("/api/{id}").get(({ params }) => Response.json({ id: params.id }));
+   * authed("/api/{id}").get((ctx) => Response.json({ id: ctx.params.id, by: ctx.actor.id }));
    * ```
    */
-  <Path extends string>(path: Path): EndpointBuilder<Path>;
+  <Path extends string>(path: Path): EndpointBuilder<Path, Extension>;
   /**
    * Append a guard and return a NEW chainable factory carrying it. The receiver is
-   * not mutated; guards run in the order added, before the handler.
+   * not mutated; guards run in the order added, before the handler. The guard's ctx
+   * carries the extension accumulated by earlier guards (`Extension`); when the guard returns
+   * an object (`NewExtension`) instead of a Response/void, that object is merged into the
+   * context and typed onto every handler this factory builds (and onto later guards).
+   *
+   * @template NewExtension - The context extension this guard contributes, inferred from its
+   *   return type (constrained to an object so the inference ignores the `Response`/`void`
+   *   gate branches). A gate-only guard leaves `NewExtension` empty — the factory's `Extension` is unchanged.
+   * @param guard - A guard receiving `RequestContext & Extension`; returns a Response (gate),
+   *   a `NewExtension` object (enrich), or void (continue).
+   * @returns A new factory carrying this guard, with `Extension` widened to `Extension & NewExtension`.
    */
-  new: (guard: EndpointGuard) => GuardedEndpointFactory;
+  new: <R>(
+    guard: (ctx: RequestContext<Record<string, string | undefined>> & Extension) => R
+  ) => GuardedEndpointFactory<Merge<Extension, GuardExtension<Awaited<R>>>>;
 };
 
 /**
  * Compose a guard chain in front of a handler into a single `EndpointHandler`.
- * Guards run in order; the first to return a `Response` short-circuits — the handler
- * and any later guards are skipped. An EMPTY chain returns `handler` unchanged
- * (reference-identical), so an un-guarded builder is byte-identical to before. The
- * chain is `await`ed, so sync and async guards mix freely; a guard throw propagates.
+ * Guards run in order. A guard that returns a `Response` short-circuits — the handler
+ * and any later guards are skipped. A guard that returns an OBJECT enriches: the object
+ * is merged into the context handed to later guards AND the handler (so the handler reads
+ * it as a typed field, e.g. `ctx.actor`). A guard that returns `void`/`undefined` continues.
+ * An EMPTY chain returns `handler` unchanged (reference-identical), so an un-guarded builder
+ * is byte-identical to before. The chain is `await`ed, so sync and async guards mix freely;
+ * a guard throw propagates.
  *
  * @param guards - The guards to run before the handler, in order (may be empty).
  * @param handler - The handler to run if no guard short-circuits.
@@ -158,14 +210,18 @@ export type GuardedEndpointFactory = {
  * const h = compose([authGuard], () => new Response("ok"));
  * ```
  */
-const compose = (guards: readonly EndpointGuard[], handler: EndpointHandler): EndpointHandler => {
+const compose = (guards: readonly StoredGuard[], handler: EndpointHandler): EndpointHandler => {
   if (guards.length === 0) return handler;
   return async ctx => {
+    // A Response short-circuits; a returned object is merged into the context forwarded to
+    // later guards + the handler (the typed-enrichment seam); void/undefined just continues.
+    let enriched: RequestContext = ctx;
     for (const guard of guards) {
-      const blocked = await guard(ctx);
-      if (blocked) return blocked; // a returned Response short-circuits the chain
+      const result = await guard(enriched);
+      if (result instanceof Response) return result;
+      if (result) enriched = { ...enriched, ...result };
     }
-    return handler(ctx);
+    return handler(enriched);
   };
 };
 
@@ -183,15 +239,15 @@ const compose = (guards: readonly EndpointGuard[], handler: EndpointHandler): En
  * makeGuardedEndpoint("/api", "GET", [], handler); // { path, method: "GET", handler }
  * ```
  */
-const makeGuardedEndpoint = <Path extends string>(
+const makeGuardedEndpoint = <Path extends string, Extension>(
   path: Path,
   method: Endpoint["method"],
-  guards: readonly EndpointGuard[],
-  handler: EndpointHandler<PathParams<Path>>
+  guards: readonly StoredGuard[],
+  handler: EndpointHandler<PathParams<Path>, Extension>
 ): Endpoint =>
-  // The matcher fills `params` with exactly the names declared in `path`, so the
-  // path-typed handler is sound to store under the type-erased `Endpoint.handler`;
-  // `compose` then runs the guard chain in front of it.
+  // The matcher fills `params` with exactly the names declared in `path`, and `compose`
+  // merges any guard enrichment (`Extension`) onto the ctx, so the path+ext-typed handler is sound
+  // to store under the type-erased `Endpoint.handler`; `compose` runs the guard chain first.
   ({ path, method, handler: compose(guards, handler as EndpointHandler) });
 
 /**
@@ -208,10 +264,10 @@ const makeGuardedEndpoint = <Path extends string>(
  * buildVerbs("/health", []).get(() => new Response("ok"));
  * ```
  */
-const buildVerbs = <Path extends string>(
+const buildVerbs = <Path extends string, Extension = Record<never, never>>(
   path: Path,
-  guards: readonly EndpointGuard[]
-): EndpointBuilder<Path> => ({
+  guards: readonly StoredGuard[]
+): EndpointBuilder<Path, Extension> => ({
   /**
    * Build a GET endpoint bound to this path.
    *
@@ -314,15 +370,19 @@ const buildVerbs = <Path extends string>(
  * const authed = makeFactory([]).new(authGuard);
  * ```
  */
-const makeFactory = (guards: readonly EndpointGuard[]): GuardedEndpointFactory => {
+const makeFactory = <Extension = Record<never, never>>(
+  guards: readonly StoredGuard[]
+): GuardedEndpointFactory<Extension> => {
   // Widen the bare call signature to the factory type that also carries `.new`
   // (attached just below — the only member the target adds over the call signature).
-  const factory = (<Path extends string>(path: Path): EndpointBuilder<Path> =>
-    buildVerbs(path, guards)) as GuardedEndpointFactory;
+  const factory = (<Path extends string>(path: Path): EndpointBuilder<Path, Extension> =>
+    buildVerbs<Path, Extension>(path, guards)) as GuardedEndpointFactory<Extension>;
   // `.new` is a legal property name though `new` is a reserved identifier; append the
-  // guard immutably so chained factories branch without cross-contamination.
-  // eslint-disable-next-line jsdoc/require-jsdoc -- structural factory-chaining closure
-  factory.new = guard => makeFactory([...guards, guard]);
+  // guard immutably so chained factories branch without cross-contamination. The guard is
+  // stored erased (StoredGuard); the typed `NewExtension` inference lives on the public signature.
+
+  factory.new = ((guard: StoredGuard) =>
+    makeFactory([...guards, guard])) as GuardedEndpointFactory<Extension>["new"];
   return factory;
 };
 

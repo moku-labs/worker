@@ -304,6 +304,58 @@ describe("endpoint.new() — guard chain", () => {
     expect(handlerCtx).toBe(ctx);
   });
 
+  it("a guard that returns an object MERGES it into the handler's ctx (enrichment)", async () => {
+    let seen: { actor?: { id: string } } | undefined;
+    const e = endpoint
+      .new(() => ({ actor: { id: "u1" } }))("/x")
+      .get(ctx => {
+        seen = ctx as typeof ctx & { actor: { id: string } };
+        return new Response("ok");
+      });
+    await e.handler(makeCtx());
+    expect(seen?.actor).toEqual({ id: "u1" });
+  });
+
+  it("chained guards accumulate enrichment; a later guard sees an earlier guard's field", async () => {
+    const seen: Record<string, unknown> = {};
+    const e = endpoint
+      .new(() => ({ actor: { id: "u1" } }))
+      .new(ctx => ({
+        role: (ctx as { actor: { id: string } }).actor.id === "u1" ? "admin" : "user"
+      }))("/x")
+      .get(ctx => {
+        Object.assign(seen, ctx);
+        return new Response("ok");
+      });
+    await e.handler(makeCtx());
+    expect(seen.actor).toEqual({ id: "u1" });
+    expect(seen.role).toBe("admin");
+  });
+
+  it("a gate-only guard does NOT clone the ctx (enrichment is opt-in)", async () => {
+    let handlerCtx: RequestContext | undefined;
+    const e = endpoint
+      .new(allow)("/x")
+      .get(ctx => {
+        handlerCtx = ctx;
+        return new Response("ok");
+      });
+    const ctx = makeCtx();
+    await e.handler(ctx);
+    expect(handlerCtx).toBe(ctx); // same reference — no spread when nothing is enriched
+  });
+
+  it("an enriching guard followed by a rejecting guard still short-circuits", async () => {
+    const handler = vi.fn(() => new Response("ok"));
+    const e = endpoint
+      .new(() => ({ actor: { id: "u1" } }))
+      .new(reject)("/x")
+      .get(handler);
+    const res = await e.handler(makeCtx());
+    expect(handler).not.toHaveBeenCalled();
+    expect(res.status).toBe(401);
+  });
+
   // ─── Type-level assertions ───────────────────────────────────────────────
 
   it("endpoint.new(g) is callable and returns a chainable factory", () => {
@@ -316,5 +368,32 @@ describe("endpoint.new() — guard chain", () => {
     expectTypeOf(endpoint.new(allow)("/api/boards/{id}/cards").post)
       .parameter(0)
       .toEqualTypeOf<EndpointHandler<{ id: string }>>();
+  });
+
+  it("an enriching guard types its contributed field onto the handler ctx (alongside params)", () => {
+    const authed = endpoint.new(() => ({ actor: { id: "" } as { id: string } }));
+    authed("/api/boards/{id}").get(ctx => {
+      expectTypeOf(ctx.actor).toEqualTypeOf<{ id: string }>();
+      expectTypeOf(ctx.params.id).toBeString();
+      return new Response("ok");
+    });
+  });
+
+  it("chained enrichment accumulates both fields onto the handler ctx", () => {
+    const authed = endpoint.new(() => ({ actor: { id: "" } as { id: string } }));
+    const roled = authed.new(() => ({ role: "admin" as "admin" | "user" }));
+    roled("/x").get(ctx => {
+      expectTypeOf(ctx.actor).toEqualTypeOf<{ id: string }>();
+      expectTypeOf(ctx.role).toEqualTypeOf<"admin" | "user">();
+      return new Response("ok");
+    });
+  });
+
+  it("a plain (unguarded) endpoint handler ctx carries NO enrichment field", () => {
+    const e = endpoint("/x").get(ctx => {
+      expectTypeOf(ctx).not.toHaveProperty("actor");
+      return new Response("ok");
+    });
+    expect(e.method).toBe("GET");
   });
 });

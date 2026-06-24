@@ -123,6 +123,26 @@ endpoint("/cache/{key}").get(async ({ params, env, require, has }) => {
 
 The core plugins are **flat-injected** on every plugin's `ctx` — `ctx.log`, `ctx.env` — and also mounted on the app surface (`app.log`, `app.env`). Deployment stage is plain global config: `ctx.global.stage`.
 
+## Guards that gate AND enrich
+
+`endpoint.new(guard)` derives a factory that runs `guard` before every handler it builds (chain `.new` to stack guards). A guard can **gate** — return a `Response` to short-circuit — and now also **enrich**: return an object and it is merged into the context handed to the handler (and to later guards), which then read it as a **typed field**. So a guard resolves a value once and the handler reuses it — no re-resolve, no defensive null-check:
+
+```typescript
+// Resolve the session ONCE in the guard; gate if absent, else hand the actor forward.
+const authed = endpoint.new(async (ctx) => {
+  const actor = await ctx.require(authPlugin).resolveActor(ctx.request, ctx.env);
+  if (!actor) return new Response("Unauthorized", { status: 401 });
+  return { actor };                                   // ← enrich
+});
+
+authed("/api/boards/{id}").post(async (ctx) => {
+  // ctx.actor: Actor (non-null, typed) — AND ctx.params.id: string still inferred from the path
+  return Response.json(await ctx.require(boardsPlugin).rename(ctx.env, ctx.params.id, ctx.actor));
+});
+```
+
+A gate-only guard (returns `Response`/`void`) is unchanged and adds nothing to `ctx`; the enrichment type is inferred per guard and accumulates across a `.new` chain. Purely additive — existing guards keep working.
+
 ## Plugins
 
 Name **strings** are bare (`"server"`, `"kv"`); the exported **instances** carry the `Plugin` suffix (`serverPlugin`, `kvPlugin`). Everything ships from the `@moku-labs/worker` root.

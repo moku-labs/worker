@@ -59,6 +59,15 @@ const makeDeployStub = () => ({
       }) => Promise<DeployReport>
     >()
     .mockResolvedValue(DEPLOYED_REPORT),
+  destroy: vi.fn<(opts?: { stage?: string }) => Promise<DeployReport>>().mockResolvedValue({
+    ok: true,
+    status: "destroyed",
+    stage: "production",
+    migration: "skipped",
+    seed: "skipped",
+    elapsedMs: 0,
+    errors: []
+  }),
   seed: vi
     .fn<
       (
@@ -301,6 +310,83 @@ describe("createCliApi", () => {
       await api.deploy({ ci: true, migration: true, seed: true });
 
       expect(deployStub.run).toHaveBeenCalledWith({ ci: true, migration: true, seed: true });
+    });
+
+    // ─── delete → teardown routing ────────────────────────────────────────────
+
+    it("routes { delete: true } to deploy.destroy with the stage (never run)", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+
+      await api.deploy({ delete: true, stage: "dev" });
+
+      expect(deployStub.destroy).toHaveBeenCalledWith({ stage: "dev" });
+      expect(deployStub.run).not.toHaveBeenCalled();
+    });
+
+    it("ignores webBuild/migration/seed/ci when delete is set (teardown bypasses the pipeline)", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      const api = createCliApi(ctx);
+      const webBuild = vi.fn<WebBuild>().mockResolvedValue({ files: 1 });
+
+      await api.deploy({
+        delete: true,
+        stage: "dev",
+        ci: true,
+        migration: true,
+        seed: true,
+        webBuild
+      });
+
+      expect(deployStub.destroy).toHaveBeenCalledWith({ stage: "dev" });
+      expect(deployStub.run).not.toHaveBeenCalled();
+      expect(webBuild).not.toHaveBeenCalled();
+    });
+
+    it("returns the destroyed report and leaves the exit code alone on a clean teardown", async () => {
+      const { ctx } = makeMockCtx();
+      const api = createCliApi(ctx);
+      const originalExit = process.exitCode;
+
+      const report = await api.deploy({ delete: true, stage: "dev" });
+      expect(report.status).toBe("destroyed");
+
+      process.exitCode = originalExit;
+    });
+
+    it("sets a non-zero exit code when destroy resolves a failed report", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      deployStub.destroy.mockResolvedValueOnce({
+        ok: false,
+        status: "failed",
+        stage: "dev",
+        migration: "skipped",
+        seed: "skipped",
+        elapsedMs: 1,
+        errors: ["[worker] bucket not empty"]
+      });
+      const api = createCliApi(ctx);
+      const originalExit = process.exitCode;
+
+      const report = await api.deploy({ delete: true, stage: "dev" });
+      expect(report.status).toBe("failed");
+      expect(process.exitCode).toBe(1);
+
+      process.exitCode = originalExit;
+    });
+
+    it("renders a branded error + failed report when destroy throws", async () => {
+      const { ctx, deployStub } = makeMockCtx();
+      deployStub.destroy.mockRejectedValueOnce(new Error("boom"));
+      const api = createCliApi(ctx);
+      const originalExit = process.exitCode;
+
+      const report = await api.deploy({ delete: true });
+      expect(report.status).toBe("failed");
+      expect(report.errors).toContain("boom");
+      expect(process.exitCode).toBe(1);
+
+      process.exitCode = originalExit;
     });
   });
 

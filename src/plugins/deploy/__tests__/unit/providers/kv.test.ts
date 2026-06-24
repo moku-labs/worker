@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { parseKvNamespaceId, provisionKv } from "../../../providers/kv";
+import { deleteKv, parseKvNamespaceId, provisionKv } from "../../../providers/kv";
 
 vi.mock("../../../runner", () => ({
   runWrangler: vi
@@ -36,6 +36,25 @@ describe("provisionKv", () => {
     ).resolves.toEqual({
       id: "ns-abc123"
     });
+  });
+});
+
+describe("deleteKv", () => {
+  it("calls runWrangler with kv namespace delete by --namespace-id and -y", async () => {
+    await deleteKv("ns-abc123");
+
+    expect(runWrangler).toHaveBeenCalledWith([
+      "kv",
+      "namespace",
+      "delete",
+      "--namespace-id",
+      "ns-abc123",
+      "-y"
+    ]);
+  });
+
+  it("resolves without throwing", async () => {
+    await expect(deleteKv("ns-xyz")).resolves.toBeUndefined();
   });
 });
 

@@ -7,13 +7,14 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { provisionR2, uploadDirToR2 } from "../../../providers/r2";
+import { deleteR2, provisionR2, uploadDirToR2 } from "../../../providers/r2";
 
 vi.mock("../../../runner", () => ({
-  runWrangler: vi.fn().mockResolvedValue("r2 bucket created: ASSETS")
+  runWrangler: vi.fn().mockResolvedValue("r2 bucket created: ASSETS"),
+  runWranglerYes: vi.fn().mockResolvedValue("Deleted bucket tracker-files")
 }));
 
-import { runWrangler } from "../../../runner";
+import { runWrangler, runWranglerYes } from "../../../runner";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Temp directory for upload tests
@@ -55,6 +56,28 @@ describe("provisionR2", () => {
     await expect(
       provisionR2({ kind: "r2", name: "tracker-bucket", binding: "BUCKET" }, true)
     ).resolves.toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// deleteR2
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("deleteR2", () => {
+  it("calls runWranglerYes with r2 bucket delete <name> (no -y flag; prompt is auto-answered)", async () => {
+    await deleteR2("tracker-files-dev");
+
+    expect(runWranglerYes).toHaveBeenCalledWith(["r2", "bucket", "delete", "tracker-files-dev"]);
+  });
+
+  it("propagates a non-empty-bucket failure so the caller can capture it", async () => {
+    vi.mocked(runWranglerYes).mockRejectedValueOnce(
+      new Error(
+        "[worker] wrangler exited with code 1.\n  The bucket you tried to delete is not empty"
+      )
+    );
+
+    await expect(deleteR2("tracker-files-dev")).rejects.toThrow(/not empty/u);
   });
 });
 

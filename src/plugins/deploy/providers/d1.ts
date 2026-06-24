@@ -14,6 +14,23 @@ import type { ProvisionOutcome, ResourceManifest } from "../types";
 type D1Manifest = Extract<ResourceManifest, { kind: "d1" }>;
 
 /**
+ * Delete a D1 database via `wrangler d1 delete <name> -y` — destroys the database and all of its
+ * tables/data. The `-y` flag skips wrangler's own confirmation (the teardown already
+ * double-confirmed with the user). The name is the stage-qualified database name.
+ *
+ * @param name - The stage-qualified D1 database name (e.g. "tracker-db-dev").
+ * @returns Resolves once wrangler reports the database deleted.
+ * @throws {Error} When wrangler exits non-zero (e.g. the database no longer exists).
+ * @example
+ * ```ts
+ * await deleteD1("tracker-db-dev");
+ * ```
+ */
+export const deleteD1 = async (name: string): Promise<void> => {
+  await runWrangler(["d1", "delete", name, "-y"]);
+};
+
+/**
  * Parse the created D1 database id from `wrangler d1 create` output.
  * Wrangler prints the new binding as JSON (`"database_id": "..."`) or TOML
  * (`database_id = "..."`); the leading boundary keeps the match anchored to the field name.

@@ -81,6 +81,40 @@ export const verifyToken = async (token: string): Promise<{ status: string }> =>
 };
 
 /**
+ * Check whether a Worker script of the given name is deployed in the account, via
+ * `GET /accounts/{id}/workers/scripts/{name}` (200 → exists, 404 → absent). Used by teardown to
+ * target — and report the Durable Objects of — the Worker only when it is actually deployed, so a
+ * stage that only ever provisioned data resources does not surface a phantom "worker failed" line.
+ *
+ * @param token - The Cloudflare API token.
+ * @param accountId - The Cloudflare account id the Worker lives under.
+ * @param name - The stage-qualified Worker name (e.g. "tracker-worker-dev").
+ * @returns True when the Worker script exists, false when Cloudflare reports it absent.
+ * @throws {Error} When the request fails for a reason other than a 404 (network/auth).
+ * @example
+ * ```ts
+ * if (await workerExists(token, accountId, "tracker-worker-dev")) { ... }
+ * ```
+ */
+export const workerExists = async (
+  token: string,
+  accountId: string,
+  name: string
+): Promise<boolean> => {
+  const response = await fetch(`${API_BASE}/accounts/${accountId}/workers/scripts/${name}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  // 200 → deployed; 404 → not deployed. Anything else (401/403/5xx) is a real error to surface.
+  if (response.ok) return true;
+  if (response.status === 404) return false;
+
+  const body = (await response.json().catch(() => ({}))) as CfEnvelope;
+  const detail = body.errors?.map(error => error.message).join("; ") || `HTTP ${response.status}`;
+  throw new Error(`[worker] Cloudflare API request failed (worker exists check): ${detail}`);
+};
+
+/**
  * The resource kinds the preflight can list against the Cloudflare API. Durable Objects ship with
  * the Worker script (no account-level listing), so they are never queried.
  */

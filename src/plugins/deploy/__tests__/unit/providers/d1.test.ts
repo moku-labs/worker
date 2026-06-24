@@ -3,7 +3,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { parseD1DatabaseId, provisionD1 } from "../../../providers/d1";
+import { deleteD1, parseD1DatabaseId, provisionD1 } from "../../../providers/d1";
 
 vi.mock("../../../runner", () => ({
   runWrangler: vi
@@ -49,6 +49,18 @@ describe("provisionD1", () => {
     ).resolves.toEqual({
       id: "uuid-1234"
     });
+  });
+});
+
+describe("deleteD1", () => {
+  it("calls runWrangler with d1 delete <name> -y", async () => {
+    await deleteD1("tracker-db-dev");
+
+    expect(runWrangler).toHaveBeenCalledWith(["d1", "delete", "tracker-db-dev", "-y"]);
+  });
+
+  it("resolves without throwing", async () => {
+    await expect(deleteD1("tracker-db")).resolves.toBeUndefined();
   });
 });
 

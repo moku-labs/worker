@@ -5,7 +5,8 @@
  * (extracted from stdout for `wrangler deploy`), or the full stdout for other verbs.
  * This module is node-only; never imported by the runtime Worker bundle.
  */
-import { spawn } from "node:child_process";
+import { type ChildProcessByStdio, spawn } from "node:child_process";
+import type { Readable, Writable } from "node:stream";
 
 /**
  * Extract the deployed URL from `wrangler deploy` stdout.
@@ -27,33 +28,28 @@ const extractDeployedUrl = (output: string): string => {
 };
 
 /**
- * Spawn `wrangler` with the given args and resolve the output string.
- * For `wrangler deploy`, the resolved value is the deployed URL parsed from stdout.
- * For all other verbs (dev, kv namespace create, etc.), the resolved value is stdout.
+ * Capture a spawned wrangler child's piped stdout/stderr and resolve once it exits: the deployed URL
+ * for the `deploy` verb, the full stdout for every other verb. Shared by {@link runWrangler} and
+ * {@link runWranglerYes} (which differ only in whether stdin is auto-answered), so the accumulate +
+ * decode + non-zero-exit handling lives in exactly one place.
  *
- * @param args - Wrangler CLI arguments (e.g. ["deploy", "--config", "wrangler.jsonc"]).
+ * @param child - The spawned wrangler process (stdout/stderr piped; stdin piped or ignored).
+ * @param args - The wrangler arguments the child was spawned with (used to detect the deploy verb).
  * @returns Resolves with the deployed URL (deploy verb) or full stdout (other verbs).
- * @throws {Error} When wrangler exits with a non-zero code.
+ * @throws {Error} When wrangler cannot be spawned or exits with a non-zero code.
  * @example
  * ```ts
- * const url = await runWrangler(["deploy", "--config", "wrangler.jsonc"]);
- * await runWrangler(["kv", "namespace", "create", "CACHE"]);
+ * return captureWrangler(spawn("wrangler", args, opts), args);
  * ```
  */
-export const runWrangler = (args: string[]): Promise<string> =>
+const captureWrangler = (
+  child: ChildProcessByStdio<Writable | null, Readable, Readable>,
+  args: string[]
+): Promise<string> =>
   new Promise<string>((resolve, reject) => {
     // Accumulate stdout/stderr as raw Buffer chunks — decoded once on close.
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
-
-    // Spawn the wrangler CLI with piped stdio so its output can be captured.
-    // wrangler is a trusted dev/peer dependency resolved from the local node_modules/.bin.
-    // eslint-disable-next-line sonarjs/no-os-command-from-path -- wrangler is a pinned peer dep resolved from node_modules/.bin
-    const child = spawn("wrangler", args, {
-      // @env-allow — pass the parent environment through to the wrangler subprocess (not app config).
-      env: { ...process.env },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
 
     // Stream stdout/stderr chunks into their buffers as they arrive.
     child.stdout.on("data", (chunk: Buffer) => {
@@ -85,6 +81,57 @@ export const runWrangler = (args: string[]): Promise<string> =>
       resolve(isDeploy ? extractDeployedUrl(stdout) : stdout);
     });
   });
+
+/**
+ * Spawn `wrangler` with the given args and resolve the output string.
+ * For `wrangler deploy`, the resolved value is the deployed URL parsed from stdout.
+ * For all other verbs (dev, kv namespace create, etc.), the resolved value is stdout.
+ *
+ * @param args - Wrangler CLI arguments (e.g. ["deploy", "--config", "wrangler.jsonc"]).
+ * @returns Resolves with the deployed URL (deploy verb) or full stdout (other verbs).
+ * @throws {Error} When wrangler exits with a non-zero code.
+ * @example
+ * ```ts
+ * const url = await runWrangler(["deploy", "--config", "wrangler.jsonc"]);
+ * await runWrangler(["kv", "namespace", "create", "CACHE"]);
+ * ```
+ */
+export const runWrangler = (args: string[]): Promise<string> => {
+  // Spawn the wrangler CLI with piped stdout/stderr (captured) and stdin ignored — the default verbs
+  // never read stdin. wrangler is a trusted dev/peer dependency resolved from node_modules/.bin.
+  // eslint-disable-next-line sonarjs/no-os-command-from-path -- wrangler is a pinned peer dep resolved from node_modules/.bin
+  const child = spawn("wrangler", args, {
+    env: { ...process.env }, // @env-allow — passthrough to the spawned wrangler subprocess (not app config)
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  return captureWrangler(child, args);
+};
+
+/**
+ * Spawn `wrangler` with the given args, auto-answering its confirmation prompt by writing `y` to
+ * stdin. Used for the destructive verbs whose prompt has no `--skip-confirmation`/`-y` flag —
+ * `wrangler delete`, `wrangler queues delete`, and `wrangler r2 bucket delete` — so a teardown that
+ * already double-confirmed with the user never blocks on a second per-resource prompt.
+ *
+ * @param args - Wrangler CLI arguments (e.g. ["queues", "delete", "jobs"]).
+ * @returns Resolves with wrangler's full stdout once it exits.
+ * @throws {Error} When wrangler cannot be spawned or exits with a non-zero code.
+ * @example
+ * ```ts
+ * await runWranglerYes(["r2", "bucket", "delete", "tracker-files-dev"]);
+ * ```
+ */
+export const runWranglerYes = (args: string[]): Promise<string> => {
+  // stdin is piped (not ignored) so the "y" answer reaches wrangler's confirmation prompt, then
+  // closed so wrangler stops waiting for further input.
+  // eslint-disable-next-line sonarjs/no-os-command-from-path -- wrangler is a pinned peer dep resolved from node_modules/.bin
+  const child = spawn("wrangler", args, {
+    env: { ...process.env }, // @env-allow — passthrough to the spawned wrangler subprocess (not app config)
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  child.stdin.end("y\n");
+  return captureWrangler(child, args);
+};
 
 /**
  * Spawn `wrangler` with the given args, inheriting stdio so its output streams live to the user's

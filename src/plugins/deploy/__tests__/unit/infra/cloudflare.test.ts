@@ -7,7 +7,8 @@ import {
   type ListableKind,
   listExisting,
   resolveAccount,
-  verifyToken
+  verifyToken,
+  workerExists
 } from "../../../infra/cloudflare";
 
 /** All four listable kinds — the default scope for the "lists everything" cases. */
@@ -131,6 +132,48 @@ describe("listExisting", () => {
     await listExisting("my-token", "acc-123", new Set<ListableKind>(["kv"]));
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer my-token");
+  });
+});
+
+describe("workerExists", () => {
+  it("returns true when the Worker script exists (200)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ success: true, result: {} })));
+
+    await expect(workerExists("token", "acc-123", "app-dev")).resolves.toBe(true);
+  });
+
+  it("returns false when Cloudflare reports the Worker absent (404)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ success: false, errors: [] }, false, 404))
+    );
+
+    await expect(workerExists("token", "acc-123", "missing-worker")).resolves.toBe(false);
+  });
+
+  it("throws a branded error on a non-404 failure (e.g. 403)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse({ success: false, errors: [{ message: "Forbidden" }] }, false, 403)
+        )
+    );
+
+    await expect(workerExists("token", "acc-123", "app-dev")).rejects.toThrow("[worker]");
+  });
+
+  it("scopes the request to the account + worker name with the bearer token", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, result: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await workerExists("my-token", "acc-123", "app-dev");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/accounts/acc-123/workers/scripts/app-dev");
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer my-token");
   });

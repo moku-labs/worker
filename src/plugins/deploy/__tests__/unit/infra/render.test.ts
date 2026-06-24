@@ -11,6 +11,8 @@ import {
   renderPlan,
   renderProvisionResult,
   renderSeedSummary,
+  renderTeardownPlan,
+  renderTeardownResult,
   resourceName
 } from "../../../infra/render";
 import type { InfraPlan, MigrationOutcome, ProvisionResult, SeedOutcome } from "../../../types";
@@ -266,5 +268,69 @@ describe("renderSeedSummary", () => {
     expect(out).toContain("local");
     expect(out).not.toContain("KV reset"); // no KV block when nothing was reset
     expect(out).not.toContain("rows written"); // no stats line when wrangler reported none
+  });
+});
+
+describe("renderTeardownPlan", () => {
+  it("lists every targeted resource (worker, data stores, DOs) with a count + account", () => {
+    const { ui, text } = capture();
+
+    renderTeardownPlan(ui, {
+      account: "Acme Co",
+      rows: [
+        { kind: "worker", name: "tracker-worker-dev" },
+        { kind: "r2", name: "tracker-files-dev" },
+        { kind: "kv", name: "tracker-cache-dev" },
+        { kind: "do", name: "Room", note: "removed with worker" }
+      ]
+    });
+    const out = text();
+
+    expect(out).toContain("Teardown plan");
+    expect(out).toContain("4 resource(s) · Acme Co");
+    expect(out).toContain("worker");
+    expect(out).toContain("tracker-worker-dev");
+    expect(out).toContain("tracker-files-dev");
+    expect(out).toContain("Room");
+    expect(out).toContain("(removed with worker)");
+  });
+});
+
+describe("renderTeardownResult", () => {
+  it("shows a deleted tally and no failures on a clean teardown", () => {
+    const { ui, text } = capture();
+
+    renderTeardownResult(ui, {
+      deleted: [
+        { kind: "worker", name: "tracker-worker-dev" },
+        { kind: "kv", name: "tracker-cache-dev" }
+      ],
+      failed: []
+    });
+    const out = text();
+
+    expect(out).toContain("Destroyed");
+    expect(out).toContain("2 deleted · 0 failed");
+    expect(out).not.toContain("Empty bucket");
+  });
+
+  it("renders each failure's reason and the dashboard hint for a non-empty R2 bucket", () => {
+    const { ui, text } = capture();
+
+    renderTeardownResult(ui, {
+      deleted: [{ kind: "kv", name: "tracker-cache-dev" }],
+      failed: [
+        {
+          row: { kind: "r2", name: "tracker-files-dev" },
+          error:
+            "[worker] wrangler exited with code 1.\n  The bucket you tried to delete is not empty"
+        }
+      ]
+    });
+    const out = text();
+
+    expect(out).toContain("1 deleted · 1 failed");
+    expect(out).toContain("not empty");
+    expect(out).toContain("Empty bucket"); // the manual-cleanup dashboard hint
   });
 });

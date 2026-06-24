@@ -371,3 +371,134 @@ export const renderSeedSummary = (
   ui.heading("Seeded");
   ui.box([...lines, "", palette.dim(scope)]);
 };
+
+/**
+ * One row in the teardown panels: a resource kind + name, with an optional dim parenthetical note
+ * (e.g. the Worker, or a Durable Object "removed with worker"). Shared by {@link renderTeardownPlan}
+ * and {@link renderTeardownResult} so the confirm preview and the outcome read the same.
+ */
+export type TeardownRow = {
+  /** Resource kind label (worker / kv / r2 / d1 / queue / do). */
+  kind: string;
+  /** Resource name (or the Durable Object class name / Worker name). */
+  name: string;
+  /** Optional dim parenthetical note shown after the name (e.g. "removed with worker"). */
+  note?: string;
+};
+
+/**
+ * Format a row's optional dim `(note)` suffix (empty when the row has no note).
+ *
+ * @param palette - The brand palette (for the dim styling).
+ * @param note - The note text, or undefined for no suffix.
+ * @returns The ` (note)` suffix, or an empty string.
+ * @example
+ * ```ts
+ * noteSuffix(palette, "removed with worker"); // " (removed with worker)"
+ * ```
+ */
+const noteSuffix = (palette: BrandConsole["palette"], note: string | undefined): string => {
+  if (note === undefined) return "";
+  const label = palette.dim(`(${note})`);
+  return ` ${label}`;
+};
+
+/**
+ * Detect wrangler's "bucket is not empty" rejection so the result panel can show the manual-cleanup
+ * hint — the one teardown failure the CLI cannot resolve itself (wrangler 4.x cannot list/empty R2
+ * objects).
+ *
+ * @param reason - The cleaned failure reason.
+ * @returns True when the reason indicates a non-empty R2 bucket.
+ * @example
+ * ```ts
+ * isBucketNotEmpty("The bucket you tried to delete is not empty"); // true
+ * ```
+ */
+const isBucketNotEmpty = (reason: string): boolean => /not empty|empty the bucket/iu.test(reason);
+
+/**
+ * Render the teardown plan as a branded panel — the destructive counterpart to {@link renderPlan}:
+ * a dim summary line (count + account) then one red `✗ kind name` row per thing that will be
+ * destroyed (the Worker, each existing kv/r2/d1/queue, and each Durable Object removed with the
+ * Worker). Shown before the double confirmation so the user sees exactly what is about to die.
+ *
+ * @param ui - The branded console to render through.
+ * @param plan - The teardown plan (resolved account + the rows to destroy).
+ * @param plan.account - The resolved Cloudflare account name.
+ * @param plan.rows - Every resource that will be destroyed (worker, data stores, Durable Objects).
+ * @example
+ * ```ts
+ * renderTeardownPlan(ui, { account: "Acme", rows: [{ kind: "worker", name: "app-dev" }] });
+ * ```
+ */
+export const renderTeardownPlan = (
+  ui: BrandConsole,
+  plan: { account: string; rows: TeardownRow[] }
+): void => {
+  const { palette } = ui;
+
+  const rows = plan.rows.map(
+    row => `${palette.red("✗")} ${cell(row.kind, row.name)}${noteSuffix(palette, row.note)}`
+  );
+
+  ui.heading("Teardown plan");
+  ui.box([palette.dim(`${String(plan.rows.length)} resource(s) · ${plan.account}`), "", ...rows]);
+};
+
+/**
+ * Render the teardown result as a branded panel — the destructive counterpart to
+ * {@link renderProvisionResult}: a green `✓` per destroyed resource, a red `✗` per failure, then a
+ * summary line — followed, when anything failed, by a readable detail block printing each failure's
+ * FULL reason (ANSI-stripped, word-wrapped). A non-empty R2 bucket (the one failure teardown cannot
+ * resolve itself) gets an extra dim hint pointing at the dashboard's "Empty bucket" action.
+ *
+ * @param ui - The branded console to render through.
+ * @param result - The teardown result (destroyed rows + captured failures).
+ * @param result.deleted - The rows that were destroyed.
+ * @param result.failed - The rows that failed to delete, each with its captured error.
+ * @example
+ * ```ts
+ * renderTeardownResult(ui, { deleted: [{ kind: "kv", name: "cache-dev" }], failed: [] });
+ * ```
+ */
+export const renderTeardownResult = (
+  ui: BrandConsole,
+  result: { deleted: TeardownRow[]; failed: { row: TeardownRow; error: string }[] }
+): void => {
+  const { palette } = ui;
+
+  const deletedRows = result.deleted.map(
+    row => `${palette.green("✓")} ${cell(row.kind, row.name)}${noteSuffix(palette, row.note)}`
+  );
+  const failedRows = result.failed.map(
+    failure => `${palette.red("✗")} ${cell(failure.row.kind, failure.row.name)}`
+  );
+
+  const failedCount =
+    result.failed.length > 0 ? palette.red(`${String(result.failed.length)} failed`) : "0 failed";
+  const summary = `${String(result.deleted.length)} deleted · ${failedCount}`;
+
+  ui.heading("Destroyed");
+  ui.box([...deletedRows, ...failedRows, "", summary]);
+
+  // Full, readable failure detail under the box — each reason word-wrapped, with a dashboard hint
+  // for the one failure teardown cannot resolve itself: a non-empty R2 bucket.
+  if (result.failed.length > 0) {
+    ui.line();
+    for (const failure of result.failed) {
+      ui.line(`  ${palette.red("✗")} ${cell(failure.row.kind, failure.row.name)}`);
+      const reason = cleanError(failure.error);
+      for (const wrapped of wrapText(reason, ui.width - 4)) {
+        ui.line(palette.dim(`    ${wrapped}`));
+      }
+      if (isBucketNotEmpty(reason)) {
+        ui.line(
+          palette.dim(
+            "    → empty it in the dashboard (R2 → bucket → Settings → Empty bucket), then re-run"
+          )
+        );
+      }
+    }
+  }
+};

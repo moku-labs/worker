@@ -10,11 +10,30 @@
  */
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { runWrangler } from "../runner";
+import { runWrangler, runWranglerYes } from "../runner";
 import type { ResourceManifest } from "../types";
 
 /** An R2 resource descriptor. */
 type R2Manifest = Extract<ResourceManifest, { kind: "r2" }>;
+
+/**
+ * Delete an R2 bucket via `wrangler r2 bucket delete <name>` (auto-answering the prompt — the verb
+ * has no `-y` flag). Cloudflare requires the bucket to be EMPTY first, and wrangler 4.x cannot list
+ * objects (`r2 object` has only get/put/delete), so a non-empty bucket cannot be emptied from here:
+ * wrangler rejects the delete and this throws. The caller captures that failure (teardown stays
+ * resilient) and the result panel surfaces the dashboard "Empty bucket" hint.
+ *
+ * @param name - The stage-qualified R2 bucket name (e.g. "tracker-files-dev").
+ * @returns Resolves once wrangler reports the bucket deleted.
+ * @throws {Error} When wrangler exits non-zero — notably when the bucket is not empty.
+ * @example
+ * ```ts
+ * await deleteR2("tracker-files-dev");
+ * ```
+ */
+export const deleteR2 = async (name: string): Promise<void> => {
+  await runWranglerYes(["r2", "bucket", "delete", name]);
+};
 
 /**
  * Provision an R2 bucket via `wrangler r2 bucket create`.

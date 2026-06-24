@@ -102,6 +102,9 @@ export { envPlugin, logPlugin } from "@moku-labs/common";
 
 // ─── Helpers ─────────────────────────────────────────────────
 export { endpoint } from "./plugins/server/helpers";
+// `endpoint.new(guard)` types: the chainable factory + the guard a consumer authors.
+export type { GuardedEndpointFactory } from "./plugins/server/helpers";
+export type { EndpointGuard } from "./plugins/server/types";
 export { defineDurableObject } from "./plugins/durable-objects/helpers";
 
 // ─── Types ───────────────────────────────────────────────────

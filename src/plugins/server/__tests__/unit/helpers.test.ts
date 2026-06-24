@@ -1,7 +1,13 @@
-import { describe, expect, expectTypeOf, it } from "vitest";
-
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
+import type { GuardedEndpointFactory } from "../../helpers";
 import { endpoint } from "../../helpers";
-import type { Endpoint, EndpointHandler, PathParams } from "../../types";
+import type {
+  Endpoint,
+  EndpointGuard,
+  EndpointHandler,
+  PathParams,
+  RequestContext
+} from "../../types";
 
 // ─── Unit tests: endpoint() pure builder ─────────────────────────────────────
 
@@ -161,5 +167,154 @@ describe("endpoint() threads the path type into the handler", () => {
     expectTypeOf(endpoint(dynamicPath).get)
       .parameter(0)
       .toEqualTypeOf<EndpointHandler<Record<string, string | undefined>>>();
+  });
+});
+
+// ─── endpoint.new() — chainable guard factory ────────────────────────────────
+
+/** Minimal per-request context for invoking a built handler directly. */
+const makeCtx = (request: Request = new Request("https://example.com/x")): RequestContext => ({
+  request,
+  env: {},
+  exec: {
+    waitUntil: () => undefined,
+    passThroughOnException: () => undefined
+  } as unknown as ExecutionContext,
+  params: {},
+  url: new URL(request.url),
+  require: (() => undefined) as unknown as RequestContext["require"],
+  has: () => false
+});
+
+/** Guard that allows the request through (returns nothing). */
+const allow: EndpointGuard = () => undefined;
+
+/** Guard that rejects with a 401 (returns a Response). */
+const reject: EndpointGuard = () => new Response("nope", { status: 401 });
+
+/** Async guard that rejects with a 401. */
+const asyncReject: EndpointGuard = async () => new Response("async-no", { status: 401 });
+
+/** Async guard that allows the request through. */
+const asyncAllow: EndpointGuard = async () => undefined;
+
+/** Guard that throws synchronously. */
+const boom: EndpointGuard = () => {
+  throw new Error("boom");
+};
+
+describe("endpoint.new() — guard chain", () => {
+  // ─── Runtime behaviour ───────────────────────────────────────────────────
+
+  it("no guards — stores the handler verbatim (base is byte-identical)", () => {
+    const e = endpoint("/x").get(noopHandler);
+    expect(e.handler).toBe(noopHandler);
+  });
+
+  it("allow (void) — the handler runs", async () => {
+    const handler = vi.fn(() => new Response("ok"));
+    const e = endpoint.new(allow)("/x").get(handler);
+    const res = await e.handler(makeCtx());
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(200);
+  });
+
+  it("reject (Response) — short-circuits; the handler never runs", async () => {
+    const handler = vi.fn(() => new Response("ok"));
+    const e = endpoint.new(reject)("/x").get(handler);
+    const res = await e.handler(makeCtx());
+    expect(handler).not.toHaveBeenCalled();
+    expect(res.status).toBe(401);
+  });
+
+  it("runs guards in registration order; the first Response wins", async () => {
+    const calls: string[] = [];
+    const g1: EndpointGuard = () => {
+      calls.push("g1");
+    };
+    const g2: EndpointGuard = () => {
+      calls.push("g2");
+      return new Response("stop", { status: 403 });
+    };
+    const g3: EndpointGuard = () => {
+      calls.push("g3");
+    };
+    const handler = vi.fn(() => new Response("ok"));
+    const e = endpoint.new(g1).new(g2).new(g3)("/x").get(handler);
+    const res = await e.handler(makeCtx());
+    expect(calls).toEqual(["g1", "g2"]); // g3 is skipped after g2 short-circuits
+    expect(handler).not.toHaveBeenCalled();
+    expect(res.status).toBe(403);
+  });
+
+  it("awaits async guards — async reject short-circuits", async () => {
+    const handler = vi.fn(() => new Response("ok"));
+    const e = endpoint.new(asyncReject)("/x").get(handler);
+    const res = await e.handler(makeCtx());
+    expect(handler).not.toHaveBeenCalled();
+    expect(res.status).toBe(401);
+  });
+
+  it("awaits async guards — async allow continues to the handler", async () => {
+    const handler = vi.fn(() => new Response("ok"));
+    const e = endpoint.new(asyncAllow)("/x").get(handler);
+    await e.handler(makeCtx());
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("a guard that throws propagates (no swallowing)", async () => {
+    const e = endpoint.new(boom)("/x").get(noopHandler);
+    await expect(e.handler(makeCtx())).rejects.toThrow("boom");
+  });
+
+  it(".new is immutable — derived factories branch independently", async () => {
+    const calls: string[] = [];
+    const gA: EndpointGuard = () => {
+      calls.push("A");
+    };
+    const gB: EndpointGuard = () => {
+      calls.push("B");
+    };
+    const base = endpoint.new(gA);
+    const branch = base.new(gB);
+
+    await base("/x").get(noopHandler).handler(makeCtx());
+    expect(calls).toEqual(["A"]); // base runs only gA
+
+    calls.length = 0;
+    await branch("/x").get(noopHandler).handler(makeCtx());
+    expect(calls).toEqual(["A", "B"]); // branch runs gA then gB
+  });
+
+  it("guards receive the same ctx object the handler does", async () => {
+    let guardCtx: RequestContext | undefined;
+    let handlerCtx: RequestContext | undefined;
+    const spyGuard: EndpointGuard = ctx => {
+      guardCtx = ctx;
+    };
+    const e = endpoint
+      .new(spyGuard)("/x")
+      .get(ctx => {
+        handlerCtx = ctx;
+        return new Response("ok");
+      });
+    const ctx = makeCtx();
+    await e.handler(ctx);
+    expect(guardCtx).toBe(ctx);
+    expect(handlerCtx).toBe(ctx);
+  });
+
+  // ─── Type-level assertions ───────────────────────────────────────────────
+
+  it("endpoint.new(g) is callable and returns a chainable factory", () => {
+    expectTypeOf(endpoint.new).toBeFunction();
+    expectTypeOf(endpoint.new(allow)).toExtend<GuardedEndpointFactory>();
+    expectTypeOf(endpoint.new(allow).new).toBeFunction();
+  });
+
+  it("a guarded factory preserves the path-typed handler param (the fix survives)", () => {
+    expectTypeOf(endpoint.new(allow)("/api/boards/{id}/cards").post)
+      .parameter(0)
+      .toEqualTypeOf<EndpointHandler<{ id: string }>>();
   });
 });

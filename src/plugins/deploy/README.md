@@ -182,16 +182,16 @@ await app.deploy.init({ ci: true });
 
 ## Manifests
 
-The pipeline consumes a single `ExternalManifest`, assembled from the per-kind `ResourceManifest` descriptors each resource plugin returns from its own `deployManifest()`. Both types are exported from `@moku-labs/worker` (also via the `./cli` back-compat alias).
+The pipeline consumes a single `ExternalManifest`, assembled from the per-instance `ResourceManifest` descriptors each resource plugin returns from its own `deployManifest()` — an **array**, one entry per configured instance. Both types are exported from `@moku-labs/worker` (also via the `./cli` back-compat alias).
 
 ```typescript
 // @moku-labs/worker
 export type ResourceManifest =
-  | { kind: "r2"; bucket: string; upload?: string }
-  | { kind: "kv"; binding: string }
-  | { kind: "d1"; binding: string; migrations?: string }
-  | { kind: "queue"; producers: string[] }
-  | { kind: "do"; bindings: Record<string, string> };
+  | { kind: "r2"; name: string; binding: string; upload?: string }
+  | { kind: "kv"; name: string; binding: string }
+  | { kind: "d1"; name: string; binding: string; migrations?: string }
+  | { kind: "queue"; name: string; binding: string; consumer?: boolean; maxBatchTimeout?: number }
+  | { kind: "do"; binding: string; className: string };
 
 export type ExternalManifest = {
   name: string;
@@ -200,26 +200,28 @@ export type ExternalManifest = {
 };
 ```
 
-For the Moku path, `name` comes from `ctx.global.name` and `compatibilityDate` from `ctx.global.compatibilityDate`; `resources` is the filtered list of present plugins' manifests.
+Each descriptor is **per instance**: `name` is the base Cloudflare resource name (stage-suffixed downstream), and `binding` is the stable env var. Durable Objects carry no provisioned `name` — they ship with the Worker script — and declare the exported `className` instead. For the Moku path, the manifest `name` comes from `ctx.global.name` and `compatibilityDate` from `ctx.global.compatibilityDate`; `resources` is the flattened list of present plugins' `deployManifest()` arrays.
 
 ### How each resource plugin contributes
 
 Each plugin's `deployManifest()` is a build-time, env-free read of its own `ctx.config`. The descriptor it returns drives both provisioning and the generated wrangler config:
 
-| Plugin | `deployManifest()` returns | Provisioning (`wrangler …`) | wrangler config section |
+Each `deployManifest()` returns an **array** (one entry per configured instance); the rows below show a single entry's shape.
+
+| Plugin | `deployManifest()` entry | Provisioning (`wrangler …`) | wrangler config section |
 |---|---|---|---|
-| `storage` | `{ kind: "r2", bucket, upload? }` | `r2 bucket create <bucket>`; then, if `upload` is set, `r2 object put <bucket>/<key> --file <path>` per file | `r2_buckets: [{ binding: bucket, bucket_name: bucket.toLowerCase() }]` |
-| `kv` | `{ kind: "kv", binding }` | `kv namespace create <binding>` | `kv_namespaces: [{ binding, id: "" }]` |
-| `d1` | `{ kind: "d1", binding, migrations? }` | `d1 create <binding>`; then, if `migrations` is set, `d1 migrations apply <binding> --local` | `d1_databases: [{ binding, database_name: binding.toLowerCase(), database_id: "", migrations_dir? }]` |
-| `queues` | `{ kind: "queue", producers }` | `queues create <producer>` per producer | `queues: { producers: [{ queue: producer, binding: producer.toUpperCase() }] }` |
-| `durableObjects` | `{ kind: "do", bindings }` | none — config-only (no `wrangler do create` command exists) | `durable_objects: { bindings: [{ name, class_name }] }` |
+| `storage` | `{ kind: "r2", name, binding, upload? }` | `r2 bucket create <name>`; then, if `upload` is set, `r2 object put <name>/<key> --file <path>` per file | `r2_buckets: [{ binding, bucket_name: name }]` |
+| `kv` | `{ kind: "kv", name, binding }` | `kv namespace create <name>` (captures the namespace `id`) | `kv_namespaces: [{ binding, id? }]` (`id` omitted until captured) |
+| `d1` | `{ kind: "d1", name, binding, migrations? }` | `d1 create <name>` (captures `database_id`); then, if `migrations` is set, `d1 migrations apply <name> --local` | `d1_databases: [{ binding, database_name: name, database_id?, migrations_dir? }]` |
+| `queues` | `{ kind: "queue", name, binding, consumer?, maxBatchTimeout? }` | `queues create <name>` per queue | `queues: { producers: [{ queue: name, binding }], consumers?: [{ queue: name, max_batch_timeout? }] }` |
+| `durableObjects` | `{ kind: "do", binding, className }` | none — config-only (no `wrangler do create` command exists) | `durable_objects: { bindings: [{ name: binding, class_name: className }] }` + auto `migrations: [{ tag: "v1", new_sqlite_classes: [className…] }]` |
 
 Notes on the generated config:
 
-- **R2 / D1 names** are derived by lower-casing the binding (`bucket_name`, `database_name`). The `id` / `database_id` fields are written empty (`""`) — wrangler / the Cloudflare API fill them on `deploy`.
-- **Queue bindings** are derived by upper-casing each producer name.
-- **Durable Objects** entries are built from `Object.entries(resource.bindings)` as `{ name: <value>, class_name: <key> }` — the map's keys become the DO `class_name` and its values become the binding `name`.
-- The `name` used in `provision:resource` events is: the bucket (`r2`), the joined binding values (`do`), the joined producers (`queue`), or the binding (`kv` / `d1`).
+- **R2 / D1 / queue names** come from each instance's explicit `name` (stage-suffixed downstream) — used as `bucket_name`, `database_name`, and the producer/consumer `queue` respectively; the `binding` is the instance's own `binding`. The `id` / `database_id` fields are omitted until a real Cloudflare id is captured (wrangler rejects an empty id but accepts — and locally simulates — an entry without one).
+- **Queue consumers** — a queue whose instance declares an `onMessage` (flagged `consumer: true`) is also written as a wrangler `consumers` entry (carrying `max_batch_timeout` when set) so this Worker actually receives its messages; a producer-only queue gets only a `producers` entry.
+- **Durable Objects** entries are `{ name: <binding>, class_name: <className> }` per instance, plus a single auto-derived `v1` migration registering every `className` as a SQLite-backed class (wrangler requires a migration for each DO class).
+- The `name` used in `provision:resource` events is the resource's stage-suffixed `name` for the provisioned kinds (`kv` / `r2` / `d1` / `queue`), or the exported `className` for a Durable Object.
 
 ### Universal / non-moku path
 
@@ -273,11 +275,21 @@ const app = createApp({
     deployPlugin
   ],
   pluginConfigs: {
-    storage: { bucket: "ASSETS", upload: "./public" },
-    kv: { binding: "CACHE" },
-    d1: { binding: "DB", migrations: "./migrations" },
-    queues: { producers: ["orders"] },
-    durableObjects: { bindings: { Counter: "COUNTER" } },
+    storage: {
+      assets: { name: "my-worker-assets", binding: "ASSETS", upload: "./public" }
+    },
+    kv: {
+      cache: { name: "my-worker-cache", binding: "CACHE" }
+    },
+    d1: {
+      main: { name: "my-worker-db", binding: "DB", migrations: "./migrations" }
+    },
+    queues: {
+      orders: { name: "orders", binding: "ORDERS" }
+    },
+    durableObjects: {
+      counter: { binding: "COUNTER", className: "Counter" }
+    },
     deploy: { configFile: "wrangler.jsonc", ci: false }
   }
 });

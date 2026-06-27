@@ -271,7 +271,7 @@ import { createApp, endpoint, kvPlugin } from "@moku-labs/worker";
 export const app = createApp({
   plugins: [kvPlugin],
   pluginConfigs: {
-    kv: { binding: "MY_KV" },
+    kv: { cache: { name: "my-cache", binding: "MY_KV" } },
     server: {
       endpoints: [
         endpoint("/cache/{key}").get(async ({ params, env, require, has }) => {

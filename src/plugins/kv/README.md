@@ -1,26 +1,31 @@
 # kv
 
-> Micro plugin — thin env-first wrapper over a single Cloudflare Workers KV namespace, resolved per request through the `bindings` plugin.
+> Micro plugin — thin env-first wrapper over a keyed map of Cloudflare Workers KV namespaces, each resolved per request through the `bindings` plugin.
 
 ## Overview
 
-The `kv` plugin exposes a focused key/value surface — `get` / `put` / `delete` / `list` — over one Cloudflare KV namespace, plus a build-time `deployManifest()` that reports the plugin's own deploy metadata. It mounts on `app.kv`.
+The `kv` plugin exposes a focused key/value surface — `get` / `put` / `delete` / `list` — over a **keyed map** of Cloudflare KV namespaces. The default namespace's methods are mounted directly on `app.kv`, and any configured namespace is selectable by its logical key via `app.kv.use(key)`. A build-time `deployManifest()` reports the plugin's own deploy metadata — one entry per configured namespace. It mounts on `app.kv`.
 
-It is a **regular** plugin (`createPlugin`, not a core plugin) because it must `depends: [bindingsPlugin]` and resolve its namespace through `ctx.require(bindingsPlugin)` — and core plugins cannot be `require`/`depends` targets. The namespace itself is never held: every runtime method takes the per-request Cloudflare `env` as its **first argument**, and the namespace is resolved fresh on each call via:
+It is a **regular** plugin (`createPlugin`, not a core plugin) because it must `depends: [bindingsPlugin]` and resolve its namespaces through `ctx.require(bindingsPlugin)` — and core plugins cannot be `require`/`depends` targets. No namespace is ever held: every runtime method takes the per-request Cloudflare `env` as its **first argument**, and the selected instance's namespace is resolved fresh on each call via:
 
 ```typescript
-ctx.require(bindingsPlugin).require<KVNamespace>(env, ctx.config.binding);
+ctx.require(bindingsPlugin).require<KVNamespace>(env, pickInstance(ctx.config, key, "kv").binding);
 ```
 
 One Cloudflare isolate serves concurrent requests, so capturing `env` (or a namespace handle) isolate-wide would leak state across requests. `kv` therefore holds **no state**, registers **no events**, and has **no lifecycle hooks** — it is a pure, request-scoped resolver.
 
 ## Configuration
 
+`kv` is configured as a **keyed map** of KV namespace instances — `Config = Record<string, KvInstance>`. Each key is a stable logical id (the one you pass to `app.kv.use(key)`); a single entry, or the one flagged `default: true`, is the implicit default served by the bare `app.kv` methods. The default config is `{}` — you must declare at least one instance.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `binding` | `string` | `"KV"` | The Cloudflare binding name of the KV namespace, as declared in `wrangler` config and passed in the per-request `env`. Resolved at call time via `bindings.require<KVNamespace>(env, binding)`. |
+| `[key]` | `KvInstance` | — | A configured namespace, keyed by its logical id. |
+| `[key].name` | `string` | — | Base Cloudflare KV namespace name (stage-suffixed at deploy); surfaced verbatim by `deployManifest()`. |
+| `[key].binding` | `string` | — | The Cloudflare binding name resolved off the per-request `env` (e.g. `env.SESSIONS`). |
+| `[key].default` | `boolean` | `false` | Marks this instance the default when more than one namespace is configured. |
 
-Config is flat and shallow-merged: overriding `binding` replaces only that key. Pass it through `createApp`:
+Config is shallow-merged per top-level key (each `KvInstance` value is replaced wholesale, never deep-merged). Pass it through `createApp`:
 
 ```typescript
 import { createApp, kvPlugin } from "@moku-labs/worker";
@@ -28,16 +33,27 @@ import { createApp, kvPlugin } from "@moku-labs/worker";
 const app = createApp({
   plugins: [kvPlugin],
   pluginConfigs: {
-    kv: { binding: "SESSIONS" }
+    kv: {
+      sessions: { name: "my-sessions", binding: "SESSIONS" }
+    }
   }
 });
+```
+
+With a single entry, `sessions` is automatically the default. With more than one namespace, mark exactly one `default: true`:
+
+```typescript
+kv: {
+  sessions: { name: "my-sessions", binding: "SESSIONS", default: true },
+  cache: { name: "my-cache", binding: "CACHE" }
+}
 ```
 
 `kv` declares `depends: [bindingsPlugin]`, so `bindings` must be present — but you do **not** list it in your `plugins` array. `bindings` is a framework default (it ships in every `createApp` from `@moku-labs/worker`), so the dependency is already satisfied; adding `bindingsPlugin` yourself would throw `TypeError: [worker] Duplicate plugin name: "bindings"`.
 
 ## API
 
-The `app.kv` surface (type `KvApi`). Every runtime method takes the per-request `env` as its first argument — it is threaded on the stack and never stored. The KV put/list option types (`KVNamespacePutOptions`, `KVNamespaceListOptions`, `KVNamespaceListResult`) come from `@cloudflare/workers-types`.
+The `app.kv` surface (type `KvApi`). `get` / `put` / `delete` / `list` operate on the **default** namespace; `use(key)` returns the same key/value surface (type `KvNamespaceApi`) bound to any other configured namespace. Every runtime method takes the per-request `env` as its first argument — it is threaded on the stack and never stored. The KV put/list option types (`KVNamespacePutOptions`, `KVNamespaceListOptions`, `KVNamespaceListResult`) come from `@cloudflare/workers-types`.
 
 ### `get(env, key)`
 
@@ -96,16 +112,30 @@ const { keys } = await app.kv.list(env, { prefix: "session:" });
 const names = keys.map((k) => k.name);
 ```
 
+### `use(key)`
+
+```typescript
+use(key: string): KvNamespaceApi
+```
+
+Selects a configured namespace by its logical key, returning the `get` / `put` / `delete` / `list` surface bound to that namespace. The bare `app.kv` methods are exactly `use(defaultKey)`. Throws a `[worker]`-prefixed error (listing the configured keys) if `key` is not configured. The lookup is lazy — an unconfigured key only errors when a method is actually called.
+
+```typescript
+await app.kv.use("cache").put(env, "page:home", html, { expirationTtl: 60 });
+const html = await app.kv.use("cache").get(env, "page:home");
+```
+
 ### `deployManifest()`
 
 ```typescript
-deployManifest(): { kind: "kv"; binding: string }
+deployManifest(): Array<{ kind: "kv"; name: string; binding: string }>
 ```
 
-Returns this plugin's **own** deploy metadata. Takes **no `env`** — it is build-time metadata, not a runtime KV operation. The deploy plugin reads it via `ctx.require(kvPlugin).deployManifest()`; it never inspects sibling `pluginConfigs` (a plugin sees only `ctx.global` plus its own `ctx.config`, and `require` returns a plugin's api, not its config).
+Returns this plugin's **own** deploy metadata — **one entry per configured namespace**. Takes **no `env`** — it is build-time metadata, not a runtime KV operation. The deploy plugin reads it via `ctx.require(kvPlugin).deployManifest()`; it never inspects sibling `pluginConfigs` (a plugin sees only `ctx.global` plus its own `ctx.config`, and `require` returns a plugin's api, not its config).
 
 ```typescript
-const manifest = app.kv.deployManifest(); // => { kind: "kv", binding: "KV" }
+const manifest = app.kv.deployManifest();
+// => [{ kind: "kv", name: "my-sessions", binding: "SESSIONS" }]
 ```
 
 ## Events
@@ -122,7 +152,9 @@ import { createApp, endpoint, kvPlugin } from "@moku-labs/worker";
 const app = createApp({
   plugins: [kvPlugin],
   pluginConfigs: {
-    kv: { binding: "SESSIONS" },
+    kv: {
+      sessions: { name: "my-sessions", binding: "SESSIONS" }
+    },
     server: {
       endpoints: [
         endpoint("/session/{id}").get(async ({ params, env, require }) => {
@@ -166,14 +198,14 @@ const flags = await app.kv.get(env, "feature-flags");
 
 ## Integration
 
-- **`bindings`** — `kv`'s sole dependency and the reason it is a regular plugin. On every api call, `kv` resolves its namespace with `ctx.require(bindingsPlugin).require<KVNamespace>(env, ctx.config.binding)`. If `binding` is `null`/`undefined` on `env`, the bindings resolver throws a `[worker]`-prefixed error naming the missing binding. `bindings` is a framework default, so the `depends: [bindingsPlugin]` requirement is satisfied automatically — you never add `bindingsPlugin` to your `plugins` array.
+- **`bindings`** — `kv`'s sole dependency and the reason it is a regular plugin. On every api call, `kv` resolves the selected instance's namespace with `ctx.require(bindingsPlugin).require<KVNamespace>(env, pickInstance(ctx.config, key, "kv").binding)`. If that `binding` is `null`/`undefined` on `env`, the bindings resolver throws a `[worker]`-prefixed error naming the missing binding. `bindings` is a framework default, so the `depends: [bindingsPlugin]` requirement is satisfied automatically — you never add `bindingsPlugin` to your `plugins` array.
 - **`server`** — handlers receive `env` and `require` on the per-request `RequestContext`; they reach `kv` through `require(kvPlugin)` and thread `env` into each call. `kv` never imports `server` — the coupling is one-way, through the handler context.
-- **deploy** — the deploy plugin calls `app.kv.deployManifest()` to collect `{ kind: "kv", binding }` without reading `kv`'s config directly.
+- **deploy** — the deploy plugin calls `app.kv.deployManifest()` to collect one `{ kind: "kv", name, binding }` per configured namespace, without reading `kv`'s config directly.
 
 ## Design notes
 
 - **Env per request, never captured** — KV namespaces, like all Cloudflare bindings, only exist inside the request stack frame. `env` is the first argument of every runtime method and is resolved fresh on each call; the plugin holds no handle and no state, so concurrent requests on one isolate can never leak each other's namespace.
 - **No state** — `createState` is omitted; the plugin runs on the default empty `{}` state, and its context types the state slot as `Record<string, never>`.
 - **No lifecycle hooks** — Workers are request-scoped: there is nothing to compile or warm at isolate init and no long-lived connection to open or close, so `onInit` / `onStart` / `onStop` are all absent.
-- **Micro tier** — a 1-field config and five thin delegating methods, well under the tier's size budget. The implementation is split across `index.ts` (wiring) and `api.ts` (the api factory) purely to keep the wiring file within the ≤30-effective-line skeleton rule; there is no `types.ts` or `state.ts`.
+- **Micro tier** — a keyed-map config and a handful of thin delegating methods (`get` / `put` / `delete` / `list`, plus the `use(key)` selector and build-time `deployManifest()`), well under the tier's size budget. The implementation is split across `index.ts` (wiring) and `api.ts` (the api factory) purely to keep the wiring file within the ≤30-effective-line skeleton rule; there is no `types.ts` or `state.ts`. The keyed-map default/`use` resolution is shared with the sibling resource plugins via `bindings/instances.ts` (`defaultInstanceKey` / `pickInstance`).
 - **`deployManifest()` is build-time** — it is the one method that takes no `env`, because it reports static deploy metadata rather than performing a runtime KV operation.

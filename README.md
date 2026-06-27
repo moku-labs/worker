@@ -170,7 +170,7 @@ const app = createApp({
   plugins: [kvPlugin], // append only what you add
   pluginConfigs: {
     bindings: { required: ["MY_KV"] }, // fail fast if the binding is missing
-    kv: { binding: "MY_KV" }
+    kv: { cache: { name: "my-cache", binding: "MY_KV" } } // keyed map; single entry = default
   }
 });
 ```

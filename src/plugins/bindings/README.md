@@ -53,12 +53,17 @@ createApp({
 ```typescript
 import { bindingsPlugin } from "../bindings";
 
-export const kvPlugin = createPlugin("kv", {
+// Any regular plugin can `depends: [bindingsPlugin]` and resolve a binding off the
+// per-request `env` via `ctx.require(bindingsPlugin).require<T>(env, name)`. The
+// resource plugins (kv, d1, storage, queues, durableObjects) build on this, each
+// keying its bindings by a logical id (`Record<string, Instance>`) and resolving the
+// selected instance with `pickInstance(ctx.config, key, kind).binding` — see their
+// READMEs for the keyed-map config shape.
+export const examplePlugin = createPlugin("example", {
   depends: [bindingsPlugin],
-  config: { binding: "MY_KV" },
   api: (ctx) => {
     const ns = (env: WorkerEnv) =>
-      ctx.require(bindingsPlugin).require<KVNamespace>(env, ctx.config.binding);
+      ctx.require(bindingsPlugin).require<KVNamespace>(env, "MY_KV");
     return { get: (env, key) => ns(env).get(key) };
   }
 });

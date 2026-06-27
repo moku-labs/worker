@@ -4,7 +4,7 @@
 
 ## Overview
 
-The `storage` plugin is the R2 object-storage member of the binding family. It exposes an **env-first** runtime API — `get` / `put` / `delete` / `list` — that resolves an `R2Bucket` binding **per request** off the request-supplied `env`, plus a build-time `deployManifest()` that hands the `deploy` plugin this plugin's own R2 metadata.
+The `storage` plugin is the R2 object-storage member of the binding family. It exposes an **env-first** runtime API — `get` / `put` / `delete` / `list` — over a **keyed map** of R2 buckets, resolving the selected bucket's binding **per request** off the request-supplied `env`. The default bucket's methods are mounted on `app.storage`, and any configured bucket is selectable via `app.storage.use(key)`. A build-time `deployManifest()` hands the `deploy` plugin this plugin's own R2 metadata — one entry per configured bucket.
 
 It is a **regular** plugin (`createPlugin("storage", ...)`), not a core plugin, so it can declare `depends: [bindingsPlugin]` and resolve the bucket through `ctx.require(bindingsPlugin)`. Core plugins cannot be `require`/`depends` targets, which is the sole reason `storage` is regular rather than core.
 
@@ -14,12 +14,15 @@ The plugin holds **no state** and emits **no events**. `env` is never stored —
 
 ## Configuration
 
-Both fields are **flat** (no nested objects) so a consumer's partial override via `pluginConfigs.storage` never drops a sibling key under shallow merge. Defaults are complete, so an omitted field never resolves to `undefined`.
+`storage` is configured as a **keyed map** of R2 bucket instances — `StorageConfig = Record<string, R2Instance>`. Each key is a stable logical id (the one you pass to `app.storage.use(key)`); a single entry, or the one flagged `default: true`, is the implicit default served by the bare `app.storage` methods. The default config is `{}` — declare at least one instance. Config is shallow-merged per top-level key (each `R2Instance` value is replaced wholesale, never deep-merged).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `upload` | `string` | `""` | Directory uploaded to the R2 bucket at deploy time. **Deploy metadata only** — surfaced to the `deploy` plugin via `deployManifest()`; never read by the runtime API. `""` means "upload nothing". |
-| `bucket` | `string` | `"ASSETS"` | Name of the `R2Bucket` binding resolved off the per-request `env` (e.g. `env.ASSETS`). |
+| `[key]` | `R2Instance` | — | A configured bucket, keyed by its logical id. |
+| `[key].name` | `string` | — | Base Cloudflare R2 bucket name (stage-suffixed at deploy); surfaced via `deployManifest()`. |
+| `[key].binding` | `string` | — | Name of the `R2Bucket` binding resolved off the per-request `env` (e.g. `env.FILES`). |
+| `[key].upload` | `string` | `undefined` | Directory uploaded to this bucket at deploy time. **Deploy metadata only** — surfaced to the `deploy` plugin via `deployManifest()`; never read by the runtime API. Omit to upload nothing. |
+| `[key].default` | `boolean` | `false` | Marks this instance the default when more than one bucket is configured. |
 
 ```typescript
 import { createApp, storagePlugin } from "@moku-labs/worker";
@@ -27,9 +30,20 @@ import { createApp, storagePlugin } from "@moku-labs/worker";
 const app = createApp({
   plugins: [storagePlugin],
   pluginConfigs: {
-    storage: { upload: "./public", bucket: "ASSETS" }
+    storage: {
+      files: { name: "tracker-files", binding: "FILES", upload: "./public" }
+    }
   }
 });
+```
+
+With a single entry, `files` is automatically the default. With more than one bucket, mark exactly one `default: true`:
+
+```typescript
+storage: {
+  files: { name: "tracker-files", binding: "FILES", default: true },
+  uploads: { name: "tracker-uploads", binding: "UPLOADS" }
+}
 ```
 
 `storage` declares `depends: [bindingsPlugin]`, but you do **not** list `bindingsPlugin` in your `plugins` array: `bindings` is a framework default shipped by every `createApp` from `@moku-labs/worker`, so the dependency is already satisfied. Adding it yourself throws `TypeError: [worker] Duplicate plugin name: "bindings"`.
@@ -38,7 +52,7 @@ const app = createApp({
 
 `storage` is a regular plugin, so its API is reached via `app.storage` or, inside a handler, `require(storagePlugin)` — never injected flat on `ctx.storage`.
 
-All four runtime methods are **env-first**: the per-request `env` (the Cloudflare bindings object) is the first argument, threaded in from `app.server.handle(request, env, exec)` through the request context. Each call resolves the bucket fresh via the provider adapter — the binding is never cached across calls. `deployManifest()` is the one exception: it is build-time only and reads `ctx.config`, never `env` or R2.
+All four runtime methods are **env-first**: the per-request `env` (the Cloudflare bindings object) is the first argument, threaded in from `app.server.handle(request, env, exec)` through the request context. Each call resolves the bucket fresh via the provider adapter — the binding is never cached across calls. The `get` / `put` / `delete` / `list` methods operate on the **default** bucket; `use(key)` returns the same object surface (type `Storage.StorageBucketApi`) bound to any other configured bucket. `deployManifest()` is the one exception: it is build-time only and reads `ctx.config`, never `env` or R2.
 
 ### `get(env, key): Promise<R2ObjectBody | null>`
 
@@ -76,13 +90,22 @@ const { objects, truncated } = await app.storage.list(env, { prefix: "images/", 
 const keys = objects.map((o) => o.key);
 ```
 
-### `deployManifest(): StorageManifest`
+### `use(key): StorageBucketApi`
 
-Returns this plugin's **own** deploy metadata — `{ kind: "r2", bucket, upload }` read from `ctx.config`. **Build-time only**: it never touches `env` or R2, so it is safe to call outside a request. The `deploy` plugin consumes it via `ctx.require(storagePlugin).deployManifest()` to learn which bucket to provision and which directory to upload.
+Select a configured bucket by its logical key, returning the `get` / `put` / `delete` / `list` surface bound to that bucket. The bare `app.storage` methods are exactly `use(defaultKey)`. Throws a `[worker]`-prefixed error (listing the configured keys) if `key` is not configured; the lookup is lazy, so an unconfigured key only errors when a method is actually called.
+
+```typescript
+await app.storage.use("uploads").put(env, "avatar.png", request.body);
+const obj = await app.storage.use("uploads").get(env, "avatar.png");
+```
+
+### `deployManifest(): Array<{ kind: "r2"; name: string; binding: string; upload?: string }>`
+
+Returns this plugin's **own** deploy metadata — **one entry per configured bucket** — read from `ctx.config`. **Build-time only**: it never touches `env` or R2, so it is safe to call outside a request. The `deploy` plugin consumes it via `ctx.require(storagePlugin).deployManifest()` to learn which buckets to provision and which directories to upload.
 
 ```typescript
 const manifest = app.storage.deployManifest();
-// → { kind: "r2", bucket: "ASSETS", upload: "./public" }
+// → [{ kind: "r2", name: "tracker-files", binding: "FILES", upload: "./public" }]
 ```
 
 ## Events
@@ -95,9 +118,10 @@ The plugin's types are re-exported from the package barrel under the `Storage` n
 
 | Type | Shape | Notes |
 |---|---|---|
-| `StorageApi` | `{ get, put, delete, list, deployManifest }` | The public env-first surface (the type of `app.storage`). |
-| `StorageConfig` | `{ upload: string; bucket: string }` | Flat config with complete defaults. |
-| `StorageManifest` | `{ readonly kind: "r2"; readonly bucket: string; readonly upload: string }` | Build-time deploy metadata returned by `deployManifest()`. `kind` is the `"r2"` discriminant the `deploy` plugin matches on. |
+| `StorageConfig` | `Record<string, R2Instance>` | Keyed map of bucket instances; the default config is `{}`. |
+| `R2Instance` | `{ name: string; binding: string; upload?: string; default?: boolean }` | One configured bucket (a single map entry). |
+| `StorageBucketApi` | `{ get, put, delete, list }` | The object surface bound to one bucket — the return type of `use(key)`. |
+| `StorageApi` | `StorageBucketApi & { use(key): StorageBucketApi; deployManifest() }` | The full public env-first surface (the type of `app.storage`). `deployManifest()` returns `Array<{ kind: "r2"; name; binding; upload? }>`; `kind` is the `"r2"` discriminant the `deploy` plugin matches on. |
 | `StorageProvider` | `{ get, put, delete, list }` | The adapter seam — the **key-first** internal interface both providers implement. Re-exported for handlers that want to type a provider directly. |
 
 R2 types (`R2Bucket`, `R2Object`, `R2ObjectBody`, `R2Objects`, `R2ListOptions`) are **ambient globals** from `@cloudflare/workers-types` (configured via tsconfig `types`). They are used unqualified throughout and are **never imported** — and never re-exported by this plugin.
@@ -114,7 +138,9 @@ import { createApp, endpoint, storagePlugin } from "@moku-labs/worker";
 const app = createApp({
   plugins: [storagePlugin],
   pluginConfigs: {
-    storage: { upload: "./public", bucket: "ASSETS" },
+    storage: {
+      files: { name: "tracker-files", binding: "FILES", upload: "./public" }
+    },
     server: {
       endpoints: [
         endpoint("/assets/{key}").get(async ({ params, env, require }) => {
@@ -140,9 +166,9 @@ export default {
 
 ## Integration
 
-- **`bindings`** — the hard dependency. `storage` resolves its `R2Bucket` through `ctx.require(bindingsPlugin).require<R2Bucket>(env, ctx.config.bucket)` on every call. `bindings` is a framework default, so this `depends: [bindingsPlugin]` requirement is satisfied automatically — do not add `bindingsPlugin` to your `plugins` array (it would throw a duplicate-plugin-name `TypeError`).
+- **`bindings`** — the hard dependency. `storage` resolves the selected bucket's `R2Bucket` through `ctx.require(bindingsPlugin).require<R2Bucket>(env, pickInstance(ctx.config, key, "storage").binding)` on every call. `bindings` is a framework default, so this `depends: [bindingsPlugin]` requirement is satisfied automatically — do not add `bindingsPlugin` to your `plugins` array (it would throw a duplicate-plugin-name `TypeError`).
 - **`server`** — the typical caller. Handlers receive `env` and `require` on their context and pull `require(storagePlugin)` to serve or store objects, as in the Usage example above. `storage` does not depend on `server` — it is a passive resource any handler can use.
-- **`deploy`** — the build-time consumer of `deployManifest()`. When the `deploy` plugin is present it reads `{ kind: "r2", bucket, upload }` to know which R2 bucket to provision and which `upload` directory to push at deploy time. `storage` never reads sibling `pluginConfigs`; it only exposes its own metadata for `deploy` to pull.
+- **`deploy`** — the build-time consumer of `deployManifest()`. When the `deploy` plugin is present it reads one `{ kind: "r2", name, binding, upload? }` per configured bucket to know which R2 buckets to provision and which `upload` directories to push at deploy time. `storage` never reads sibling `pluginConfigs`; it only exposes its own metadata for `deploy` to pull.
 
 ## Design notes
 

@@ -1,6 +1,6 @@
 # d1
 
-> Standard plugin — thin, typed wrappers over Cloudflare D1's `prepare().bind()` API (`query` / `first` / `run` / `batch`), resolving the `D1Database` per-request off `env` via `bindings`. Not an ORM.
+> Standard plugin — thin, typed wrappers over Cloudflare D1's `prepare().bind()` API (`query` / `first` / `run` / `batch`) over a keyed map of databases, each resolving its `D1Database` per-request off `env` via `bindings`. Not an ORM.
 
 ## Overview
 
@@ -8,18 +8,21 @@ The `d1` plugin exposes Cloudflare D1 (SQLite) SQL access for `@moku-labs/worker
 
 The plugin holds **no state**. The `D1Database` lives only in Cloudflare's per-request `env` object, which is **threaded as the first argument** into every API method and resolved on that call's stack frame via the `bindings` plugin — never copied into plugin state. One Cloudflare isolate serves many concurrent requests, so capturing `env` (or a resolved `D1Database`) isolate-wide would leak one request's database handle into another. Resolving per call keeps requests isolated.
 
-It depends on **`bindings`** (`bindingsPlugin`): every method calls `ctx.require(bindingsPlugin).require<D1Database>(env, ctx.config.binding)` to turn the request `env` plus the configured binding name into a live `D1Database`. `bindings` is a regular plugin precisely so binding-family plugins like `d1` can declare it in `depends` and reach it through `ctx.require`.
+It depends on **`bindings`** (`bindingsPlugin`): every method calls `ctx.require(bindingsPlugin).require<D1Database>(env, pickInstance(ctx.config, key, "d1").binding)` to turn the request `env` plus the selected instance's binding name into a live `D1Database`. `bindings` is a regular plugin precisely so binding-family plugins like `d1` can declare it in `depends` and reach it through `ctx.require`.
 
-A `deployManifest()` method also exposes this plugin's deploy metadata (`{ kind: "d1", binding, migrations }`) so the deploy pipeline can read it without inspecting sibling plugin configs.
+A `deployManifest()` method also exposes this plugin's deploy metadata (one `{ kind: "d1", name, binding, migrations? }` per configured database) so the deploy pipeline can read it without inspecting sibling plugin configs.
 
 ## Configuration
 
-Flat config with complete defaults — omitting a field never yields `undefined`. Config is frozen after `createApp`, so all values are read at call-time off `ctx.config`.
+`d1` is configured as a **keyed map** of database instances — `Config = Record<string, D1Instance>`. Each key is a stable logical id (the one you pass to `app.d1.use(key)`); a single entry, or the one flagged `default: true`, is the implicit default served by the bare `app.d1` methods. The default config is `{}` — declare at least one instance. Config is frozen after `createApp`, so all values are read at call-time off `ctx.config`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `binding` | `string` | `"DB"` | D1 binding name, as it appears in the request `env` and in wrangler config (`d1_databases[].binding`). Resolved at call-time off `env` via the `bindings` plugin. |
-| `migrations` | `string` | `""` | Directory (relative to project root) holding `.sql` migration files. **Deploy-time metadata only** — surfaced via `deployManifest()`, never read at request time. `""` means no migrations directory. |
+| `[key]` | `D1Instance` | — | A configured database, keyed by its logical id. |
+| `[key].name` | `string` | — | Base Cloudflare D1 database name (stage-suffixed at deploy); surfaced via `deployManifest()`. |
+| `[key].binding` | `string` | — | D1 binding name, as it appears in the request `env` and in wrangler config (`d1_databases[].binding`). Resolved at call-time off `env` via the `bindings` plugin. |
+| `[key].migrations` | `string` | `undefined` | Directory (relative to project root) holding `.sql` migration files. **Deploy-time metadata only** — surfaced via `deployManifest()`, never read at request time. Omit when there are none. |
+| `[key].default` | `boolean` | `false` | Marks this instance the default when more than one database is configured. |
 
 ```typescript
 import { createApp, d1Plugin } from "@moku-labs/worker";
@@ -27,16 +30,27 @@ import { createApp, d1Plugin } from "@moku-labs/worker";
 const app = createApp({
   plugins: [d1Plugin],
   pluginConfigs: {
-    d1: { binding: "DB", migrations: "./migrations" }
+    d1: {
+      main: { name: "tracker-db", binding: "DB", migrations: "db/migrations" }
+    }
   }
 });
+```
+
+With a single entry, `main` is automatically the default. With more than one database, mark exactly one `default: true`:
+
+```typescript
+d1: {
+  main: { name: "tracker-db", binding: "DB", default: true },
+  analytics: { name: "tracker-analytics", binding: "ANALYTICS" }
+}
 ```
 
 `d1` declares `depends: [bindingsPlugin]`, but you do **not** list `bindingsPlugin` yourself: `bindings` is a framework default shipped by every `createApp` from `@moku-labs/worker`, so the dependency is already satisfied. Adding it again throws `TypeError: [worker] Duplicate plugin name: "bindings"`.
 
 ## API
 
-Every method is **env-first**: the per-request `env` is the first argument, threaded down to where the binding is resolved. Access from a consumer is the cross-plugin pull `require(d1Plugin).<method>(env, ...)`; the app-surface form is `app.d1.<method>(env, ...)` (regular plugins mount on `app.<name>`). Results are the raw D1 result objects — no mapping. A missing binding throws a `[worker]`-prefixed error from the `bindings` resolver.
+Every method is **env-first**: the per-request `env` is the first argument, threaded down to where the binding is resolved. Access from a consumer is the cross-plugin pull `require(d1Plugin).<method>(env, ...)`; the app-surface form is `app.d1.<method>(env, ...)` (regular plugins mount on `app.<name>`). The `query` / `first` / `run` / `batch` / `prepare` methods operate on the **default** database; `use(key)` returns the same SQL surface (type `D1.D1DatabaseApi`) bound to any other configured database. Results are the raw D1 result objects — no mapping. A missing binding throws a `[worker]`-prefixed error from the `bindings` resolver.
 
 The Cloudflare D1 types referenced below (`D1Database`, `D1PreparedStatement`, `D1Result`) are **ambient globals** from `@cloudflare/workers-types`; you do not import them.
 
@@ -101,13 +115,21 @@ const stmt = db.prepare("SELECT * FROM t WHERE id = ?").bind(id);
 const row = await stmt.first();
 ```
 
-### `deployManifest(): DeployManifest`
+### `use(key): D1DatabaseApi`
 
-Return this plugin's own deploy metadata, `{ kind: "d1", binding, migrations }`. **Build-time only** — it takes no `env`. The deploy pipeline reads it via `ctx.require(d1Plugin).deployManifest()` rather than inspecting `d1`'s config directly. `kind` is pinned to the literal `"d1"` so deploy can discriminate resource kinds.
+Select a configured database by its logical key, returning the `query` / `first` / `run` / `batch` / `prepare` surface bound to that database. The bare `app.d1` methods are exactly `use(defaultKey)`. Throws a `[worker]`-prefixed error (listing the configured keys) if `key` is not configured; the lookup is lazy, so an unconfigured key only errors when a method is actually called.
+
+```typescript
+await app.d1.use("analytics").run(env, "INSERT INTO events (name) VALUES (?)", "click");
+```
+
+### `deployManifest(): Array<{ kind: "d1"; name: string; binding: string; migrations?: string }>`
+
+Return this plugin's own deploy metadata — **one entry per configured database**. **Build-time only** — it takes no `env`. The deploy pipeline reads it via `ctx.require(d1Plugin).deployManifest()` rather than inspecting `d1`'s config directly. `kind` is pinned to the literal `"d1"` so deploy can discriminate resource kinds.
 
 ```typescript
 const m = app.d1.deployManifest();
-// => { kind: "d1", binding: "DB", migrations: "./migrations" }
+// => [{ kind: "d1", name: "tracker-db", binding: "DB", migrations: "db/migrations" }]
 ```
 
 ## Events
@@ -122,14 +144,15 @@ The plugin's types are re-exported from the package barrel as the `D1` namespace
 import type { D1 } from "@moku-labs/worker";
 
 let cfg: D1.Config;
-let manifest: D1.DeployManifest;
+let db: D1.D1DatabaseApi;
 ```
 
 | Type | Shape | Purpose |
 |---|---|---|
-| `D1.Config` | `{ binding: string; migrations: string }` | The plugin's configuration object. |
-| `D1.DeployManifest` | `{ kind: "d1"; binding: string; migrations: string }` | Deploy metadata entry returned by `deployManifest()`; `kind` is the literal `"d1"`. |
-| `D1.Api` | the full method surface (`query`, `first`, `run`, `batch`, `prepare`, `deployManifest`) | The public-surface source of truth for the `app.d1` shape. |
+| `D1.Config` | `Record<string, D1Instance>` | The plugin's configuration — a keyed map of database instances. |
+| `D1.D1Instance` | `{ name: string; binding: string; migrations?: string; default?: boolean }` | One configured database (a single map entry). |
+| `D1.D1DatabaseApi` | `{ query, first, run, batch, prepare }` | The SQL surface bound to one database — the return type of `use(key)`. |
+| `D1.Api` | `D1DatabaseApi & { use(key): D1DatabaseApi; deployManifest() }` | The full `app.d1` surface: default-database methods, the `use` selector, and `deployManifest()` (which returns `Array<{ kind: "d1"; name; binding; migrations? }>`). |
 | `D1.D1Ctx` | `PluginCtx<Config, Record<string, never>, WorkerEvents>` intersected with a narrow `require(bindingsPlugin)` | Internal API-factory context; not needed by consumers. |
 
 ## Usage
@@ -144,7 +167,9 @@ type Product = { id: number; name: string; active: number };
 const app = createApp({
   plugins: [d1Plugin],
   pluginConfigs: {
-    d1: { binding: "DB", migrations: "./migrations" },
+    d1: {
+      main: { name: "tracker-db", binding: "DB", migrations: "db/migrations" }
+    },
     server: {
       endpoints: [
         endpoint("/api/products").get(async ({ env, require }) => {
@@ -188,7 +213,7 @@ export default {
 
 ## Integration
 
-- **`bindings`** — `d1` declares `depends: [bindingsPlugin] as const`. Every method resolves its `D1Database` through `ctx.require(bindingsPlugin).require<D1Database>(env, ctx.config.binding)`. `bindings` is a framework default, so this dependency is satisfied automatically — never add `bindingsPlugin` to your `plugins` array (it would throw a duplicate-plugin-name `TypeError`). A binding named by `config.binding` that is absent from `env` raises the `[worker] binding "DB" is not bound.` error from the `bindings` resolver.
+- **`bindings`** — `d1` declares `depends: [bindingsPlugin] as const`. Every method resolves its `D1Database` through `ctx.require(bindingsPlugin).require<D1Database>(env, pickInstance(ctx.config, key, "d1").binding)`. `bindings` is a framework default, so this dependency is satisfied automatically — never add `bindingsPlugin` to your `plugins` array (it would throw a duplicate-plugin-name `TypeError`). A selected instance's `binding` that is absent from `env` raises the `[worker] binding "DB" is not bound.` error from the `bindings` resolver.
 - **`server`** — `d1` does no routing itself; reach it from endpoint handlers via `require(d1Plugin).<method>(env, ...)`, threading the handler's `env`. `server` is also a framework default, so registering endpoints under `pluginConfigs.server.endpoints` is enough — you do not list `serverPlugin` either.
 - **deploy** — the deploy pipeline reads `deployManifest()` to discover the binding and migrations directory. `d1` exposes this metadata through its own API surface; it never has its config read by sibling plugins.
 

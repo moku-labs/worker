@@ -141,6 +141,8 @@ Starts a long-lived local dev session: cold-build the web site (when a `webBuild
 
 The per-change rebuild takes the **fast path** when an `onChange` hook is wired: each debounced change calls `onChange(changedPaths)` (e.g. `c => web.cli.update(c)`) so only the changed paths rebuild. Omit `onChange` and each change runs a full `webBuild()` instead — the prior, backward-compatible behavior.
 
+Rebuilds can't feed themselves: a debounced change batch is **dropped** when no reported path actually changed on disk since the last delivered batch (every path still exists with `max(mtime, ctime)` older than that delivery; a deleted path always counts as a real change). Some watch backends echo phantom changes for files a rebuild merely *read* — e.g. macOS/APFS reports the **source** of a `clonefile(2)` copy as changed when a rebuild re-copies large watched assets — and without the guard each rebuild would schedule the next one, forever.
+
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `opts.port` | `number` | `8787` | Local dev port. |

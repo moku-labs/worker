@@ -3,11 +3,15 @@
  *
  * Watches the top-level directories implied by the config globs (recursive) and fires a debounced
  * change callback with the SET of paths changed in the window (so a burst of edits coalesces into
- * one rebuild that knows every changed file). Uses node:fs.watch — no extra dependency.
- * Node-only; never imported by the runtime Worker bundle.
+ * one rebuild that knows every changed file). Batches with no REAL on-disk change since the last
+ * delivered batch — stale watch echoes, see ./fresh-changes — are dropped instead of fired, so a
+ * rebuild's own side effects can never schedule the next rebuild. Uses node:fs.watch — no extra
+ * dependency. Node-only; never imported by the runtime Worker bundle.
  */
 import { existsSync, type FSWatcher, watch as fsWatch } from "node:fs";
 import path from "node:path";
+
+import { hasFreshChange } from "./fresh-changes";
 
 /**
  * Derive the set of top-level directories to watch from glob patterns.
@@ -32,7 +36,11 @@ export const watchDirectories = (globs: string[]): string[] => {
 
 /**
  * Watch the directories implied by `globs` and fire `onChange` (debounced by `debounceMs`) with the
- * distinct set of paths changed within the window. Missing directories are skipped silently.
+ * distinct set of paths changed within the window. Missing directories are skipped silently. A
+ * debounced batch is DROPPED when no path in it is fresher on disk than the last delivered batch —
+ * every reported path still exists with `max(mtime, ctime)` older than that delivery — because such
+ * a batch is a stale echo of the previous rebuild's own copies (e.g. an APFS clone echo), not a
+ * user change; deleted paths always count as real changes.
  *
  * @param globs - Watch globs.
  * @param debounceMs - Coalesce rapid changes into one callback within this window.
@@ -53,6 +61,10 @@ export const watchPaths = (
   // The distinct paths changed since the last fire — accumulated across the debounce window, then
   // snapshot + cleared per callback so a burst of edits becomes one rebuild that knows every file.
   const changed = new Set<string>();
+  // When the last surviving batch was handed to onChange (epoch ms) — effectively when the last
+  // rebuild started, since the runner rebuilds synchronously from the callback. The freshness
+  // threshold for the stale-echo guard below; only delivered batches advance it.
+  let lastDeliveredMs = 0;
 
   // eslint-disable-next-line jsdoc/require-jsdoc -- inner debounce helper (closes over timer/changed)
   const fire = (changedPath: string): void => {
@@ -61,6 +73,8 @@ export const watchPaths = (
     timer = setTimeout(() => {
       const batch = [...changed];
       changed.clear();
+      if (!hasFreshChange(batch, lastDeliveredMs)) return; // every path stale on disk — echo, drop
+      lastDeliveredMs = Date.now();
       void onChange(batch);
     }, debounceMs);
   };

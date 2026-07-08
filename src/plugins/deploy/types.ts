@@ -239,8 +239,10 @@ export type InfraPlan = {
   turn?: {
     /** Secret names bound on the deployed worker; `null` when the script does not exist yet. */
     workerSecrets: Set<string> | null;
-    /** Account TURN keys by name → uid (empty when the token lacks Calls read — fail-open). */
+    /** Account TURN keys by name → uid (meaningful only when `keysListable`). */
     keysByName: Map<string, string>;
+    /** Whether the key listing succeeded (false = token lacks Calls read → bound-secrets fallback). */
+    keysListable: boolean;
   };
   /** Declared resources the account listing confirmed already exist (with captured ids where applicable). */
   exists: ProvisionedRef[];

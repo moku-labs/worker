@@ -9,10 +9,12 @@
  * deploy, not a separate provisioning model.
  *
  * Ground truths this module encodes:
- * - **"Exists" = both secrets bound on the worker** — never the key name. A manually-created key
- *   bound by hand (`wrangler secret put`) is fully provisioned and must never be clobbered; and a
- *   key whose name matches but whose secret was never bound is USELESS (the secret is returned
- *   exactly once at creation and is unrecoverable) — it gets deleted and recreated.
+ * - **"Exists" is NAME-ANCHORED**: a key with the DECLARED name exists AND both secrets are bound —
+ *   the same name-means-the-thing rule as every other resource. Bound secrets from a
+ *   differently-named hand-created key do NOT satisfy the declaration; the next deploy CONVERGES
+ *   (creates the declared key, re-binds). A same-name key whose secret was never bound is USELESS
+ *   (the secret is returned exactly once and is unrecoverable) — deleted and recreated. Only when
+ *   the key listing is unavailable (no Calls read) does the bound-secrets signal decide alone.
  * - **Errors are per-step and loud** (`create turn_keys → 403 …`), so a scope problem is
  *   diagnosable from the deploy output alone. The PIPELINE still treats a turn failure as a
  *   DEGRADATION (warning + STUN fallback), never a deploy failure — that contract saved a live
@@ -47,8 +49,13 @@ export type TurnRestDeps = {
 export type TurnExisting = {
   /** Secret NAMES bound on the deployed worker script; `null` when the script does not exist yet. */
   workerSecrets: Set<string> | null;
-  /** Account TURN keys by name → uid. BEST-EFFORT: empty when the token lacks Calls read. */
+  /** Account TURN keys by name → uid (meaningful only when {@link TurnExisting.keysListable}). */
   keysByName: Map<string, string>;
+  /**
+   * Whether the account key listing succeeded. `false` = the token lacks Calls read — existence
+   * cannot be judged by name, so {@link turnExists} falls back to the bound-secrets signal.
+   */
+  keysListable: boolean;
 };
 
 /**
@@ -144,8 +151,9 @@ export async function fetchTurnExisting(
     workerSecrets = null;
   }
 
-  // The account's TURN keys — best-effort (wants Calls read; harmless to miss).
+  // The account's TURN keys — best-effort (wants Calls read; planning must never require it).
   const keysByName = new Map<string, string>();
+  let keysListable = false;
   try {
     const keys = await cfCall<Array<{ uid?: unknown; name?: unknown }>>(
       deps,
@@ -158,21 +166,28 @@ export async function fetchTurnExisting(
         keysByName.set(key.name, key.uid);
       }
     }
+    keysListable = true;
   } catch {
-    // Fail open — planning must never require the Calls scope.
+    // Fail open — turnExists falls back to the bound-secrets signal.
   }
 
-  return { workerSecrets, keysByName };
+  return { workerSecrets, keysByName, keysListable };
 }
 
 /**
- * Whether a declared TURN resource is already provisioned: BOTH its secrets are bound on the
- * deployed worker. Key names are deliberately ignored — a hand-bound key counts (never clobber it),
- * and a same-name key without bound secrets does not (its secret is unrecoverable).
+ * Whether a declared TURN resource already exists — NAME-ANCHORED, like every other resource row:
+ * a key with the DECLARED name exists in the account AND both secrets are bound on the worker. A
+ * hand-created key under another name does NOT satisfy the declaration — the next deploy CONVERGES
+ * (creates the declared key and re-binds the secrets to it), as a declarative model should. A
+ * same-name key without bound secrets is a torn leftover (its secret is unrecoverable) → missing.
+ *
+ * One honest fallback: when the account key listing is unavailable (`keysListable: false` — the
+ * token lacks Calls read), existence cannot be judged by name, so the bound-secrets signal decides
+ * alone; the strict rule resumes the moment the scope works.
  *
  * @param resource - The declared TURN resource.
  * @param existing - The preflight's turn-relevant state.
- * @returns True when both secret bindings exist on the worker.
+ * @returns True when the declaration is satisfied (named key + bound secrets; or the fallback).
  * @example
  * ```ts
  * turnExists(resource, existing); // true → the plan's "exists" bucket
@@ -180,7 +195,11 @@ export async function fetchTurnExisting(
  */
 export function turnExists(resource: TurnManifest, existing: TurnExisting): boolean {
   const bound = existing.workerSecrets;
-  return bound !== null && bound.has(resource.keyIdBinding) && bound.has(resource.apiTokenBinding);
+  const secretsBound =
+    bound !== null && bound.has(resource.keyIdBinding) && bound.has(resource.apiTokenBinding);
+  if (!existing.keysListable) return secretsBound;
+
+  return existing.keysByName.has(resource.name) && secretsBound;
 }
 
 /** What provisioning one TURN key yields: the key's uid + the secret values to bind post-deploy. */

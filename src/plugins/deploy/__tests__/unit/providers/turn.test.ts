@@ -112,23 +112,55 @@ describe("fetchTurnExisting (fail-open preflight)", () => {
   });
 });
 
-/** A TurnExisting fixture with the given secret names bound (script exists). */
-const withSecrets = (names: string[]): TurnExisting => ({
+/** A TurnExisting fixture: secrets bound + a listable account key set. */
+const existingState = (
+  names: string[],
+  keys: Array<[string, string]> = [],
+  keysListable = true
+): TurnExisting => ({
   workerSecrets: new Set(names),
-  keysByName: new Map()
+  keysByName: new Map(keys),
+  keysListable
 });
 
-describe("turnExists (secrets-bound rule)", () => {
-  it("both secrets bound → exists, regardless of any key name (a hand-bound key counts)", () => {
-    expect(turnExists(RESOURCE, withSecrets(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"]))).toBe(true);
+describe("turnExists (name-anchored rule)", () => {
+  it("exists ONLY when the DECLARED key name exists AND both secrets are bound", () => {
+    expect(
+      turnExists(
+        RESOURCE,
+        existingState(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"], [["party-app-turn", "u1"]])
+      )
+    ).toBe(true);
   });
 
-  it("half-bound, none, or no script → not provisioned (a same-name key alone never counts)", () => {
-    expect(turnExists(RESOURCE, withSecrets(["TURN_KEY_ID"]))).toBe(false);
-    expect(turnExists(RESOURCE, withSecrets([]))).toBe(false);
+  it("bound secrets from a DIFFERENTLY-named (hand-created) key do NOT satisfy the declaration — the next deploy converges", () => {
     expect(
-      turnExists(RESOURCE, { workerSecrets: null, keysByName: new Map([["party-app-turn", "u1"]]) })
+      turnExists(
+        RESOURCE,
+        existingState(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"], [["orange-leaf-4f9c", "u9"]])
+      )
     ).toBe(false);
+  });
+
+  it("a same-name key without bound secrets is a torn leftover → missing (secret unrecoverable)", () => {
+    expect(turnExists(RESOURCE, existingState(["TURN_KEY_ID"], [["party-app-turn", "u1"]]))).toBe(
+      false
+    );
+    expect(turnExists(RESOURCE, existingState([], [["party-app-turn", "u1"]]))).toBe(false);
+    expect(
+      turnExists(RESOURCE, {
+        workerSecrets: null,
+        keysByName: new Map([["party-app-turn", "u1"]]),
+        keysListable: true
+      })
+    ).toBe(false);
+  });
+
+  it("FALLBACK: when the key listing is unavailable (no Calls read), bound secrets alone decide", () => {
+    expect(
+      turnExists(RESOURCE, existingState(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"], [], false))
+    ).toBe(true);
+    expect(turnExists(RESOURCE, existingState(["TURN_KEY_ID"], [], false))).toBe(false);
   });
 });
 
@@ -138,7 +170,7 @@ describe("provisionTurn (standard provision phase)", () => {
 
     const outcome = await provisionTurn(
       RESOURCE,
-      { workerSecrets: new Set(), keysByName: new Map() },
+      { workerSecrets: new Set(), keysByName: new Map(), keysListable: true },
       deps
     );
 
@@ -158,7 +190,11 @@ describe("provisionTurn (standard provision phase)", () => {
 
     await provisionTurn(
       RESOURCE,
-      { workerSecrets: new Set(), keysByName: new Map([["party-app-turn", "stale-uid"]]) },
+      {
+        workerSecrets: new Set(),
+        keysByName: new Map([["party-app-turn", "stale-uid"]]),
+        keysListable: true
+      },
       deps
     );
 
@@ -173,7 +209,11 @@ describe("provisionTurn (standard provision phase)", () => {
     const { deps } = cfApi({ create: "forbidden" });
 
     await expect(
-      provisionTurn(RESOURCE, { workerSecrets: new Set(), keysByName: new Map() }, deps)
+      provisionTurn(
+        RESOURCE,
+        { workerSecrets: new Set(), keysByName: new Map(), keysListable: true },
+        deps
+      )
     ).rejects.toThrow(/create turn_keys → HTTP 403 \(lacks permission\)/);
   });
 
@@ -181,7 +221,11 @@ describe("provisionTurn (standard provision phase)", () => {
     const { deps } = cfApi({ create: { uid: "id-only" } });
 
     await expect(
-      provisionTurn(RESOURCE, { workerSecrets: new Set(), keysByName: new Map() }, deps)
+      provisionTurn(
+        RESOURCE,
+        { workerSecrets: new Set(), keysByName: new Map(), keysListable: true },
+        deps
+      )
     ).rejects.toThrow(/malformed response/);
   });
 });

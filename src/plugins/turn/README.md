@@ -9,6 +9,10 @@ NATs. Cloudflare's Realtime TURN service mints short-lived credentials from a **
 secret is returned **exactly once** at creation. This plugin makes that key a declared resource so no
 one ever does the dashboard + `wrangler secret put` dance by hand.
 
+> Prefer NOT managing the key declaratively (e.g. a hand-provisioned or shared key)? Don't declare
+> a turn instance at all — just `wrangler secret put` both names; the room hub reads them off `env`
+> regardless.
+
 ## Configuration (`pluginConfigs.turn`)
 
 ```ts
@@ -20,12 +24,15 @@ turn: { relay: { name: "myapp-turn" } }
 
 ## What the deploy pipeline does — the STANDARD resource flow
 
-1. **Preflight** (`checkInfra` / the plan panel): a turn resource **exists when BOTH its secrets
-   are bound on the worker** — a hand-bound key (`wrangler secret put`) counts and is never
-   clobbered; a same-name key whose secret was never bound does NOT (the secret is returned exactly
-   once at creation and is unrecoverable). The account key listing is best-effort (no Calls scope
-   needed just to plan); it feeds stale-key cleanup and teardown ids. The resource shows in the
-   plan like any other: `turn myapp-turn` under *exists* or *will create*.
+1. **Preflight** (`checkInfra` / the plan panel): NAME-ANCHORED, like every resource row — a turn
+   resource **exists when a key with the DECLARED name exists AND both secrets are bound on the
+   worker**. Bound secrets from a differently-named hand-created key do NOT satisfy the
+   declaration: the next deploy CONVERGES (creates the declared key and re-binds the secrets to
+   it — the stray key becomes unused). A same-name key whose secret was never bound is a torn
+   leftover (the secret is returned exactly once and is unrecoverable) — deleted and recreated.
+   When the key listing is unavailable (token lacks Calls *read*), existence cannot be judged by
+   name, so the bound-secrets signal decides alone until the scope works. The resource shows in
+   the plan like any other: `turn myapp-turn` under *exists* or *will create*.
 2. **Provision phase** (alongside kv/d1/r2/queues): a stale same-name key is deleted, the key is
    created (`POST /accounts/{account_id}/calls/turn_keys` — needs **Cloudflare Calls `Edit`** on
    `CLOUDFLARE_API_TOKEN`; `auth setup` lists it automatically), and the once-returned credentials

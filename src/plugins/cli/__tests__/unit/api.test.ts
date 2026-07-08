@@ -37,6 +37,7 @@ const DEPLOYED_REPORT: DeployReport = {
 };
 
 const makeDeployStub = () => ({
+  registerPostDeploy: vi.fn(),
   dev: vi
     .fn<
       (opts?: {

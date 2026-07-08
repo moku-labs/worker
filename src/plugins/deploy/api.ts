@@ -42,6 +42,7 @@ import { detachQueueConsumer } from "./providers/queues";
 import { uploadDirToR2 } from "./providers/r2";
 import { deleteWorker } from "./providers/worker";
 import { runWrangler, runWranglerInherit } from "./runner";
+import { createPostDeploySecrets } from "./secrets";
 import { parseMigrationsApplied, parseSeedStats, resolveD1, runConfiguredSeed } from "./seed";
 import { stdoutIsTty } from "./tty";
 import type {
@@ -53,6 +54,7 @@ import type {
   MigrationOutcome,
   OnChange,
   PermissionGroup,
+  PostDeployStep,
   ProvisionedRef,
   ProvisionFailure,
   ProvisionResult,
@@ -283,17 +285,18 @@ const guidedTokenSetup = async (
  *
  * @param ctx - The deploy plugin context.
  * @param deps - Interactivity + the confirm prompt.
- * @returns True when the token verified; false when the user must set it up and re-run.
+ * @returns The verified auth status (the run threads its `accountId` into the post-deploy steps);
+ *   false when the user must set the token up and re-run.
  * @throws {Error} Re-throws the branded auth error in CI / non-interactive runs.
  * @example
  * ```ts
- * if (!(await guidedAuth(ctx, { interactive, confirm }))) return;
+ * const auth = await guidedAuth(ctx, { interactive, confirm });
+ * if (auth === false) return;
  * ```
  */
-const guidedAuth = async (ctx: Ctx, deps: GuidedDeps): Promise<boolean> => {
+const guidedAuth = async (ctx: Ctx, deps: GuidedDeps): Promise<AuthStatus | false> => {
   try {
-    await runVerifyAuth(ctx);
-    return true;
+    return await runVerifyAuth(ctx);
   } catch (error) {
     // CI / non-TTY: no human to guide — keep the fail-fast contract.
     if (!deps.interactive) throw error;
@@ -554,6 +557,22 @@ const applyRemoteMigrations = async (ctx: Ctx): Promise<MigrationOutcome[]> => {
   return outcomes;
 };
 
+/**
+ * The pipeline facts a registered {@link PostDeployStep} runs against — assembled once per run by
+ * `run()` after a successful deploy (the stage-qualified worker name from the manifest, the auth
+ * preflight's account id, and the run's CI mode).
+ */
+type StepSeed = {
+  /** The stage-qualified worker name that just deployed. */
+  workerName: string;
+  /** The resolved deploy stage. */
+  stage: string;
+  /** The Cloudflare account id the auth preflight resolved. */
+  accountId: string;
+  /** Whether the run is CI/automated. */
+  ci: boolean;
+};
+
 /** The migration + seed outcome of the post-deploy stage, folded into the {@link DeployReport}. */
 type PostDeploy = {
   /** Remote D1 migration outcome. */
@@ -590,28 +609,90 @@ const captureFailure = (
 };
 
 /**
+ * Run every sibling-registered {@link PostDeployStep} (the `registerPostDeploy` seam) in
+ * registration order — each awaited inside the pipeline (CI-safe, ordered before the report
+ * resolves), a throw captured into `errors` (the worker is already live; the report degrades
+ * honestly instead of losing the deploy outcome). The step ctx (env token + wrangler secrets
+ * helpers) is built only when steps exist, so a step-less run touches none of that plumbing.
+ *
+ * @param ctx - The deploy plugin context (step registry + config + env).
+ * @param ui - The branded console steps `note()` through.
+ * @param errors - The report's error accumulator (a thrown step is captured here).
+ * @param stepSeed - The pipeline facts (worker name / account / CI) each step receives.
+ * @returns Resolves once every registered step has run (or been captured).
+ * @example
+ * ```ts
+ * await runRegisteredSteps(ctx, ui, errors, { workerName, stage, accountId, ci });
+ * ```
+ */
+const runRegisteredSteps = async (
+  ctx: Ctx,
+  ui: ReturnType<typeof createBrandConsole>,
+  errors: string[],
+  stepSeed: StepSeed
+): Promise<void> => {
+  if (ctx.state.postDeploySteps.length === 0) return;
+
+  const apiToken = ctx.env.get("CLOUDFLARE_API_TOKEN");
+  const secrets = createPostDeploySecrets(ctx.config.configFile);
+  /**
+   * The branded info line each step reports through.
+   *
+   * @param message - The line to render.
+   * @example
+   * ```ts
+   * note("TURN relay provisioned.");
+   * ```
+   */
+  const note = (message: string): void => {
+    ui.info(message);
+  };
+
+  for (const step of ctx.state.postDeploySteps) {
+    try {
+      ctx.emit("deploy:phase", { phase: "post-deploy", detail: step.name });
+      await step.run({
+        ...stepSeed,
+        ...(apiToken === undefined || apiToken === "" ? {} : { apiToken }),
+        secrets,
+        note
+      });
+    } catch (error) {
+      captureFailure(ui, errors, error);
+    }
+  }
+};
+
+/**
  * Run the post-deploy remote steps — REACHED ONLY ON A SUCCESSFUL DEPLOY (every gate in `run` returns
- * early before here), so a deploy that never happened never touches a remote DB. Applies remote D1
- * migrations (when requested), then loads the configured seed (when requested) — but skips the seed
- * if the migration it depends on failed. Each step's failure is RENDERED inline and CAPTURED in
- * `errors` (never thrown), so one failed step still yields a complete, honest report.
+ * early before here), so a deploy that never happened never touches a remote DB. First runs every
+ * sibling-registered {@link PostDeployStep} (the `registerPostDeploy` seam) in registration order,
+ * then applies remote D1 migrations (when requested), then loads the configured seed (when
+ * requested) — but skips the seed if the migration it depends on failed. Each step's failure is
+ * RENDERED inline and CAPTURED in `errors` (never thrown), so one failed step still yields a
+ * complete, honest report.
  *
  * @param ctx - The deploy plugin context.
  * @param want - Which post-steps the caller requested.
  * @param want.migration - Whether to apply pending remote D1 migrations.
  * @param want.seed - Whether to load the configured remote seed (and reset its KV keys).
+ * @param stepSeed - The pipeline facts (worker name / account / CI) threaded into registered steps.
  * @returns The migration + seed outcomes and any captured branded errors.
  * @example
  * ```ts
- * const post = await runPostDeploy(ctx, { migration: true, seed: true });
+ * const post = await runPostDeploy(ctx, { migration: true, seed: true }, stepSeed);
  * ```
  */
 const runPostDeploy = async (
   ctx: Ctx,
-  want: { migration: boolean; seed: boolean }
+  want: { migration: boolean; seed: boolean },
+  stepSeed: StepSeed
 ): Promise<PostDeploy> => {
   const ui = createBrandConsole();
   const errors: string[] = [];
+
+  // Sibling-registered steps first (e.g. a hub ensuring its TURN secrets), then migration + seed.
+  await runRegisteredSteps(ctx, ui, errors, stepSeed);
 
   // Apply remote migrations first — the seed below depends on the schema they create. Wrangler's raw
   // migration TUI is captured (hidden); the branded panel reports exactly what applied.
@@ -793,6 +874,22 @@ const destroyTargets = async (
  */
 export const createDeployApi = (ctx: Ctx) => ({
   /**
+   * Register a {@link PostDeployStep} to run inside the deploy pipeline after a successful
+   * `wrangler deploy` (before the remote migration/seed) — the generic contribution seam for
+   * sibling plugins. Call it from the sibling's `onInit` (every plugin api exists by then); the
+   * step then runs on every subsequent {@link run} for this app, never on an aborted/failed deploy.
+   *
+   * @param step - The named step to append (steps run in registration order, awaited).
+   * @example
+   * ```ts
+   * ctx.require(deployPlugin).registerPostDeploy({ name: "turn", run: ensureTurnSecrets });
+   * ```
+   */
+  registerPostDeploy(step: PostDeployStep): void {
+    ctx.state.postDeploySteps.push(step);
+  },
+
+  /**
    * Run the full deploy pipeline: detect → preflight (check-before-create) → provision (only the
    * missing) → wrangler-config (with real ids) → upload → deploy, then — ONLY on a successful
    * deploy — the requested post-deploy remote steps (migration, seed). When opts.manifest is
@@ -851,9 +948,11 @@ export const createDeployApi = (ctx: Ctx) => ({
     const startedAt = Date.now();
 
     // Auth preflight — verify the .env token up front. A missing/invalid token is guided (offer the
-    // `.env.local` scaffold, then point at the re-run), not a silent stack trace.
+    // `.env.local` scaffold, then point at the re-run), not a silent stack trace. The verified
+    // status is kept: its accountId is threaded into the registered post-deploy steps.
     ctx.emit("deploy:phase", { phase: "auth" });
-    if (!(await guidedAuth(ctx, deps))) return aborted(ctx, stage, startedAt);
+    const auth = await guidedAuth(ctx, deps);
+    if (auth === false) return aborted(ctx, stage, startedAt);
 
     // Build the web site first (when a hook is wired in from the consumer's script).
     const webBuild = opts?.webBuild ?? ctx.config.webBuild;
@@ -902,12 +1001,14 @@ export const createDeployApi = (ctx: Ctx) => ({
     });
 
     // Post-deploy remote steps — REACHED ONLY HERE, after a live deploy (every gate above returns
-    // early). Migration + seed run against the remote DB and fold any failure into the report rather
-    // than throwing, so the report is complete whether they ran, were skipped, or failed.
-    const post = await runPostDeploy(ctx, {
-      migration: opts?.migration === true,
-      seed: opts?.seed === true
-    });
+    // early). Sibling-registered steps, then migration + seed, run against the live worker/remote DB
+    // and fold any failure into the report rather than throwing, so the report is complete whether
+    // they ran, were skipped, or failed.
+    const post = await runPostDeploy(
+      ctx,
+      { migration: opts?.migration === true, seed: opts?.seed === true },
+      { workerName: manifest.name, stage, accountId: auth.accountId, ci }
+    );
 
     return {
       ok: post.errors.length === 0,

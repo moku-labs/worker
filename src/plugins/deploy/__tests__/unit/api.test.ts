@@ -14,6 +14,7 @@ import type {
   Ctx,
   DeployReport,
   ExternalManifest,
+  PostDeployStepCtx,
   ResourceManifest,
   SeedConfig,
   WebBuild
@@ -35,7 +36,8 @@ vi.mock("../../runner", () => ({
     if (args[1] === "execute") return Promise.resolve("🚣 5 commands executed\n12 rows written");
     return Promise.resolve("");
   }),
-  runWranglerInherit: vi.fn().mockResolvedValue(undefined)
+  runWranglerInherit: vi.fn().mockResolvedValue(undefined),
+  runWranglerStdin: vi.fn().mockResolvedValue("")
 }));
 
 // Only the fs-bound writers are stubbed; wranglerExtra (pure) runs for real so the `extra` arg
@@ -172,7 +174,7 @@ import { promptLine } from "../../prompt";
 import { destroyResource, provisionResource } from "../../providers";
 import { uploadDirToR2 } from "../../providers/r2";
 import { deleteWorker } from "../../providers/worker";
-import { runWrangler, runWranglerInherit } from "../../runner";
+import { runWrangler, runWranglerInherit, runWranglerStdin } from "../../runner";
 import { stdoutIsTty } from "../../tty";
 import { scaffoldWranglerAndCi, writeWranglerConfig } from "../../wrangler-config";
 
@@ -278,7 +280,7 @@ const createMockCtx = (overrides?: {
       debounceMs: 120,
       ...(overrides?.seed === undefined ? {} : { seed: overrides.seed })
     },
-    state: {} as Record<string, never>,
+    state: { postDeploySteps: [] },
     emit: vi.fn(),
     global: overrides?.global ?? {
       name: "test-worker",
@@ -1358,6 +1360,144 @@ describe("createDeployApi", () => {
       expect(report.status).toBe("failed");
       // The seed execute must NOT run after a failed migration.
       expect(runWrangler).not.toHaveBeenCalledWith(expect.arrayContaining(["execute"]));
+    });
+  });
+
+  // ───────── run — registered post-deploy steps (the sibling-plugin seam) ─────
+
+  describe("run — registered post-deploy steps", () => {
+    it("runs a registered step after a successful deploy with the pipeline facts", async () => {
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+      const stepRun = vi.fn<(step: PostDeployStepCtx) => Promise<void>>().mockResolvedValue();
+      api.registerPostDeploy({ name: "turn", run: stepRun });
+
+      const report = await api.run();
+
+      expect(stepRun).toHaveBeenCalledOnce();
+      const step = stepRun.mock.calls[0]?.[0];
+      expect(step?.workerName).toBe("test-worker-test"); // stage "test" → suffixed worker name
+      expect(step?.stage).toBe("test");
+      expect(step?.accountId).toBe("acc-1"); // from the auth preflight
+      expect(step?.ci).toBe(false);
+      expect(step?.apiToken).toBeUndefined(); // the mock env carries no CLOUDFLARE_API_TOKEN
+      expect(report.ok).toBe(true);
+      expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", {
+        phase: "post-deploy",
+        detail: "turn"
+      });
+    });
+
+    it("threads CLOUDFLARE_API_TOKEN and ci into the step ctx", async () => {
+      const base = createMockCtx({ has: () => false, ci: true });
+      const ctx: Ctx = {
+        ...base,
+        env: {
+          ...base.env,
+          get: (key: string) => (key === "CLOUDFLARE_API_TOKEN" ? "tok-123" : undefined)
+        }
+      };
+      const api = createDeployApi(ctx);
+      const stepRun = vi.fn<(step: PostDeployStepCtx) => Promise<void>>().mockResolvedValue();
+      api.registerPostDeploy({ name: "turn", run: stepRun });
+
+      await api.run();
+
+      const step = stepRun.mock.calls[0]?.[0];
+      expect(step?.apiToken).toBe("tok-123");
+      expect(step?.ci).toBe(true);
+    });
+
+    it("step secrets.list/putBulk run wrangler secret against the generated config", async () => {
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+      let listed: string[] = [];
+      api.registerPostDeploy({
+        name: "turn",
+        run: async step => {
+          vi.mocked(runWrangler).mockResolvedValueOnce(
+            'Log line\n[ { "name": "TURN_KEY_ID", "type": "secret_text" } ]'
+          );
+          listed = await step.secrets.list();
+          await step.secrets.putBulk({ TURN_KEY_API_TOKEN: "s3cret" });
+        }
+      });
+
+      await api.run();
+
+      expect(runWrangler).toHaveBeenCalledWith(["secret", "list", "--config", "wrangler.jsonc"]);
+      expect(listed).toEqual(["TURN_KEY_ID"]);
+      expect(runWranglerStdin).toHaveBeenCalledWith(
+        ["secret", "bulk", "--config", "wrangler.jsonc"],
+        JSON.stringify({ TURN_KEY_API_TOKEN: "s3cret" })
+      );
+    });
+
+    it("a throwing step degrades the report (captured, never thrown) while the deploy stays live", async () => {
+      const ctx = createMockCtx({ has: () => false });
+      const api = createDeployApi(ctx);
+      api.registerPostDeploy({
+        name: "boom",
+        run: vi.fn().mockRejectedValue(new Error("[worker] boom"))
+      });
+
+      const report = await api.run();
+
+      expect(report.status).toBe("failed");
+      expect(report.ok).toBe(false);
+      expect(report.url).toBe("https://test.workers.dev"); // the deploy itself went live
+      expect(report.errors).toContain("[worker] boom");
+    });
+
+    it("registered steps never run on an aborted deploy (declined gate)", async () => {
+      const ctx = createMockCtx({ has: () => false });
+      vi.mocked(createBrandPrompts).mockReturnValueOnce({
+        confirm: vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(false),
+        select: vi.fn<(question: string, choices: readonly string[]) => Promise<number>>()
+      });
+      const api = createDeployApi(ctx);
+      const stepRun = vi.fn<(step: PostDeployStepCtx) => Promise<void>>().mockResolvedValue();
+      api.registerPostDeploy({ name: "turn", run: stepRun });
+
+      const report = await api.run();
+
+      expect(report.status).toBe("aborted");
+      expect(stepRun).not.toHaveBeenCalled();
+    });
+
+    it("steps run in registration order, before the remote migration", async () => {
+      const ctx = createMockCtx(); // has: all plugins → d1 manifest present for the migration
+      const api = createDeployApi(ctx);
+      const order: string[] = [];
+      api.registerPostDeploy({
+        name: "first",
+        run: async () => {
+          order.push("first");
+        }
+      });
+      api.registerPostDeploy({
+        name: "second",
+        run: async () => {
+          order.push("second");
+        }
+      });
+      // Mirrors the module-mock default (parseable outputs) + records when the migration runs.
+      // vi.clearAllMocks() does not undo mockImplementation, so staying behavior-identical keeps
+      // later tests on the same fixture; the stale `order` closure is inert after this test.
+      vi.mocked(runWrangler).mockImplementation((args: string[]) => {
+        if (args[0] === "deploy") return Promise.resolve("https://test.workers.dev");
+        if (args[1] === "migrations") {
+          order.push("migration");
+          return Promise.resolve("Applying 0001_init.sql\n✅ 1 migrations applied");
+        }
+        if (args[1] === "execute")
+          return Promise.resolve("🚣 5 commands executed\n12 rows written");
+        return Promise.resolve("");
+      });
+
+      await api.run({ migration: true });
+
+      expect(order).toEqual(["first", "second", "migration"]);
     });
   });
 

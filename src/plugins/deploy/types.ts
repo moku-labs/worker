@@ -62,6 +62,77 @@ export type SeedConfig = {
 };
 
 /**
+ * The wrangler-backed Worker-secret helpers handed to a {@link PostDeployStep} — scoped to the
+ * worker the pipeline just deployed (they run `wrangler secret …` against the generated config, so
+ * the stage-qualified worker name always agrees with the deploy). `list` is read-only (names only —
+ * secret VALUES are never readable); `putBulk` pushes every given name/value in one
+ * `wrangler secret bulk` call (values ride stdin, never argv or a temp file).
+ */
+export type PostDeploySecrets = {
+  /**
+   * List the names of the secrets currently bound to the deployed worker (read-only, idempotent).
+   *
+   * @returns The bound secret names (empty when none, or when the listing is unparsable).
+   */
+  list(): Promise<string[]>;
+  /**
+   * Push the given name → value secrets to the deployed worker in one `wrangler secret bulk` call.
+   *
+   * @param values - The secret names and values to bind.
+   * @returns Resolves once wrangler confirms the bulk upload.
+   */
+  putBulk(values: Record<string, string>): Promise<void>;
+};
+
+/**
+ * The per-run context a registered {@link PostDeployStep} receives — everything a step needs to act
+ * on the JUST-DEPLOYED worker without re-deriving pipeline facts: the stage-qualified worker name,
+ * the resolved Cloudflare account, the pipeline's API token (when set), CI mode, the
+ * {@link PostDeploySecrets} helpers, and a branded output line.
+ */
+export type PostDeployStepCtx = {
+  /** The stage-qualified worker name that just deployed (production = bare). */
+  workerName: string;
+  /** The resolved deploy stage. */
+  stage: string;
+  /** The Cloudflare account id the auth preflight resolved. */
+  accountId: string;
+  /** The pipeline's `CLOUDFLARE_API_TOKEN` (absent only if the env var vanished mid-run). */
+  apiToken?: string;
+  /** Whether the run is CI/automated — a step must never prompt when true (none should anyway). */
+  ci: boolean;
+  /** Wrangler-backed secret helpers scoped to the deployed worker. */
+  secrets: PostDeploySecrets;
+  /**
+   * Emit one branded info line to the deploy output (the step's status/instruction channel).
+   *
+   * @param message - The line to render.
+   */
+  note(message: string): void;
+};
+
+/**
+ * A post-deploy pipeline step contributed by a SIBLING plugin via {@link Api.registerPostDeploy} —
+ * the generic seam that lets a composed plugin (e.g. `@moku-labs/room/server`'s hub) extend the
+ * deploy pipeline without the deploy plugin knowing it exists. Steps run INSIDE `run()`, only after
+ * a successful `wrangler deploy` (an aborted/failed deploy never runs them), awaited in registration
+ * order before the remote migration/seed. A step that throws is captured into the report's `errors`
+ * (the deploy stays live; `ok` flips false) — a step whose failure should NOT degrade the report
+ * catches internally and `note()`s an actionable line instead.
+ */
+export type PostDeployStep = {
+  /** Short step name for the `deploy:phase` line (e.g. "turn"). */
+  name: string;
+  /**
+   * Execute the step against the just-deployed worker.
+   *
+   * @param step - The per-run step context (worker name, account, secrets helpers, note).
+   * @returns Resolves when the step completes.
+   */
+  run(step: PostDeployStepCtx): Promise<void>;
+};
+
+/**
  * The outcome of applying one D1 database's migrations (remote or local), parsed from wrangler's
  * captured output so the branded migrate panel can report exactly what ran — instead of streaming
  * wrangler's raw migration TUI. `applied` lists the migration filenames wrangler reported applying
@@ -331,8 +402,29 @@ export type TokenRequirement = {
   toAdd: PermissionGroup[];
 };
 
+/** deploy plugin state — the {@link PostDeployStep}s sibling plugins registered (run-order = registration order). */
+export type State = {
+  /** Steps to run inside `run()` after a successful `wrangler deploy` (before migration/seed). */
+  postDeploySteps: PostDeployStep[];
+};
+
 /** Public api surface of the deploy plugin, mounted at app.deploy.*. */
 export type Api = {
+  /**
+   * Register a {@link PostDeployStep} to run INSIDE the deploy pipeline, after a successful
+   * `wrangler deploy` (and before the remote migration/seed). The generic contribution seam for
+   * sibling plugins (e.g. a signaling hub ensuring its TURN secrets): call it from the sibling's
+   * `onInit` — every plugin api exists by then — and the step runs on every subsequent
+   * `run()`/`cli.deploy` for that app. Steps never run on an aborted or failed deploy.
+   *
+   * @param step - The named step to append (steps run in registration order, awaited).
+   * @example
+   * ```ts
+   * ctx.require(deployPlugin).registerPostDeploy({ name: "turn", run: ensureTurn });
+   * ```
+   */
+  registerPostDeploy(step: PostDeployStep): void;
+
   /**
    * Run the full deploy pipeline (detect -> provision -> config -> upload -> deploy), then — ONLY on
    * a successful deploy — the requested post-deploy remote steps (migration, seed). Resolves to a
@@ -569,13 +661,13 @@ type ApiOf<P> = P extends { readonly _phantom: { readonly api: infer A } } ? A :
 type RequireFn = <P extends AnyPlugin>(plugin: P) => ApiOf<P>;
 
 /**
- * Internal context type — own config first, no state, global events only.
+ * Internal context type — own config first, the {@link State} step registry, global events only.
  *
  * `PluginCtx` surfaces only config/state/emit; the runtime fields core also injects
  * (`global`, `require`, `has`) are composed in here via intersection. `require` uses the
  * general `RequireFn` so every ctx.require(xPlugin) resolves to that plugin's Api.
  */
-export type Ctx = PluginCtx<Config, Record<string, never>, WorkerEvents> & {
+export type Ctx = PluginCtx<Config, State, WorkerEvents> & {
   /** Frozen global framework config (name, compatibilityDate, stage). */
   readonly global: Readonly<WorkerConfig>;
   /** Injected core env api (`@moku-labs/common`) — reads CLOUDFLARE_API_TOKEN / _ACCOUNT_ID. */

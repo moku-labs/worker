@@ -107,7 +107,9 @@ describe("renderProvisionResult", () => {
           error: `[worker] wrangler exited with code 1.\n  ${esc}[31m✘ [ERROR]${esc}[0m The bucket name "ATTACHMENTS" is invalid. Bucket names must be between 3 and 63 characters long.\n\n🪵 Logs were written to "/tmp/wrangler.log"`
         }
       ],
-      ids: {}
+      ids: {},
+      degraded: [],
+      pendingSecrets: {}
     };
 
     renderProvisionResult(ui, result);
@@ -141,7 +143,9 @@ describe("renderProvisionResult", () => {
       skipped: [],
       bundled: [],
       failed: [],
-      ids: {}
+      ids: {},
+      degraded: [],
+      pendingSecrets: {}
     };
 
     renderProvisionResult(ui, result);

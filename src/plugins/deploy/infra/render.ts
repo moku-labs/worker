@@ -196,6 +196,10 @@ export const renderProvisionResult = (ui: BrandConsole, result: ProvisionResult)
   const failedRows = result.failed.map(
     failure => `${palette.red("✗")} ${cell(failure.resource.kind, resourceName(failure.resource))}`
   );
+  const degradedRows = result.degraded.map(
+    failure =>
+      `${palette.yellow("!")} ${cell(failure.resource.kind, resourceName(failure.resource))} ${palette.dim("(degraded)")}`
+  );
 
   const failedCount =
     result.failed.length > 0 ? palette.red(`${String(result.failed.length)} failed`) : "0 failed";
@@ -204,10 +208,33 @@ export const renderProvisionResult = (ui: BrandConsole, result: ProvisionResult)
     `${String(result.skipped.length)} exist`
   ];
   if (result.bundled.length > 0) counts.push(`${String(result.bundled.length)} with worker`);
+  if (result.degraded.length > 0) {
+    counts.push(palette.yellow(`${String(result.degraded.length)} degraded`));
+  }
   const summary = `${counts.join(" · ")} · ${failedCount}`;
 
   ui.heading("Provisioned");
-  ui.box([...createdRows, ...skippedRows, ...bundledRows, ...failedRows, "", summary]);
+  ui.box([
+    ...createdRows,
+    ...skippedRows,
+    ...bundledRows,
+    ...degradedRows,
+    ...failedRows,
+    "",
+    summary
+  ]);
+
+  // Degraded detail — warning-class (the deploy continues; the app runs in a reduced mode until
+  // resolved). Each reason carries the per-step error + the actionable instruction line.
+  if (result.degraded.length > 0) {
+    ui.line();
+    for (const failure of result.degraded) {
+      ui.warn(`${cell(failure.resource.kind, resourceName(failure.resource))}`);
+      for (const wrapped of wrapText(cleanError(failure.error), ui.width - 4)) {
+        ui.line(palette.dim(`    ${wrapped}`));
+      }
+    }
+  }
 
   // Full, readable failure detail under the box — each reason word-wrapped to the console width.
   if (result.failed.length > 0) {

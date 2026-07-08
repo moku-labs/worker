@@ -1,6 +1,8 @@
 /**
  * Unit tests for the infra preflight planner (Cloudflare client mocked).
  */
+/* eslint-disable unicorn/no-null -- TurnExisting.workerSecrets is `null` by contract when the
+   script does not exist yet; the mocks must produce exactly that shape. */
 import { describe, expect, it, vi } from "vitest";
 
 import type { Ctx, ExternalManifest } from "../../../types";
@@ -10,8 +12,20 @@ vi.mock("../../../infra/cloudflare", () => ({
   resolveAccount: vi.fn().mockResolvedValue({ id: "acc-123", name: "Play Co" })
 }));
 
+// The turn preflight is REST-bound; mock the fetch, keep the pure `turnExists` rule real.
+vi.mock("../../../providers/turn", async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    fetchTurnExisting: vi
+      .fn()
+      .mockResolvedValue({ workerSecrets: null, keysByName: new Map<string, string>() })
+  };
+});
+
 import { listExisting } from "../../../infra/cloudflare";
 import { planInfra } from "../../../infra/plan";
+import { fetchTurnExisting } from "../../../providers/turn";
 
 /** An empty existing-resources index. */
 const emptyExisting = () => ({
@@ -148,10 +162,69 @@ describe("planInfra", () => {
     expect(listExisting).toHaveBeenCalledWith("test-token", "acc-123", new Set(["kv", "d1"]));
   });
 
-  it("excludes turn resources from the plan entirely (never listed, never in any bucket)", async () => {
+  it("judges a turn resource by the WORKER'S BOUND SECRETS — both bound → exists (id captured when a same-name key is found)", async () => {
     vi.mocked(listExisting).mockResolvedValue(emptyExisting());
+    vi.mocked(fetchTurnExisting).mockResolvedValueOnce({
+      workerSecrets: new Set(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"]),
+      keysByName: new Map([["app-turn", "uid-9"]])
+    });
 
     const plan = await planInfra(
+      makeCtx("acc-123"),
+      manifest([
+        {
+          kind: "turn",
+          name: "app-turn",
+          keyIdBinding: "TURN_KEY_ID",
+          apiTokenBinding: "TURN_KEY_API_TOKEN"
+        }
+      ])
+    );
+
+    expect(plan.exists).toEqual([
+      {
+        resource: {
+          kind: "turn",
+          name: "app-turn",
+          keyIdBinding: "TURN_KEY_ID",
+          apiTokenBinding: "TURN_KEY_API_TOKEN"
+        },
+        id: "uid-9"
+      }
+    ]);
+    expect(plan.missing).toEqual([]);
+    // A hand-bound key (secrets bound, no same-name key) also counts — but carries no id.
+  });
+
+  it("a turn resource with unbound secrets is MISSING — even when a same-name key exists (its secret is unrecoverable)", async () => {
+    vi.mocked(listExisting).mockResolvedValue(emptyExisting());
+    vi.mocked(fetchTurnExisting).mockResolvedValueOnce({
+      workerSecrets: new Set(["TURN_KEY_ID"]), // half-bound (torn run)
+      keysByName: new Map([["app-turn", "uid-9"]])
+    });
+
+    const plan = await planInfra(
+      makeCtx("acc-123"),
+      manifest([
+        {
+          kind: "turn",
+          name: "app-turn",
+          keyIdBinding: "TURN_KEY_ID",
+          apiTokenBinding: "TURN_KEY_API_TOKEN"
+        }
+      ])
+    );
+
+    expect(plan.missing).toHaveLength(1);
+    expect(plan.exists).toEqual([]);
+    // The plan carries the turn preflight so the provision step can delete the stale key.
+    expect(plan.turn?.keysByName.get("app-turn")).toBe("uid-9");
+  });
+
+  it("turn never rides the account LISTING (no Calls scope needed to plan) and skips the fetch when none is declared", async () => {
+    vi.mocked(listExisting).mockResolvedValue(emptyExisting());
+
+    await planInfra(
       makeCtx("acc-123"),
       manifest([
         { kind: "kv", name: "cache", binding: "KV" },
@@ -163,12 +236,14 @@ describe("planInfra", () => {
         }
       ])
     );
-
-    // TURN keys are ensured in the built-in post-deploy phase — the account listing can't judge
-    // them (the key secret is unrecoverable), so the plan neither lists nor provisions them.
     expect(listExisting).toHaveBeenCalledWith("test-token", "acc-123", new Set(["kv"]));
-    expect(plan.missing).toEqual([{ kind: "kv", name: "cache", binding: "KV" }]);
-    expect(plan.exists).toEqual([]);
-    expect(plan.ships).toEqual([]);
+    expect(fetchTurnExisting).toHaveBeenCalledWith(
+      { accountId: "acc-123", token: "test-token" },
+      "w"
+    );
+
+    vi.mocked(fetchTurnExisting).mockClear();
+    await planInfra(makeCtx("acc-123"), manifest([{ kind: "kv", name: "cache", binding: "KV" }]));
+    expect(fetchTurnExisting).not.toHaveBeenCalled();
   });
 });

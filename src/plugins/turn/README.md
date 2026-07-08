@@ -22,6 +22,25 @@ turn: { relay: { name: "myapp-turn" } }
 
 `name` is stage-suffixed like every provisioned resource name (`myapp-turn-dev` on `--stage dev`).
 
+## Escape hatch — key pair in `.env.local` (sidesteps the Calls-API 403)
+
+Cloudflare currently rejects scoped API tokens on the `/calls/*` endpoints regardless of granted
+permission groups (a [known issue](https://community.cloudflare.com/t/909732)), which blocks
+auto-create. Put the key's credentials in the deploy env instead — the key's OWN token authorizes
+its mint endpoint, so **no account API is involved at all**:
+
+```
+# .env.local — names follow the resource's binding config (defaults shown)
+TURN_KEY_ID=...          # dashboard → Realtime → TURN → your key's Token ID
+TURN_KEY_API_TOKEN=...   # the once-shown API token
+```
+
+When both are set, the pair becomes the provisioning SOURCE: the preflight **validates it by
+actually minting** a short-lived credential (the provisioned-infra confirmation), the provision
+phase adopts it (no create/list/delete), and the post-deploy step binds it as the worker secrets.
+"Exists" is then judged purely functionally — the deployed endpoint must mint live; anything else
+converges by re-binding the env pair. Teardown never deletes a user-managed key.
+
 ## What the deploy pipeline does — the STANDARD resource flow
 
 0. **Functional verification (needs NO Calls scope).** When a prior deploy exists, the preflight

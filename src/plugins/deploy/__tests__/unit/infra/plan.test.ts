@@ -249,12 +249,76 @@ describe("planInfra", () => {
     expect(fetchTurnExisting).toHaveBeenCalledWith(
       { accountId: "acc-123", token: "test-token" },
       "w",
-      false // the fixture disables functional verification
+      false, // the fixture disables functional verification
+      undefined // no env-key pair in the test env
     );
 
     vi.mocked(fetchTurnExisting).mockClear();
     await planInfra(makeCtx("acc-123"), manifest([{ kind: "kv", name: "cache", binding: "KV" }]));
     expect(fetchTurnExisting).not.toHaveBeenCalled();
+  });
+
+  it("reads the escape-hatch pair from the deploy env (binding names) and threads it to the preflight", async () => {
+    vi.mocked(listExisting).mockResolvedValue(emptyExisting());
+    const ctx = makeCtx("acc-123");
+    // The mock env answers the binding names — the .env.local escape hatch.
+    const envValues: Record<string, string> = {
+      TURN_KEY_ID: "env-uid",
+      TURN_KEY_API_TOKEN: "env-secret"
+    };
+    (ctx as { env: unknown }).env = {
+      get: (key: string) => envValues[key],
+      require: () => "test-token",
+      has: () => true,
+      getPublic: () => ({}),
+      getPublicMap: () => new Map<string, string>()
+    };
+
+    await planInfra(
+      ctx,
+      manifest([
+        {
+          kind: "turn",
+          name: "app-turn",
+          keyIdBinding: "TURN_KEY_ID",
+          apiTokenBinding: "TURN_KEY_API_TOKEN",
+          verifyPath: false
+        }
+      ])
+    );
+
+    expect(fetchTurnExisting).toHaveBeenCalledWith(
+      { accountId: "acc-123", token: "test-token" },
+      "w",
+      false,
+      { keyId: "env-uid", apiToken: "env-secret" }
+    );
+  });
+
+  it("annotates an env-key turn exists row distinctly", async () => {
+    vi.mocked(listExisting).mockResolvedValue(emptyExisting());
+    vi.mocked(fetchTurnExisting).mockResolvedValueOnce({
+      workerSecrets: new Set(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"]),
+      keysByName: new Map(),
+      keysListable: false,
+      mintOk: true,
+      envKey: { keyId: "env-uid", apiToken: "env-secret", mintOk: true }
+    });
+
+    const plan = await planInfra(
+      makeCtx("acc-123"),
+      manifest([
+        {
+          kind: "turn",
+          name: "app-turn",
+          keyIdBinding: "TURN_KEY_ID",
+          apiTokenBinding: "TURN_KEY_API_TOKEN",
+          verifyPath: false
+        }
+      ])
+    );
+
+    expect(plan.exists[0]?.note).toBe("env key (.env.local) — mint verified live");
   });
 
   it("annotates a FALLBACK-judged turn exists (listing unavailable) so the plan never over-claims", async () => {

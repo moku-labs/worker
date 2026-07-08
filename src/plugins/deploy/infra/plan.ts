@@ -102,6 +102,11 @@ const partitionResources = (
     if (resource.kind === "turn") {
       if (!turnExists(resource, turn)) return undefined;
       const id = turn.keysByName.get(resource.name);
+      // Fallback-judged (token can't list keys): say exactly what was verified — never a bare
+      // "(exists)" for a key name nobody could check.
+      if (!turn.keysListable) {
+        return { resource, note: "secrets bound — key unverified: token lacks Calls read" };
+      }
       return id === undefined ? { resource } : { resource, id };
     }
     const check = checkExisting(resource, existing);

@@ -214,8 +214,14 @@ export type ProvisionOutcome = {
 export type ProvisionedRef = {
   /** The resource descriptor from the manifest. */
   resource: ResourceManifest;
-  /** The existing resource's Cloudflare id (kv/d1 only). */
+  /** The existing resource's Cloudflare id (kv/d1/turn). */
   id?: string;
+  /**
+   * Qualifier rendered instead of the plain "(exists)" annotation — used when existence was judged
+   * from an indirect signal (turn: "secrets bound — key unverified" while the token cannot list
+   * keys), so the plan never claims more than it actually verified.
+   */
+  note?: string;
 };
 
 /**

@@ -249,4 +249,29 @@ describe("planInfra", () => {
     await planInfra(makeCtx("acc-123"), manifest([{ kind: "kv", name: "cache", binding: "KV" }]));
     expect(fetchTurnExisting).not.toHaveBeenCalled();
   });
+
+  it("annotates a FALLBACK-judged turn exists (listing unavailable) so the plan never over-claims", async () => {
+    vi.mocked(listExisting).mockResolvedValue(emptyExisting());
+    vi.mocked(fetchTurnExisting).mockResolvedValueOnce({
+      workerSecrets: new Set(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"]),
+      keysByName: new Map(), // 403'd listing → nothing known about key names
+      keysListable: false
+    });
+
+    const plan = await planInfra(
+      makeCtx("acc-123"),
+      manifest([
+        {
+          kind: "turn",
+          name: "app-turn",
+          keyIdBinding: "TURN_KEY_ID",
+          apiTokenBinding: "TURN_KEY_API_TOKEN"
+        }
+      ])
+    );
+
+    expect(plan.exists).toHaveLength(1);
+    expect(plan.exists[0]?.note).toBe("secrets bound — key unverified: token lacks Calls read");
+    // The strict (verified) path carries NO note — asserted by the name-anchored exists test above.
+  });
 });

@@ -47,6 +47,11 @@ export const provisionResource = async (
       await provisionDurableObject(resource, ci);
       return {};
     }
+    case "turn": {
+      // TURN keys are ensured in the built-in post-deploy phase (worker secrets need an existing
+      // script) — the infra plan never routes them here; a no-op keeps the dispatch total.
+      return {};
+    }
   }
 };
 
@@ -92,6 +97,11 @@ export const destroyResource = async (ref: ProvisionedRef): Promise<void> => {
       throw new Error(
         `[worker] Durable Object "${resource.className}" is removed with the Worker, not individually.`
       );
+    }
+    case "turn": {
+      // The account-level TURN key is deliberately left in place (its worker secrets die with the
+      // Worker; the key is harmless and its secret is unrecoverable anyway). Never planned here.
+      return;
     }
   }
 };

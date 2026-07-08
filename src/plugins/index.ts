@@ -11,6 +11,7 @@ export { kvPlugin } from "./kv";
 export { queuesPlugin } from "./queues";
 export { serverPlugin } from "./server";
 export { storagePlugin } from "./storage";
+export { turnPlugin } from "./turn";
 
 // ─── Plugin Types (type-only namespace re-exports; Standard+ only) ─────
 export type * as Bindings from "./bindings/types";

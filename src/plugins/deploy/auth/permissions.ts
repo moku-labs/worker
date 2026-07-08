@@ -29,7 +29,8 @@ const BY_KIND: Record<ResourceManifest["kind"], PermissionGroup | undefined> = {
   r2: { group: "Account · Workers R2 Storage", scope: "Edit", reason: "r2", inBaseTemplate: true },
   d1: { group: "Account · D1", scope: "Edit", reason: "d1", inBaseTemplate: false },
   queue: { group: "Account · Queues", scope: "Edit", reason: "queue", inBaseTemplate: false },
-  do: undefined
+  do: undefined,
+  turn: { group: "Account · Calls", scope: "Edit", reason: "turn", inBaseTemplate: false }
 };
 
 /**
@@ -93,7 +94,10 @@ const CI_BY_KIND: Record<ResourceManifest["kind"], PermissionGroup | undefined> 
     reason: "queue (preflight)",
     inBaseTemplate: false
   },
-  do: undefined
+  do: undefined,
+  // A CI redeploy of an already-provisioned worker only LISTS its secrets (covered by Workers
+  // Scripts · Edit); the fail-open turn ensure degrades gracefully if CI ever needs to create.
+  turn: undefined
 };
 
 /**

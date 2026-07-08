@@ -32,12 +32,12 @@ const DEPLOYED_REPORT: DeployReport = {
   resources: { created: 0, exists: 0, bundled: 0, failed: 0 },
   migration: "skipped",
   seed: "skipped",
+  turn: "skipped",
   elapsedMs: 0,
   errors: []
 };
 
 const makeDeployStub = () => ({
-  registerPostDeploy: vi.fn(),
   dev: vi
     .fn<
       (opts?: {
@@ -66,6 +66,7 @@ const makeDeployStub = () => ({
     stage: "production",
     migration: "skipped",
     seed: "skipped",
+    turn: "skipped",
     elapsedMs: 0,
     errors: []
   }),
@@ -279,6 +280,7 @@ describe("createCliApi", () => {
         resources: { created: 0, exists: 0, bundled: 0, failed: 0 },
         migration: "applied",
         seed: "failed",
+        turn: "skipped",
         elapsedMs: 1,
         errors: ["[worker] seed failed"]
       });
@@ -363,6 +365,7 @@ describe("createCliApi", () => {
         stage: "dev",
         migration: "skipped",
         seed: "skipped",
+        turn: "skipped",
         elapsedMs: 1,
         errors: ["[worker] bucket not empty"]
       });

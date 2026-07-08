@@ -5,8 +5,7 @@
  * detect → provision → wrangler-config → upload → wrangler deploy.
  * Emits only the three GLOBAL events declared in WorkerEvents
  * (deploy:phase / deploy:complete / provision:resource — no per-plugin events block).
- * State holds only the `registerPostDeploy`-contributed step registry; no hooks, no
- * lifecycle (one-shot build-time; Workers are request-scoped).
+ * No state, no hooks, no lifecycle (one-shot build-time; Workers are request-scoped).
  * @see README.md
  */
 import { createPlugin } from "../../config";
@@ -16,7 +15,7 @@ import { kvPlugin } from "../kv";
 import { queuesPlugin } from "../queues";
 import { storagePlugin } from "../storage";
 import { createDeployApi } from "./api";
-import type { Config, State } from "./types";
+import type { Config } from "./types";
 
 /** Typed default — no inline `as` cast in config (R6 / spec/11 §Part 2). */
 const defaultConfig: Config = {
@@ -43,8 +42,6 @@ const defaultConfig: Config = {
 export const deployPlugin = createPlugin("deploy", {
   config: defaultConfig,
   depends: [storagePlugin, kvPlugin, d1Plugin, queuesPlugin, durableObjectsPlugin] as const,
-  // eslint-disable-next-line jsdoc/require-jsdoc -- structural state wiring (the post-deploy step registry)
-  createState: (): State => ({ postDeploySteps: [] }),
   // eslint-disable-next-line jsdoc/require-jsdoc -- structural api wiring (contextual typing)
   api: ctx => createDeployApi(ctx)
 });

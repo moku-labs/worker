@@ -92,9 +92,6 @@ export { deployPlugin } from "./plugins/deploy";
 export type {
   DeployReport,
   ExternalManifest,
-  PostDeploySecrets,
-  PostDeployStep,
-  PostDeployStepCtx,
   ResourceManifest,
   SeedConfig
 } from "./plugins/deploy/types";

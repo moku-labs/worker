@@ -144,6 +144,7 @@ export const createCliApi = (ctx: CliCtx): Api => ({
           stage: stage ?? "production",
           migration: "skipped",
           seed: "skipped",
+          turn: "skipped",
           elapsedMs: 0,
           errors: [message]
         };
@@ -170,6 +171,7 @@ export const createCliApi = (ctx: CliCtx): Api => ({
         stage: stage ?? "production",
         migration: "skipped",
         seed: "skipped",
+        turn: "skipped",
         elapsedMs: 0,
         errors: [message]
       };

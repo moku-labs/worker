@@ -134,31 +134,6 @@ export const runWranglerYes = (args: string[]): Promise<string> => {
 };
 
 /**
- * Spawn `wrangler` with the given args, writing `input` to its stdin and closing it — used by
- * `wrangler secret bulk`, which reads its name → value JSON from stdin when no file argument is
- * given (so secret VALUES never touch argv or a temp file).
- *
- * @param args - Wrangler CLI arguments (e.g. ["secret", "bulk", "--config", "wrangler.jsonc"]).
- * @param input - The full stdin payload (e.g. the secrets JSON).
- * @returns Resolves with wrangler's full stdout once it exits.
- * @throws {Error} When wrangler cannot be spawned or exits with a non-zero code.
- * @example
- * ```ts
- * await runWranglerStdin(["secret", "bulk", "--config", "wrangler.jsonc"], JSON.stringify(values));
- * ```
- */
-export const runWranglerStdin = (args: string[], input: string): Promise<string> => {
-  // stdin is piped so the payload reaches wrangler, then closed so it stops waiting for input.
-  // eslint-disable-next-line sonarjs/no-os-command-from-path -- wrangler is a pinned peer dep resolved from node_modules/.bin
-  const child = spawn("wrangler", args, {
-    env: { ...process.env }, // @env-allow — passthrough to the spawned wrangler subprocess (not app config)
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-  child.stdin.end(input);
-  return captureWrangler(child, args);
-};
-
-/**
  * Spawn `wrangler` with the given args, inheriting stdio so its output streams live to the user's
  * terminal (used by the generic passthrough and long-lived commands like `tail`).
  *

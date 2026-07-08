@@ -151,10 +151,10 @@ export const renderPlan = (ui: BrandConsole, plan: InfraPlan): void => {
   const createRows = plan.missing.map(
     resource => `${palette.pink("+")} ${cell(resource.kind, resourceName(resource))}`
   );
-  const existsRows = plan.exists.map(
-    ref =>
-      `${palette.dim("~")} ${cell(ref.resource.kind, resourceName(ref.resource))} ${palette.dim("(exists)")}`
-  );
+  const existsRows = plan.exists.map(ref => {
+    const annotation = `(${ref.note ?? "exists"})`;
+    return `${palette.dim("~")} ${cell(ref.resource.kind, resourceName(ref.resource))} ${palette.dim(annotation)}`;
+  });
   const shipsRows = plan.ships.map(
     resource =>
       `${palette.dim("~")} ${cell(resource.kind, resourceName(resource))} ${palette.dim(SHIPS_WITH_WORKER)}`
@@ -185,10 +185,10 @@ export const renderProvisionResult = (ui: BrandConsole, result: ProvisionResult)
   const createdRows = result.created.map(
     ref => `${palette.green("✓")} ${cell(ref.resource.kind, resourceName(ref.resource))}`
   );
-  const skippedRows = result.skipped.map(
-    ref =>
-      `${palette.dim("~")} ${cell(ref.resource.kind, resourceName(ref.resource))} ${palette.dim("(exists)")}`
-  );
+  const skippedRows = result.skipped.map(ref => {
+    const annotation = `(${ref.note ?? "exists"})`;
+    return `${palette.dim("~")} ${cell(ref.resource.kind, resourceName(ref.resource))} ${palette.dim(annotation)}`;
+  });
   const bundledRows = result.bundled.map(
     resource =>
       `${palette.dim("~")} ${cell(resource.kind, resourceName(resource))} ${palette.dim(SHIPS_WITH_WORKER)}`

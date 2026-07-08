@@ -17,9 +17,11 @@ vi.mock("../../../providers/turn", async importOriginal => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
-    fetchTurnExisting: vi
-      .fn()
-      .mockResolvedValue({ workerSecrets: null, keysByName: new Map<string, string>() })
+    fetchTurnExisting: vi.fn().mockResolvedValue({
+      workerSecrets: null,
+      keysByName: new Map<string, string>(),
+      keysListable: false
+    })
   };
 });
 
@@ -166,7 +168,8 @@ describe("planInfra", () => {
     vi.mocked(listExisting).mockResolvedValue(emptyExisting());
     vi.mocked(fetchTurnExisting).mockResolvedValueOnce({
       workerSecrets: new Set(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"]),
-      keysByName: new Map([["app-turn", "uid-9"]])
+      keysByName: new Map([["app-turn", "uid-9"]]),
+      keysListable: true
     });
 
     const plan = await planInfra(
@@ -193,14 +196,14 @@ describe("planInfra", () => {
       }
     ]);
     expect(plan.missing).toEqual([]);
-    // A hand-bound key (secrets bound, no same-name key) also counts — but carries no id.
   });
 
   it("a turn resource with unbound secrets is MISSING — even when a same-name key exists (its secret is unrecoverable)", async () => {
     vi.mocked(listExisting).mockResolvedValue(emptyExisting());
     vi.mocked(fetchTurnExisting).mockResolvedValueOnce({
       workerSecrets: new Set(["TURN_KEY_ID"]), // half-bound (torn run)
-      keysByName: new Map([["app-turn", "uid-9"]])
+      keysByName: new Map([["app-turn", "uid-9"]]),
+      keysListable: true
     });
 
     const plan = await planInfra(

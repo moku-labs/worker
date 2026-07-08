@@ -66,6 +66,7 @@ const checkExisting = (
  * @param turn - The TURN preflight state.
  * @param turn.workerSecrets - Secret names bound on the worker; `null` when the script is missing.
  * @param turn.keysByName - Account TURN keys by name → uid (best-effort).
+ * @param turn.keysListable - Whether the key listing succeeded (false → bound-secrets fallback).
  * @returns The exists/missing/ships buckets.
  * @example
  * ```ts
@@ -75,7 +76,11 @@ const checkExisting = (
 const partitionResources = (
   resources: ResourceManifest[],
   existing: ExistingResources,
-  turn: { workerSecrets: Set<string> | null; keysByName: Map<string, string> }
+  turn: {
+    workerSecrets: Set<string> | null;
+    keysByName: Map<string, string>;
+    keysListable: boolean;
+  }
 ): { exists: ProvisionedRef[]; missing: ResourceManifest[]; ships: ResourceManifest[] } => {
   const exists: ProvisionedRef[] = [];
   const missing: ResourceManifest[] = [];
@@ -158,7 +163,7 @@ export const planInfra = async (ctx: Ctx, manifest: ExternalManifest): Promise<I
   const turn = wantsTurn
     ? await fetchTurnExisting({ accountId: account.id, token }, manifest.name)
     : // eslint-disable-next-line unicorn/no-null -- TurnExisting.workerSecrets is null-when-missing by contract
-      { workerSecrets: null, keysByName: new Map<string, string>() };
+      { workerSecrets: null, keysByName: new Map<string, string>(), keysListable: false };
 
   // Partition the declared resources: DOs ship with the Worker; TURN judges against the worker's
   // bound secrets; the rest are already-existing vs still-missing per the account listing.

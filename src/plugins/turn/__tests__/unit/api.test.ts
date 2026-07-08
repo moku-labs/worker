@@ -17,7 +17,8 @@ describe("createTurnApi", () => {
         kind: "turn",
         name: "myapp-turn",
         keyIdBinding: "TURN_KEY_ID",
-        apiTokenBinding: "TURN_KEY_API_TOKEN"
+        apiTokenBinding: "TURN_KEY_API_TOKEN",
+        verifyPath: "/api/ice" // the room-hub default
       }
     ]);
   });
@@ -30,7 +31,13 @@ describe("createTurnApi", () => {
     );
 
     expect(api.deployManifest()).toEqual([
-      { kind: "turn", name: "myapp-turn", keyIdBinding: "MY_KEY", apiTokenBinding: "MY_TOKEN" }
+      {
+        kind: "turn",
+        name: "myapp-turn",
+        keyIdBinding: "MY_KEY",
+        apiTokenBinding: "MY_TOKEN",
+        verifyPath: "/api/ice"
+      }
     ]);
   });
 

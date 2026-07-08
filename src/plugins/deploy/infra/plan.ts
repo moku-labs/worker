@@ -66,7 +66,8 @@ const checkExisting = (
  * @param turn - The TURN preflight state.
  * @param turn.workerSecrets - Secret names bound on the worker; `null` when the script is missing.
  * @param turn.keysByName - Account TURN keys by name → uid (best-effort).
- * @param turn.keysListable - Whether the key listing succeeded (false → bound-secrets fallback).
+ * @param turn.keysListable - Whether the key listing succeeded (false → functional fallback).
+ * @param turn.mintOk - Live mint check of the deployed endpoint (false = dead key → missing).
  * @returns The exists/missing/ships buckets.
  * @example
  * ```ts
@@ -80,6 +81,7 @@ const partitionResources = (
     workerSecrets: Set<string> | null;
     keysByName: Map<string, string>;
     keysListable: boolean;
+    mintOk: boolean | null;
   }
 ): { exists: ProvisionedRef[]; missing: ResourceManifest[]; ships: ResourceManifest[] } => {
   const exists: ProvisionedRef[] = [];
@@ -102,10 +104,13 @@ const partitionResources = (
     if (resource.kind === "turn") {
       if (!turnExists(resource, turn)) return undefined;
       const id = turn.keysByName.get(resource.name);
-      // Fallback-judged (token can't list keys): say exactly what was verified — never a bare
-      // "(exists)" for a key name nobody could check.
+      // Say exactly what was verified — never a bare "(exists)" for something nobody checked.
       if (!turn.keysListable) {
-        return { resource, note: "secrets bound — key unverified: token lacks Calls read" };
+        const note =
+          turn.mintOk === true
+            ? "mint verified live — key name unverified: token lacks Calls read"
+            : "secrets bound — unverified: token lacks Calls read";
+        return { resource, note };
       }
       return id === undefined ? { resource } : { resource, id };
     }
@@ -164,11 +169,26 @@ export const planInfra = async (ctx: Ctx, manifest: ExternalManifest): Promise<I
   // secret names (the EXISTS truth — a hand-bound key counts, a secretless same-name key does not)
   // plus the account's keys by name (best-effort; feeds stale cleanup + teardown ids only, so the
   // token needs no Calls scope just to plan).
-  const wantsTurn = manifest.resources.some(resource => resource.kind === "turn");
-  const turn = wantsTurn
-    ? await fetchTurnExisting({ accountId: account.id, token }, manifest.name)
-    : // eslint-disable-next-line unicorn/no-null -- TurnExisting.workerSecrets is null-when-missing by contract
-      { workerSecrets: null, keysByName: new Map<string, string>(), keysListable: false };
+  const turnResources = manifest.resources.filter(
+    (resource): resource is Extract<ResourceManifest, { kind: "turn" }> => resource.kind === "turn"
+  );
+  const turn =
+    turnResources.length > 0
+      ? await fetchTurnExisting(
+          { accountId: account.id, token },
+          manifest.name,
+          // One functional check per script — the first declared resource's path (the usual case
+          // is exactly one turn resource).
+          turnResources[0]?.verifyPath ?? false
+        )
+      : /* eslint-disable unicorn/no-null -- TurnExisting fields are null-when-missing by contract */
+        {
+          workerSecrets: null,
+          keysByName: new Map<string, string>(),
+          keysListable: false,
+          mintOk: null
+        };
+  /* eslint-enable unicorn/no-null */
 
   // Partition the declared resources: DOs ship with the Worker; TURN judges against the worker's
   // bound secrets; the rest are already-existing vs still-missing per the account listing.
@@ -187,6 +207,6 @@ export const planInfra = async (ctx: Ctx, manifest: ExternalManifest): Promise<I
     exists,
     missing,
     ships,
-    ...(wantsTurn ? { turn } : {})
+    ...(turnResources.length > 0 ? { turn } : {})
   };
 };

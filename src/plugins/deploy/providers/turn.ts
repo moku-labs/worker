@@ -53,9 +53,17 @@ export type TurnExisting = {
   keysByName: Map<string, string>;
   /**
    * Whether the account key listing succeeded. `false` = the token lacks Calls read — existence
-   * cannot be judged by name, so {@link turnExists} falls back to the bound-secrets signal.
+   * cannot be judged by name, so {@link turnExists} falls back to the functional signals.
    */
   keysListable: boolean;
+  /**
+   * Live FUNCTIONAL check of the already-deployed worker's credential endpoint (needs no Calls
+   * scope): `true` = it mints — the bound key demonstrably works; `false` = it answers but cannot
+   * mint (dead/deleted key) — the resource is treated as MISSING so the deploy converges; `null` =
+   * unverifiable (no prior deploy, verification disabled, endpoint absent, network failure) —
+   * never punished.
+   */
+  mintOk: boolean | null;
 };
 
 /**
@@ -118,22 +126,54 @@ async function cfCall<T>(
 }
 
 /**
- * Preflight read for the plan: the worker's bound secret names (the EXISTS truth) and the account's
- * TURN keys by name (best-effort — stale-key cleanup + teardown ids only). Never throws: a missing
- * script resolves `workerSecrets: null`; an unauthorized key listing resolves an empty map (the
- * token needs no Calls scope just to plan).
+ * Functionally verify the already-deployed worker's credential endpoint by CALLING it — the one
+ * existence signal that needs no Calls scope and cannot lie: a live mint proves the bound key
+ * works end to end.
+ *
+ * @param url - The worker's credential endpoint URL.
+ * @param fetchImpl - Injectable fetch.
+ * @returns `true` (mints), `false` (answers but cannot mint — dead key), `null` (unverifiable).
+ * @example
+ * ```ts
+ * const ok = await verifyMint("https://app.sub.workers.dev/api/ice", fetch);
+ * ```
+ */
+async function verifyMint(url: string, fetchImpl: typeof fetch): Promise<boolean | null> {
+  try {
+    const response = await fetchImpl(url, { signal: AbortSignal.timeout(5000) });
+    // The endpoint contract (room's hub): 200 {iceServers} = mints; 200 {} = no secrets;
+    // 502 = mint failed (dead key). Anything else (404 SPA fallback, 405, …) = not this
+    // endpoint — unverifiable, never punished.
+    if (response.status === 502) return false;
+    if (response.status !== 200) return null;
+    const body = (await response.json().catch(() => null)) as { iceServers?: unknown } | null;
+    if (body === null) return null;
+    return body.iceServers === undefined ? false : true;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Preflight read for the plan: the worker's bound secret names, the account's TURN keys by name
+ * (best-effort — stale-key cleanup + teardown ids only), and the live functional mint check of the
+ * already-deployed endpoint. Never throws: a missing script resolves `workerSecrets: null`, an
+ * unauthorized key listing resolves an empty map (the token needs no Calls scope just to plan),
+ * and an unverifiable mint resolves `mintOk: null`.
  *
  * @param deps - Account/token/fetch bundle.
  * @param scriptName - The stage-qualified worker script name.
+ * @param verifyPath - The credential-endpoint path to functionally verify; `false` disables.
  * @returns The turn-relevant existing state.
  * @example
  * ```ts
- * const existing = await fetchTurnExisting(deps, manifest.name);
+ * const existing = await fetchTurnExisting(deps, manifest.name, "/api/ice");
  * ```
  */
 export async function fetchTurnExisting(
   deps: TurnRestDeps,
-  scriptName: string
+  scriptName: string,
+  verifyPath: string | false
 ): Promise<TurnExisting> {
   // The worker's secret names — the ground truth for "provisioned". 404 = script not deployed yet.
   let workerSecrets: Set<string> | null = null;
@@ -171,7 +211,29 @@ export async function fetchTurnExisting(
     // Fail open — turnExists falls back to the bound-secrets signal.
   }
 
-  return { workerSecrets, keysByName, keysListable };
+  // Functional verification — only meaningful when a prior deploy exists AND both a verify path
+  // and the workers.dev subdomain are available. Fail-open (`null`) in every unverifiable case.
+  let mintOk: boolean | null = null;
+  if (verifyPath !== false && workerSecrets !== null) {
+    try {
+      const { subdomain } = await cfCall<{ subdomain?: string }>(
+        deps,
+        "resolve workers.dev subdomain",
+        "GET",
+        `/accounts/${deps.accountId}/workers/subdomain`
+      );
+      if (typeof subdomain === "string" && subdomain !== "") {
+        mintOk = await verifyMint(
+          `https://${scriptName}.${subdomain}.workers.dev${verifyPath}`,
+          deps.fetchImpl ?? fetch
+        );
+      }
+    } catch {
+      // Subdomain unresolvable → unverifiable; the remaining signals decide.
+    }
+  }
+
+  return { workerSecrets, keysByName, keysListable, mintOk };
 }
 
 /**
@@ -197,8 +259,12 @@ export function turnExists(resource: TurnManifest, existing: TurnExisting): bool
   const bound = existing.workerSecrets;
   const secretsBound =
     bound !== null && bound.has(resource.keyIdBinding) && bound.has(resource.apiTokenBinding);
-  if (!existing.keysListable) return secretsBound;
 
+  // A failed live mint is decisive: the bound key is dead (deleted/rotated) — MISSING, so the
+  // deploy converges regardless of what the name listing says.
+  if (existing.mintOk === false) return false;
+
+  if (!existing.keysListable) return secretsBound;
   return existing.keysByName.has(resource.name) && secretsBound;
 }
 

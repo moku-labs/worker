@@ -169,7 +169,8 @@ describe("planInfra", () => {
     vi.mocked(fetchTurnExisting).mockResolvedValueOnce({
       workerSecrets: new Set(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"]),
       keysByName: new Map([["app-turn", "uid-9"]]),
-      keysListable: true
+      keysListable: true,
+      mintOk: null
     });
 
     const plan = await planInfra(
@@ -179,7 +180,8 @@ describe("planInfra", () => {
           kind: "turn",
           name: "app-turn",
           keyIdBinding: "TURN_KEY_ID",
-          apiTokenBinding: "TURN_KEY_API_TOKEN"
+          apiTokenBinding: "TURN_KEY_API_TOKEN",
+          verifyPath: false
         }
       ])
     );
@@ -190,7 +192,8 @@ describe("planInfra", () => {
           kind: "turn",
           name: "app-turn",
           keyIdBinding: "TURN_KEY_ID",
-          apiTokenBinding: "TURN_KEY_API_TOKEN"
+          apiTokenBinding: "TURN_KEY_API_TOKEN",
+          verifyPath: false
         },
         id: "uid-9"
       }
@@ -203,7 +206,8 @@ describe("planInfra", () => {
     vi.mocked(fetchTurnExisting).mockResolvedValueOnce({
       workerSecrets: new Set(["TURN_KEY_ID"]), // half-bound (torn run)
       keysByName: new Map([["app-turn", "uid-9"]]),
-      keysListable: true
+      keysListable: true,
+      mintOk: null
     });
 
     const plan = await planInfra(
@@ -213,7 +217,8 @@ describe("planInfra", () => {
           kind: "turn",
           name: "app-turn",
           keyIdBinding: "TURN_KEY_ID",
-          apiTokenBinding: "TURN_KEY_API_TOKEN"
+          apiTokenBinding: "TURN_KEY_API_TOKEN",
+          verifyPath: false
         }
       ])
     );
@@ -235,14 +240,16 @@ describe("planInfra", () => {
           kind: "turn",
           name: "app-turn",
           keyIdBinding: "TURN_KEY_ID",
-          apiTokenBinding: "TURN_KEY_API_TOKEN"
+          apiTokenBinding: "TURN_KEY_API_TOKEN",
+          verifyPath: false
         }
       ])
     );
     expect(listExisting).toHaveBeenCalledWith("test-token", "acc-123", new Set(["kv"]));
     expect(fetchTurnExisting).toHaveBeenCalledWith(
       { accountId: "acc-123", token: "test-token" },
-      "w"
+      "w",
+      false // the fixture disables functional verification
     );
 
     vi.mocked(fetchTurnExisting).mockClear();
@@ -255,7 +262,8 @@ describe("planInfra", () => {
     vi.mocked(fetchTurnExisting).mockResolvedValueOnce({
       workerSecrets: new Set(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"]),
       keysByName: new Map(), // 403'd listing → nothing known about key names
-      keysListable: false
+      keysListable: false,
+      mintOk: null
     });
 
     const plan = await planInfra(
@@ -265,13 +273,14 @@ describe("planInfra", () => {
           kind: "turn",
           name: "app-turn",
           keyIdBinding: "TURN_KEY_ID",
-          apiTokenBinding: "TURN_KEY_API_TOKEN"
+          apiTokenBinding: "TURN_KEY_API_TOKEN",
+          verifyPath: false
         }
       ])
     );
 
     expect(plan.exists).toHaveLength(1);
-    expect(plan.exists[0]?.note).toBe("secrets bound — key unverified: token lacks Calls read");
+    expect(plan.exists[0]?.note).toBe("secrets bound — unverified: token lacks Calls read");
     // The strict (verified) path carries NO note — asserted by the name-anchored exists test above.
   });
 });

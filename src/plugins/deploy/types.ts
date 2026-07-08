@@ -176,7 +176,14 @@ export type ResourceManifest =
   | { kind: "d1"; name: string; binding: string; migrations?: string }
   | { kind: "queue"; name: string; binding: string; consumer?: boolean; maxBatchTimeout?: number }
   | { kind: "do"; binding: string; className: string }
-  | { kind: "turn"; name: string; keyIdBinding: string; apiTokenBinding: string };
+  | {
+      kind: "turn";
+      name: string;
+      keyIdBinding: string;
+      apiTokenBinding: string;
+      /** Same-origin path functionally verified by a live mint at preflight; `false` disables. */
+      verifyPath: string | false;
+    };
 
 /**
  * The whole deploy manifest the pipeline consumes (assembled, or caller-supplied for the
@@ -247,8 +254,15 @@ export type InfraPlan = {
     workerSecrets: Set<string> | null;
     /** Account TURN keys by name → uid (meaningful only when `keysListable`). */
     keysByName: Map<string, string>;
-    /** Whether the key listing succeeded (false = token lacks Calls read → bound-secrets fallback). */
+    /** Whether the key listing succeeded (false = token lacks Calls read). */
     keysListable: boolean;
+    /**
+     * Live functional check of the ALREADY-DEPLOYED worker's credential endpoint: `true` = it
+     * mints (the bound key works), `false` = it answers but cannot mint (dead/deleted key —
+     * treated as missing so the deploy converges), `null` = could not be checked (no prior
+     * deploy, verification disabled, endpoint absent, or network failure — never punished).
+     */
+    mintOk: boolean | null;
   };
   /** Declared resources the account listing confirmed already exist (with captured ids where applicable). */
   exists: ProvisionedRef[];

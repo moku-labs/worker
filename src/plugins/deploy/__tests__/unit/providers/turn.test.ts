@@ -25,7 +25,8 @@ const RESOURCE: Extract<ResourceManifest, { kind: "turn" }> = {
   kind: "turn",
   name: "party-app-turn",
   keyIdBinding: "TURN_KEY_ID",
-  apiTokenBinding: "TURN_KEY_API_TOKEN"
+  apiTokenBinding: "TURN_KEY_API_TOKEN",
+  verifyPath: false
 };
 
 /** One recorded REST call. */
@@ -41,6 +42,8 @@ function cfApi(script: {
   create?: { uid?: string; key?: string } | "forbidden";
   put?: "ok" | "fail";
   del?: "ok" | "fail";
+  subdomain?: string;
+  mint?: "ok" | "dead" | "not-an-endpoint" | "network";
 }): { deps: TurnRestDeps; calls: Call[] } {
   const calls: Call[] = [];
 
@@ -72,12 +75,25 @@ function cfApi(script: {
       ? Response.json({ success: false }, { status: 500 })
       : Response.json({ success: true, result: { name: body?.name } });
 
+  const answerMint = (): Response => {
+    if (script.mint === "dead") return Response.json({ error: "mint-failed" }, { status: 502 });
+    if (script.mint === "not-an-endpoint") return new Response("<html>", { status: 404 });
+    return Response.json({ iceServers: [{ urls: "turn:turn.cloudflare.com:3478" }] });
+  };
+
   const fetchImpl = (async (url: unknown, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     const body = init?.body === undefined ? undefined : JSON.parse(String(init.body));
     calls.push({ method, url: String(url), body });
     const at = String(url);
 
+    if (at.includes(".workers.dev")) {
+      if (script.mint === "network") throw new Error("network down");
+      return answerMint();
+    }
+    if (at.includes("/workers/subdomain")) {
+      return Response.json({ success: true, result: { subdomain: script.subdomain ?? "acme" } });
+    }
     if (at.includes("/workers/scripts/") && method === "GET") return answerSecretsList();
     if (at.includes("/calls/turn_keys") && method === "GET") return answerKeysList();
     if (at.includes("/calls/turn_keys") && method === "DELETE") return answerDelete();
@@ -96,7 +112,7 @@ describe("fetchTurnExisting (fail-open preflight)", () => {
       keys: [{ uid: "uid-1", name: "party-app-turn" }]
     });
 
-    const existing = await fetchTurnExisting(deps, "party-app");
+    const existing = await fetchTurnExisting(deps, "party-app", false);
 
     expect([...(existing.workerSecrets ?? [])]).toEqual(["TURN_KEY_ID", "OTHER"]);
     expect(existing.keysByName.get("party-app-turn")).toBe("uid-1");
@@ -105,7 +121,7 @@ describe("fetchTurnExisting (fail-open preflight)", () => {
   it("a missing script resolves workerSecrets: null; a forbidden key listing resolves empty (never throws)", async () => {
     const { deps } = cfApi({ secrets: "missing-script", keys: "forbidden" });
 
-    const existing = await fetchTurnExisting(deps, "party-app");
+    const existing = await fetchTurnExisting(deps, "party-app", false);
 
     expect(existing.workerSecrets).toBeNull();
     expect(existing.keysByName.size).toBe(0);
@@ -120,7 +136,8 @@ const existingState = (
 ): TurnExisting => ({
   workerSecrets: new Set(names),
   keysByName: new Map(keys),
-  keysListable
+  keysListable,
+  mintOk: null
 });
 
 describe("turnExists (name-anchored rule)", () => {
@@ -151,7 +168,8 @@ describe("turnExists (name-anchored rule)", () => {
       turnExists(RESOURCE, {
         workerSecrets: null,
         keysByName: new Map([["party-app-turn", "u1"]]),
-        keysListable: true
+        keysListable: true,
+        mintOk: null
       })
     ).toBe(false);
   });
@@ -170,7 +188,7 @@ describe("provisionTurn (standard provision phase)", () => {
 
     const outcome = await provisionTurn(
       RESOURCE,
-      { workerSecrets: new Set(), keysByName: new Map(), keysListable: true },
+      { workerSecrets: new Set(), keysByName: new Map(), keysListable: true, mintOk: null },
       deps
     );
 
@@ -193,7 +211,8 @@ describe("provisionTurn (standard provision phase)", () => {
       {
         workerSecrets: new Set(),
         keysByName: new Map([["party-app-turn", "stale-uid"]]),
-        keysListable: true
+        keysListable: true,
+        mintOk: null
       },
       deps
     );
@@ -211,7 +230,7 @@ describe("provisionTurn (standard provision phase)", () => {
     await expect(
       provisionTurn(
         RESOURCE,
-        { workerSecrets: new Set(), keysByName: new Map(), keysListable: true },
+        { workerSecrets: new Set(), keysByName: new Map(), keysListable: true, mintOk: null },
         deps
       )
     ).rejects.toThrow(/create turn_keys → HTTP 403 \(lacks permission\)/);
@@ -223,7 +242,7 @@ describe("provisionTurn (standard provision phase)", () => {
     await expect(
       provisionTurn(
         RESOURCE,
-        { workerSecrets: new Set(), keysByName: new Map(), keysListable: true },
+        { workerSecrets: new Set(), keysByName: new Map(), keysListable: true, mintOk: null },
         deps
       )
     ).rejects.toThrow(/malformed response/);
@@ -250,6 +269,75 @@ describe("bindTurnSecrets (post-deploy bind)", () => {
     await expect(bindTurnSecrets("party-app", { TURN_KEY_ID: "u" }, deps)).rejects.toThrow(
       /bind secret TURN_KEY_ID → HTTP 500/
     );
+  });
+});
+
+describe("functional verification (verifyPath — needs no Calls scope)", () => {
+  it("a live mint marks mintOk true, and turnExists honors the fallback with it", async () => {
+    const { deps, calls } = cfApi({
+      secrets: ["TURN_KEY_ID", "TURN_KEY_API_TOKEN"],
+      keys: "forbidden",
+      mint: "ok"
+    });
+
+    const existing = await fetchTurnExisting(deps, "party-app", "/api/ice");
+
+    expect(existing.mintOk).toBe(true);
+    expect(calls.some(call => call.url === "https://party-app.acme.workers.dev/api/ice")).toBe(
+      true
+    );
+    expect(turnExists(RESOURCE, existing)).toBe(true);
+  });
+
+  it("a DEAD key (502 mint) is DECISIVE: mintOk false → missing, even with secrets bound", async () => {
+    const { deps } = cfApi({
+      secrets: ["TURN_KEY_ID", "TURN_KEY_API_TOKEN"],
+      keys: "forbidden",
+      mint: "dead"
+    });
+
+    const existing = await fetchTurnExisting(deps, "party-app", "/api/ice");
+
+    expect(existing.mintOk).toBe(false);
+    expect(turnExists(RESOURCE, existing)).toBe(false); // → the deploy converges (recreate)
+  });
+
+  it("unverifiable cases resolve mintOk null and are never punished (404 endpoint, network error, disabled)", async () => {
+    const notEndpoint = await fetchTurnExisting(
+      cfApi({
+        secrets: ["TURN_KEY_ID", "TURN_KEY_API_TOKEN"],
+        keys: "forbidden",
+        mint: "not-an-endpoint"
+      }).deps,
+      "party-app",
+      "/api/ice"
+    );
+    expect(notEndpoint.mintOk).toBeNull();
+    expect(turnExists(RESOURCE, notEndpoint)).toBe(true); // falls back to bound secrets
+
+    const network = await fetchTurnExisting(
+      cfApi({ secrets: ["TURN_KEY_ID", "TURN_KEY_API_TOKEN"], keys: "forbidden", mint: "network" })
+        .deps,
+      "party-app",
+      "/api/ice"
+    );
+    expect(network.mintOk).toBeNull();
+
+    const disabled = await fetchTurnExisting(
+      cfApi({ secrets: ["TURN_KEY_ID", "TURN_KEY_API_TOKEN"], keys: "forbidden" }).deps,
+      "party-app",
+      false
+    );
+    expect(disabled.mintOk).toBeNull();
+  });
+
+  it("no prior deploy (script missing) skips verification entirely", async () => {
+    const { deps, calls } = cfApi({ secrets: "missing-script", keys: "forbidden", mint: "ok" });
+
+    const existing = await fetchTurnExisting(deps, "party-app", "/api/ice");
+
+    expect(existing.mintOk).toBeNull();
+    expect(calls.some(call => call.url.includes(".workers.dev"))).toBe(false);
   });
 });
 

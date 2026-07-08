@@ -18,23 +18,30 @@ turn: { relay: { name: "myapp-turn" } }
 
 `name` is stage-suffixed like every provisioned resource name (`myapp-turn-dev` on `--stage dev`).
 
-## What the deploy pipeline does
+## What the deploy pipeline does — the STANDARD resource flow
 
-TURN keys are ensured in the **post-deploy phase** (next to the remote migration/seed), not the
-provision phase — worker secrets can only bind to an EXISTING script:
+1. **Preflight** (`checkInfra` / the plan panel): a turn resource **exists when BOTH its secrets
+   are bound on the worker** — a hand-bound key (`wrangler secret put`) counts and is never
+   clobbered; a same-name key whose secret was never bound does NOT (the secret is returned exactly
+   once at creation and is unrecoverable). The account key listing is best-effort (no Calls scope
+   needed just to plan); it feeds stale-key cleanup and teardown ids. The resource shows in the
+   plan like any other: `turn myapp-turn` under *exists* or *will create*.
+2. **Provision phase** (alongside kv/d1/r2/queues): a stale same-name key is deleted, the key is
+   created (`POST /accounts/{account_id}/calls/turn_keys` — needs **Cloudflare Calls `Edit`** on
+   `CLOUDFLARE_API_TOKEN`; `auth setup` lists it automatically), and the once-returned credentials
+   are held in memory. Announced via `provision:resource` like every resource.
+3. **Right after `wrangler deploy`** the credentials bind as the two worker secrets — the one step
+   that physically must follow the deploy (secrets need an existing script; the same class as the
+   DO migration wrangler applies at deploy). All REST — values never touch argv or disk.
+4. **Failures are loud but DEGRADED-class**: a per-step error (`create turn_keys → HTTP 403 (…)`)
+   renders as a warning in the provision panel with one actionable instruction line, and the deploy
+   **continues** (`turn: "degraded"`) — the app's ICE ladder falls back to STUN. Never prompts
+   (`--ci` safe); never fails a live deploy. A torn run self-heals: the next deploy sees the
+   unbound pair and recreates.
 
-1. List the worker's secret names (read-only, idempotent). Both bound → no-op (`turn: "exists"`).
-2. Otherwise create a TURN key (`POST /accounts/{account_id}/calls/turn_keys` — needs the
-   **Calls `Edit`** scope on `CLOUDFLARE_API_TOKEN`; `auth setup` lists it automatically when a turn
-   resource is declared) and bind its id + secret as the two worker secrets (`turn: "provisioned"`).
-   Everything runs over the Cloudflare REST API — secret values never touch argv or disk.
-3. **Strictly fail-open**: no token / missing scope / any API failure prints ONE actionable
-   instruction line and the deploy continues (`turn: "degraded"`) — the app's ICE ladder falls back
-   to STUN, so a TURN-less deploy is degraded, not broken. Never prompts (`--ci` safe).
-
-A half-bound pair (a torn earlier run) is re-ensured with a FRESH key — the old key's secret is
-unrecoverable by design. Teardown (`--delete`) removes the worker and with it the secrets; the
-account-level TURN key itself is left in place (harmless; delete it in the dashboard if desired).
+Teardown (`--delete`) removes the worker (secrets with it) and deletes the TURN key **only when
+attributable** (a key matching the configured stage-qualified name); a hand-created key under
+another name is left alone.
 
 ## Public API (`app.turn`)
 

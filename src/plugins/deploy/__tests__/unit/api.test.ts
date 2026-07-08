@@ -50,16 +50,34 @@ vi.mock("../../wrangler-config", async importOriginal => {
   };
 });
 
-vi.mock("../../providers", () => ({
-  provisionResource: vi.fn().mockResolvedValue({}),
-  destroyResource: vi.fn().mockResolvedValue(undefined)
-}));
+vi.mock("../../providers", async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual, // ProvisionDeps is a type; provisionResource/destroyResource are the stubs below
+    // Turn resources yield the once-returned credentials for the post-deploy bind (like the real
+    // provisioner); every other kind provisions to an empty outcome.
+    provisionResource: vi.fn(async (resource: ResourceManifest) =>
+      resource.kind === "turn"
+        ? {
+            id: "turn-uid-1",
+            secrets: { TURN_KEY_ID: "turn-uid-1", TURN_KEY_API_TOKEN: "turn-secret-1" }
+          }
+        : {}
+    ),
+    destroyResource: vi.fn().mockResolvedValue(undefined)
+  };
+});
 
-// The REST-level ensure is exercised in providers/turn.test.ts; here it is stubbed so the pipeline
+// The REST level is exercised in providers/turn.test.ts; here the bind is stubbed so the pipeline
 // tests assert the WIRING (when it runs, what it receives, how its outcome lands in the report).
-vi.mock("../../providers/turn", () => ({
-  ensureTurnKey: vi.fn().mockResolvedValue("provisioned")
-}));
+// turnInstruction stays real (pure) so degraded messages carry the actual instruction line.
+vi.mock("../../providers/turn", async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    bindTurnSecrets: vi.fn().mockResolvedValue(undefined)
+  };
+});
 
 vi.mock("../../providers/r2", () => ({
   uploadDirToR2: vi.fn().mockResolvedValue(3),
@@ -178,7 +196,7 @@ import { planInfra } from "../../infra/plan";
 import { promptLine } from "../../prompt";
 import { destroyResource, provisionResource } from "../../providers";
 import { uploadDirToR2 } from "../../providers/r2";
-import { ensureTurnKey } from "../../providers/turn";
+import { bindTurnSecrets } from "../../providers/turn";
 import { deleteWorker } from "../../providers/worker";
 import { runWrangler, runWranglerInherit } from "../../runner";
 import { stdoutIsTty } from "../../tty";
@@ -304,7 +322,8 @@ const createMockCtx = (overrides?: {
       stage: "test"
     },
     env: {
-      get: () => undefined,
+      // Mirrors a real post-auth run: the token is present in the env (verifyAuth required it).
+      get: (key: string) => (key === "CLOUDFLARE_API_TOKEN" ? "test-token" : undefined),
       require: () => "test-token",
       has: () => true,
       getPublic: () => ({}),
@@ -581,7 +600,8 @@ describe("createDeployApi", () => {
       // Default mock stage is "test" → the kv resource name is stage-suffixed before provisioning.
       expect(provisionResource).toHaveBeenCalledWith(
         { kind: "kv", name: "cache-test", binding: "KV" },
-        false
+        false,
+        expect.anything() // the REST deps bundle every provider receives (turn consumes it)
       );
     });
 
@@ -723,7 +743,8 @@ describe("createDeployApi", () => {
 
       expect(provisionResource).toHaveBeenCalledWith(
         { kind: "kv", name: "cache", binding: "KV" },
-        false
+        false,
+        expect.anything() // the REST deps bundle every provider receives (turn consumes it)
       );
       expect(result.created).toEqual([{ resource: { kind: "kv", name: "cache", binding: "KV" } }]);
     });
@@ -1274,7 +1295,7 @@ describe("createDeployApi", () => {
 
   // ───────── run — turn resources (manifest-driven, fail-open post-deploy) ────
 
-  describe("run — turn resources", () => {
+  describe("run — turn resources (standard flow)", () => {
     const TURN_RESOURCE: ResourceManifest = {
       kind: "turn",
       name: "test-turn",
@@ -1282,49 +1303,126 @@ describe("createDeployApi", () => {
       apiTokenBinding: "TURN_KEY_API_TOKEN"
     };
 
-    it("ensures a declared turn resource after a successful deploy with the pipeline facts", async () => {
+    // An earlier guided-retry test replaces the module-mock implementation with a persistent
+    // `.mockResolvedValue({})` (vi.clearAllMocks clears calls, NOT implementations) — re-pin the
+    // turn-aware behavior here so these tests never depend on file order.
+    beforeEach(() => {
+      vi.mocked(provisionResource).mockImplementation(async (resource: ResourceManifest) =>
+        resource.kind === "turn"
+          ? {
+              id: "turn-uid-1",
+              secrets: { TURN_KEY_ID: "turn-uid-1", TURN_KEY_API_TOKEN: "turn-secret-1" }
+            }
+          : {}
+      );
+    });
+
+    it("provisions a declared turn resource in the PROVISION phase like any other resource", async () => {
       const ctx = createMockCtx({ turnManifest: [TURN_RESOURCE] });
       const api = createDeployApi(ctx);
 
       const report = await api.run();
 
-      expect(ensureTurnKey).toHaveBeenCalledOnce();
-      const [resource, deps] = vi.mocked(ensureTurnKey).mock.calls[0] ?? [];
-      expect(resource?.name).toBe("test-turn-test"); // stage "test" → suffixed like every resource
-      expect(deps?.accountId).toBe("acc-1"); // from the auth preflight
-      expect(deps?.scriptName).toBe("test-worker-test"); // the stage-qualified worker name
-      expect(report.turn).toBe("provisioned");
-      expect(report.ok).toBe(true);
-      expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", {
-        phase: "turn",
-        detail: "test-turn-test"
+      // planInfra (mocked) puts every manifest resource into `missing` → the provision phase
+      // creates the turn key alongside the rest, announced via provision:resource.
+      const turnCall = vi
+        .mocked(provisionResource)
+        .mock.calls.find(([resource]) => resource.kind === "turn");
+      expect(turnCall?.[0]).toMatchObject({ kind: "turn", name: "test-turn-test" }); // stage-suffixed
+      expect(turnCall?.[2]).toMatchObject({ rest: { accountId: "acct-test" } }); // REST deps threaded
+      expect(ctx.emit).toHaveBeenCalledWith("provision:resource", {
+        kind: "turn",
+        name: "test-turn-test"
       });
+      expect(report.resources?.created).toBeGreaterThan(0);
     });
 
-    it("reports turn: skipped (and never calls the adapter) when no turn resource is declared", async () => {
+    it("binds the captured credentials right after wrangler deploy → turn: provisioned", async () => {
+      const ctx = createMockCtx({ turnManifest: [TURN_RESOURCE] });
+      const api = createDeployApi(ctx);
+
+      const report = await api.run();
+
+      expect(bindTurnSecrets).toHaveBeenCalledWith(
+        "test-worker-test", // the stage-qualified script that just deployed
+        { TURN_KEY_ID: "turn-uid-1", TURN_KEY_API_TOKEN: "turn-secret-1" },
+        expect.objectContaining({ accountId: "acc-1", token: "test-token" })
+      );
+      expect(ctx.emit).toHaveBeenCalledWith("deploy:phase", {
+        phase: "turn",
+        detail: "bind secrets"
+      });
+      expect(report.turn).toBe("provisioned");
+      expect(report.ok).toBe(true);
+    });
+
+    it("reports turn: skipped (no provisioning, no bind) when no turn resource is declared", async () => {
       const ctx = createMockCtx();
       const api = createDeployApi(ctx);
 
       const report = await api.run();
 
-      expect(ensureTurnKey).not.toHaveBeenCalled();
+      expect(bindTurnSecrets).not.toHaveBeenCalled();
       expect(report.turn).toBe("skipped");
     });
 
-    it("a degraded turn ensure NEVER fails the deploy (fail-open contract)", async () => {
-      vi.mocked(ensureTurnKey).mockResolvedValueOnce("degraded");
+    it("a turn provision failure DEGRADES (warning + instruction) and never fails the deploy — even in CI", async () => {
+      vi.mocked(provisionResource).mockImplementationOnce(async resource => {
+        if (resource.kind === "turn") throw new Error("[worker] create turn_keys → HTTP 403");
+        return {};
+      });
+      // Only the turn resource in the manifest so the once-mock hits it deterministically.
+      const ctx = createMockCtx({ has: name => name === "turn", turnManifest: [TURN_RESOURCE] });
+      const api = createDeployApi(ctx);
+
+      const report = await api.run({ ci: true }); // CI: a FAILED resource would throw — degraded must not
+
+      expect(report.status).toBe("deployed");
+      expect(report.ok).toBe(true);
+      expect(report.turn).toBe("degraded");
+      expect(report.errors).toEqual([]);
+      expect(bindTurnSecrets).not.toHaveBeenCalled();
+    });
+
+    it("a bind failure degrades too (the next run's preflight recreates) — deploy stays live", async () => {
+      vi.mocked(bindTurnSecrets).mockRejectedValueOnce(
+        new Error("[worker] bind secret TURN_KEY_ID → HTTP 500")
+      );
       const ctx = createMockCtx({ turnManifest: [TURN_RESOURCE] });
       const api = createDeployApi(ctx);
 
       const report = await api.run();
 
       expect(report.turn).toBe("degraded");
-      expect(report.ok).toBe(true); // the deploy stays clean — degradation is not a failure
       expect(report.status).toBe("deployed");
-      expect(report.errors).toEqual([]);
+      expect(report.ok).toBe(true);
     });
 
-    it("never runs the ensure on an aborted deploy (declined gate)", async () => {
+    it("reports turn: exists when the preflight found the secrets bound (nothing created, no bind)", async () => {
+      const ctx = createMockCtx({ turnManifest: [TURN_RESOURCE] });
+      // Override the plan: the turn resource already exists (secrets bound — e.g. hand-bound).
+      vi.mocked(planInfra).mockImplementationOnce(async (_ctx, manifest) => ({
+        account: "test-account",
+        accountId: "acct-test",
+        exists: manifest.resources
+          .filter(resource => resource.kind === "turn")
+          .map(resource => ({ resource })),
+        missing: manifest.resources.filter(resource => resource.kind !== "turn"),
+        ships: []
+      }));
+      const api = createDeployApi(ctx);
+
+      const report = await api.run();
+
+      expect(report.turn).toBe("exists");
+      expect(bindTurnSecrets).not.toHaveBeenCalled();
+      expect(ctx.emit).toHaveBeenCalledWith("provision:skip", {
+        kind: "turn",
+        name: "test-turn-test"
+      });
+    });
+
+    it("never provisions or binds on an aborted deploy (declined gate)", async () => {
       const ctx = createMockCtx({ turnManifest: [TURN_RESOURCE] });
       vi.mocked(createBrandPrompts).mockReturnValueOnce({
         confirm: vi.fn<(question: string) => Promise<boolean>>().mockResolvedValue(false),
@@ -1336,34 +1434,7 @@ describe("createDeployApi", () => {
 
       expect(report.status).toBe("aborted");
       expect(report.turn).toBe("skipped");
-      expect(ensureTurnKey).not.toHaveBeenCalled();
-    });
-
-    it("the assembled manifest carries the turn resource (the post-deploy phase reads it there)", async () => {
-      // The real planInfra partition (turn never listed / never provisioned) is covered by the
-      // infra plan tests; here planInfra is mocked, so only the manifest content is asserted.
-      const ctx = createMockCtx({ has: name => name === "turn", turnManifest: [TURN_RESOURCE] });
-      const api = createDeployApi(ctx);
-
-      await api.run();
-
-      const calls = (writeWranglerConfig as ReturnType<typeof vi.fn>).mock.calls as Array<
-        [string, ExternalManifest]
-      >;
-      expect(calls.at(-1)?.[1].resources.some(r => r.kind === "turn")).toBe(true);
-    });
-
-    it("aggregates multiple turn resources (any degraded → degraded)", async () => {
-      vi.mocked(ensureTurnKey).mockResolvedValueOnce("exists").mockResolvedValueOnce("degraded");
-      const ctx = createMockCtx({
-        turnManifest: [TURN_RESOURCE, { ...TURN_RESOURCE, name: "second-turn" }]
-      });
-      const api = createDeployApi(ctx);
-
-      const report = await api.run();
-
-      expect(ensureTurnKey).toHaveBeenCalledTimes(2);
-      expect(report.turn).toBe("degraded");
+      expect(bindTurnSecrets).not.toHaveBeenCalled();
     });
   });
 

@@ -6,15 +6,16 @@
  * for Durable Objects). Read-only: emits `provision:plan` and writes nothing. Node-only; never
  * imported by the runtime Worker bundle.
  */
+import { fetchTurnExisting, turnExists } from "../providers/turn";
 import type { Ctx, ExternalManifest, InfraPlan, ProvisionedRef, ResourceManifest } from "../types";
 import type { ExistingResources, ListableKind } from "./cloudflare";
 import { listExisting, resolveAccount } from "./cloudflare";
 
 /**
- * A provisionable resource — every kind EXCEPT a Durable Object (ships with the Worker) and a TURN
- * key (worker-scoped secrets, ensured in the built-in post-deploy phase — a script must exist
- * before its secrets can bind, and the key secret is unrecoverable after creation, so the account
- * listing cannot judge its real state).
+ * An account-LISTABLE resource — every kind except a Durable Object (ships with the Worker) and a
+ * TURN key (judged by the worker's bound secrets via its own preflight — `turnExists` — because the
+ * key secret is unrecoverable after creation, so the account key listing alone cannot tell a usable
+ * key from a torn one).
  */
 type ProvisionableManifest = Exclude<ResourceManifest, { kind: "do" | "turn" }>;
 
@@ -55,6 +56,71 @@ const checkExisting = (
 };
 
 /**
+ * Partition the declared resources into the plan's three buckets: Durable Objects ship with the
+ * Worker; a TURN key exists when BOTH its secrets are bound on the worker (`turnExists` — the id is
+ * captured when a same-name account key is found, for teardown); everything else is judged against
+ * the account listing (`checkExisting`, ids captured for kv/d1).
+ *
+ * @param resources - The manifest's declared resources.
+ * @param existing - The account listing for the listable kinds.
+ * @param turn - The TURN preflight state.
+ * @param turn.workerSecrets - Secret names bound on the worker; `null` when the script is missing.
+ * @param turn.keysByName - Account TURN keys by name → uid (best-effort).
+ * @returns The exists/missing/ships buckets.
+ * @example
+ * ```ts
+ * const { exists, missing, ships } = partitionResources(manifest.resources, existing, turn);
+ * ```
+ */
+const partitionResources = (
+  resources: ResourceManifest[],
+  existing: ExistingResources,
+  turn: { workerSecrets: Set<string> | null; keysByName: Map<string, string> }
+): { exists: ProvisionedRef[]; missing: ResourceManifest[]; ships: ResourceManifest[] } => {
+  const exists: ProvisionedRef[] = [];
+  const missing: ResourceManifest[] = [];
+  const ships: ResourceManifest[] = [];
+
+  /**
+   * Existing-ref classifier per kind: an exists-ref (id captured when known), or undefined (missing).
+   *
+   * @param resource - The declared (non-DO) resource.
+   * @returns The exists-ref, or undefined when the resource must be created.
+   * @example
+   * ```ts
+   * const ref = existingRef({ kind: "kv", name: "cache", binding: "KV" });
+   * ```
+   */
+  const existingRef = (
+    resource: Exclude<ResourceManifest, { kind: "do" }>
+  ): ProvisionedRef | undefined => {
+    if (resource.kind === "turn") {
+      if (!turnExists(resource, turn)) return undefined;
+      const id = turn.keysByName.get(resource.name);
+      return id === undefined ? { resource } : { resource, id };
+    }
+    const check = checkExisting(resource, existing);
+    if (!check.exists) return undefined;
+    return check.id === undefined ? { resource } : { resource, id: check.id };
+  };
+
+  for (const resource of resources) {
+    if (resource.kind === "do") {
+      ships.push(resource);
+      continue;
+    }
+    const ref = existingRef(resource);
+    if (ref === undefined) {
+      missing.push(resource);
+    } else {
+      exists.push(ref);
+    }
+  }
+
+  return { exists, missing, ships };
+};
+
+/**
  * Run the read-only infra preflight: resolve the account, list existing resources, diff against
  * the manifest, emit `provision:plan`, and return the plan. Writes nothing.
  *
@@ -76,35 +142,27 @@ export const planInfra = async (ctx: Ctx, manifest: ExternalManifest): Promise<I
     ? { id: pinnedAccountId, name: pinnedAccountId }
     : await resolveAccount(token);
 
-  // Query only the kinds the app declares (DO is never listed — it ships with the script; TURN is
-  // never listed — ensured post-deploy against the worker's own secrets), so the token needs read
-  // permission on just those kinds.
+  // Query only the kinds the app declares (DO is never listed — it ships with the script; TURN has
+  // its own preflight below), so the token needs read permission on just those kinds.
   const kinds = new Set<ListableKind>();
   for (const resource of manifest.resources) {
     if (resource.kind !== "do" && resource.kind !== "turn") kinds.add(resource.kind);
   }
   const existing = await listExisting(token, account.id, kinds);
 
-  // Partition the declared resources: TURN keys are ensured in the built-in post-deploy phase
-  // (excluded from the plan entirely — see ProvisionableManifest); DOs ship with the Worker; the
-  // rest are already-existing vs still-missing per the account listing.
-  const planned = manifest.resources.filter(resource => resource.kind !== "turn");
-  const exists: ProvisionedRef[] = [];
-  const missing: ResourceManifest[] = [];
-  const ships: ResourceManifest[] = [];
-  for (const resource of planned) {
-    if (resource.kind === "do") {
-      ships.push(resource);
-      continue;
-    }
+  // TURN preflight — one fail-open read when any turn resource is declared: the worker's bound
+  // secret names (the EXISTS truth — a hand-bound key counts, a secretless same-name key does not)
+  // plus the account's keys by name (best-effort; feeds stale cleanup + teardown ids only, so the
+  // token needs no Calls scope just to plan).
+  const wantsTurn = manifest.resources.some(resource => resource.kind === "turn");
+  const turn = wantsTurn
+    ? await fetchTurnExisting({ accountId: account.id, token }, manifest.name)
+    : // eslint-disable-next-line unicorn/no-null -- TurnExisting.workerSecrets is null-when-missing by contract
+      { workerSecrets: null, keysByName: new Map<string, string>() };
 
-    const check = checkExisting(resource, existing);
-    if (check.exists) {
-      exists.push(check.id === undefined ? { resource } : { resource, id: check.id });
-    } else {
-      missing.push(resource);
-    }
-  }
+  // Partition the declared resources: DOs ship with the Worker; TURN judges against the worker's
+  // bound secrets; the rest are already-existing vs still-missing per the account listing.
+  const { exists, missing, ships } = partitionResources(manifest.resources, existing, turn);
 
   ctx.emit("provision:plan", {
     exists: exists.length,
@@ -113,5 +171,12 @@ export const planInfra = async (ctx: Ctx, manifest: ExternalManifest): Promise<I
     account: account.name
   });
 
-  return { account: account.name, accountId: account.id, exists, missing, ships };
+  return {
+    account: account.name,
+    accountId: account.id,
+    exists,
+    missing,
+    ships,
+    ...(wantsTurn ? { turn } : {})
+  };
 };

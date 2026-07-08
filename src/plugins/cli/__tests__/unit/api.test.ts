@@ -82,9 +82,15 @@ const makeDeployStub = () => ({
   checkInfra: vi
     .fn<() => Promise<InfraPlan>>()
     .mockResolvedValue({ account: "", accountId: "", exists: [], missing: [], ships: [] }),
-  provisionInfra: vi
-    .fn<(plan: InfraPlan) => Promise<ProvisionResult>>()
-    .mockResolvedValue({ created: [], skipped: [], bundled: [], failed: [], ids: {} }),
+  provisionInfra: vi.fn<(plan: InfraPlan) => Promise<ProvisionResult>>().mockResolvedValue({
+    created: [],
+    skipped: [],
+    bundled: [],
+    failed: [],
+    degraded: [],
+    ids: {},
+    pendingSecrets: {}
+  }),
   verifyAuth: vi
     .fn<() => Promise<AuthStatus>>()
     .mockResolvedValue({ ok: true, account: "Play Co", accountId: "acc-1", scopes: [] }),

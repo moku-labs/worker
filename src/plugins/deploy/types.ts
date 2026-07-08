@@ -193,13 +193,18 @@ export type ExternalManifest = {
 
 /**
  * Outcome of provisioning a single resource. Carries the captured Cloudflare id for the
- * kinds that have one (kv namespace id, d1 database id) so writeWranglerConfig can write a
- * real id into the generated config instead of an empty placeholder. r2/queue/do have no
- * such id (they are referenced by name) and resolve to an empty object.
+ * kinds that have one (kv namespace id, d1 database id, turn key uid) so writeWranglerConfig can
+ * write a real id into the generated config instead of an empty placeholder (kv/d1) and teardown
+ * can target the exact key (turn). r2/queue/do have no such id (they are referenced by name) and
+ * resolve to an empty object. A turn resource ALSO yields `secrets` — the once-returned key
+ * credentials, held in memory until the post-deploy bind (worker secrets need an existing script);
+ * they never reach the generated config.
  */
 export type ProvisionOutcome = {
-  /** Captured Cloudflare resource id, when the provisioned kind reports one (kv/d1). */
+  /** Captured Cloudflare resource id, when the provisioned kind reports one (kv/d1/turn). */
   id?: string;
+  /** Secret binding name → value to bind onto the worker right after `wrangler deploy` (turn). */
+  secrets?: Record<string, string>;
 };
 
 /**
@@ -226,6 +231,17 @@ export type InfraPlan = {
   account: string;
   /** Resolved Cloudflare account id used for the existence checks. */
   accountId: string;
+  /**
+   * The TURN preflight state (present when any `turn` resource is declared): the worker's bound
+   * secret names — the "exists" truth — plus the account's keys by name (best-effort; stale-key
+   * cleanup + teardown ids). Threaded into the provision step so each guided retry re-plans it.
+   */
+  turn?: {
+    /** Secret names bound on the deployed worker; `null` when the script does not exist yet. */
+    workerSecrets: Set<string> | null;
+    /** Account TURN keys by name → uid (empty when the token lacks Calls read — fail-open). */
+    keysByName: Map<string, string>;
+  };
   /** Declared resources the account listing confirmed already exist (with captured ids where applicable). */
   exists: ProvisionedRef[];
   /** Declared resources that do not yet exist and must be created. */
@@ -261,8 +277,20 @@ export type ProvisionResult = {
   bundled: ResourceManifest[];
   /** Resources that failed to create (captured, not thrown). */
   failed: ProvisionFailure[];
+  /**
+   * Resources whose failure DEGRADES the app instead of failing the deploy (turn: the app's ICE
+   * ladder falls back to STUN). Rendered as warnings with the per-step error + instruction line;
+   * never counted into the CI fail-fast / retry logic.
+   */
+  degraded: ProvisionFailure[];
   /** Merged binding → Cloudflare id map (existing + created) for writeWranglerConfig. */
   ids: Record<string, string>;
+  /**
+   * Secret binding name → value captured at the provision step (turn keys — the credential is
+   * returned exactly once at creation) and bound onto the worker right after `wrangler deploy`.
+   * Held in memory only; never written to the generated config or disk.
+   */
+  pendingSecrets: Record<string, string>;
 };
 
 /**
@@ -293,10 +321,11 @@ export type DeployReport = {
   /** Remote seed outcome — "skipped" (not requested), "applied", or "failed". */
   seed: "skipped" | "applied" | "failed";
   /**
-   * TURN-key provisioning outcome (only when a `turn` resource is declared): "skipped" (none
-   * declared), "exists" (both secrets already bound — idempotent no-op), "provisioned" (key created
-   * + secrets bound this run), or "degraded" (could not provision — an instruction line was printed
-   * and the deploy continued; the app's ICE ladder falls back to STUN).
+   * TURN-key outcome (only when a `turn` resource is declared): "skipped" (none declared),
+   * "exists" (the preflight found both secrets bound — incl. hand-bound keys; no-op), "provisioned"
+   * (key created in the provision phase + credentials bound right after `wrangler deploy`), or
+   * "degraded" (create or bind failed — a warning with the per-step error + instruction line was
+   * rendered and the deploy continued; the app's ICE ladder falls back to STUN).
    */
   turn: "skipped" | "exists" | "provisioned" | "degraded";
   /** Wall-clock duration of the whole run (ms). */

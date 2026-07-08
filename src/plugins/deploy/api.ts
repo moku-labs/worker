@@ -38,10 +38,10 @@ import {
 } from "./infra/render";
 import { stageName } from "./naming";
 import { promptLine } from "./prompt";
-import { destroyResource, provisionResource } from "./providers";
+import { destroyResource, type ProvisionDeps, provisionResource } from "./providers";
 import { detachQueueConsumer } from "./providers/queues";
 import { uploadDirToR2 } from "./providers/r2";
-import { ensureTurnKey, type TurnOutcome } from "./providers/turn";
+import { bindTurnSecrets, turnInstruction } from "./providers/turn";
 import { deleteWorker } from "./providers/worker";
 import { runWrangler, runWranglerInherit } from "./runner";
 import { parseMigrationsApplied, parseSeedStats, resolveD1, runConfiguredSeed } from "./seed";
@@ -109,37 +109,54 @@ const assembleManifest = (ctx: Ctx, stage: string): ExternalManifest => {
  * @param missing - The resources the plan flagged as not-yet-existing.
  * @param ci - Whether provisioning runs non-interactively (forwarded to each provider).
  * @param ids - The binding → Cloudflare id map, mutated in place with each created kv/d1 id.
- * @returns The created refs and any captured per-resource failures.
+ * @param deps - The REST context the turn provisioner consumes (wrangler-CLI kinds ignore it).
+ * @returns The created refs, degraded warnings, pending secrets, and captured failures.
  * @example
  * ```ts
- * const { created, failed } = await provisionMissing(ctx, plan.missing, false, ids);
+ * const { created, failed } = await provisionMissing(ctx, plan.missing, false, ids, deps);
  * ```
  */
 const provisionMissing = async (
   ctx: Ctx,
   missing: ResourceManifest[],
   ci: boolean,
-  ids: Record<string, string>
-): Promise<{ created: ProvisionedRef[]; failed: ProvisionFailure[] }> => {
-  // Create the missing resources one by one, capturing each new id (kv/d1) — and capturing any
-  // failure instead of throwing, so the remaining resources still get a chance to provision.
+  ids: Record<string, string>,
+  deps: ProvisionDeps
+): Promise<{
+  created: ProvisionedRef[];
+  failed: ProvisionFailure[];
+  degraded: ProvisionFailure[];
+  pendingSecrets: Record<string, string>;
+}> => {
+  // Create the missing resources one by one, capturing each new id (kv/d1/turn) — and capturing any
+  // failure instead of throwing, so the remaining resources still get a chance to provision. A turn
+  // failure is DEGRADED-class (the app falls back to STUN — warning, never a deploy failure); its
+  // once-returned credentials are held for the post-deploy bind.
   const created: ProvisionedRef[] = [];
   const failed: ProvisionFailure[] = [];
+  const degraded: ProvisionFailure[] = [];
+  const pendingSecrets: Record<string, string> = {};
   for (const resource of missing) {
     try {
-      const { id } = await provisionResource(resource, ci);
+      const { id, secrets } = await provisionResource(resource, ci, deps);
 
       if (id !== undefined && (resource.kind === "kv" || resource.kind === "d1")) {
         ids[resource.binding] = id;
       }
+      Object.assign(pendingSecrets, secrets);
 
       created.push(id === undefined ? { resource } : { resource, id });
       ctx.emit("provision:resource", { kind: resource.kind, name: resourceName(resource) });
     } catch (error) {
-      failed.push({ resource, error: error instanceof Error ? error.message : String(error) });
+      const failure = { resource, error: error instanceof Error ? error.message : String(error) };
+      if (resource.kind === "turn") {
+        degraded.push({ ...failure, error: `${failure.error}. ${turnInstruction(resource)}` });
+      } else {
+        failed.push(failure);
+      }
     }
   }
-  return { created, failed };
+  return { created, failed, degraded, pendingSecrets };
 };
 
 /**
@@ -161,6 +178,16 @@ const provisionMissing = async (
 const applyPlan = async (ctx: Ctx, plan: InfraPlan, ci: boolean): Promise<ProvisionResult> => {
   const ids: Record<string, string> = {};
 
+  // REST context for the turn provisioner (the wrangler-CLI kinds ignore it): the plan's resolved
+  // account + this run's token + the plan's OWN turn preflight (each guided retry re-plans it).
+  // Read (not require) the token — only a turn resource consumes it, and a missing token there
+  // surfaces as that resource's own degraded error, never a crash for token-less compositions.
+  const deps: ProvisionDeps = {
+    rest: { accountId: plan.accountId, token: ctx.env?.get("CLOUDFLARE_API_TOKEN") ?? "" },
+    // eslint-disable-next-line unicorn/no-null -- TurnExisting.workerSecrets is null-when-missing by contract
+    turnExisting: plan.turn ?? { workerSecrets: null, keysByName: new Map() }
+  };
+
   // Reuse the ids of resources that already exist; announce each as skipped.
   for (const ref of plan.exists) {
     if (ref.id !== undefined && (ref.resource.kind === "kv" || ref.resource.kind === "d1")) {
@@ -176,9 +203,23 @@ const applyPlan = async (ctx: Ctx, plan: InfraPlan, ci: boolean): Promise<Provis
   }
 
   // Create the missing resources resiliently (one failure never aborts the rest).
-  const { created, failed } = await provisionMissing(ctx, plan.missing, ci, ids);
+  const { created, failed, degraded, pendingSecrets } = await provisionMissing(
+    ctx,
+    plan.missing,
+    ci,
+    ids,
+    deps
+  );
 
-  return { created, skipped: plan.exists, bundled: plan.ships, failed, ids };
+  return {
+    created,
+    skipped: plan.exists,
+    bundled: plan.ships,
+    failed,
+    degraded,
+    ids,
+    pendingSecrets
+  };
 };
 
 /**
@@ -559,10 +600,8 @@ const applyRemoteMigrations = async (ctx: Ctx): Promise<MigrationOutcome[]> => {
   return outcomes;
 };
 
-/** The turn + migration + seed outcome of the post-deploy stage, folded into the {@link DeployReport}. */
+/** The migration + seed outcome of the post-deploy stage, folded into the {@link DeployReport}. */
 type PostDeploy = {
-  /** TURN-key provisioning outcome (manifest-driven; "skipped" when no turn resource is declared). */
-  turn: DeployReport["turn"];
   /** Remote D1 migration outcome. */
   migration: DeployReport["migration"];
   /** Remote seed outcome. */
@@ -597,64 +636,63 @@ const captureFailure = (
 };
 
 /**
- * Ensure every declared `turn` resource on the just-deployed worker — the manifest-driven TURN
- * phase of the post-deploy stage. Runs here (not in the provision phase) because worker secrets can
- * only bind to an EXISTING script. Deliberately fail-open, unlike the other resource kinds: the
- * per-resource adapter never throws — an impediment prints one instruction line and degrades the
- * outcome, never the deploy (the consumer's ICE ladder falls back to STUN).
+ * Complete the TURN provisioning right after `wrangler deploy` lands: bind the credentials the
+ * provision step captured (worker secrets physically require an existing script — the same class as
+ * the DO migration wrangler applies at deploy). Resolves the report's `turn` outcome:
+ * `"skipped"` (none declared) / `"exists"` (preflight found both secrets bound — incl. hand-bound
+ * keys) / `"provisioned"` (created this run + bound now) / `"degraded"` (the provision step already
+ * warned, or the bind failed — warning with the per-step error + instruction; the deploy stays
+ * live and the next run's preflight recreates cleanly).
  *
  * @param ctx - The deploy plugin context (env token).
- * @param manifest - The assembled manifest (its `turn` resources + the stage-qualified worker name).
+ * @param manifest - The assembled manifest (turn resources + the stage-qualified worker name).
  * @param accountId - The Cloudflare account id the auth preflight resolved.
- * @param ui - The branded console the outcome lines render through.
- * @returns The aggregate outcome ("skipped" when no turn resource is declared; the worst otherwise).
+ * @param provisioned - The provision-phase result (pending secrets + degraded resources).
+ * @returns The report's turn outcome.
  * @example
  * ```ts
- * const turn = await ensureTurnResources(ctx, manifest, auth.accountId, ui);
+ * const turn = await bindProvisionedTurn(ctx, manifest, auth.accountId, provisioned);
  * ```
  */
-const ensureTurnResources = async (
+const bindProvisionedTurn = async (
   ctx: Ctx,
   manifest: ExternalManifest,
   accountId: string,
-  ui: ReturnType<typeof createBrandConsole>
+  provisioned: ProvisionResult
 ): Promise<DeployReport["turn"]> => {
   const turns = manifest.resources.filter(
     (resource): resource is Extract<ResourceManifest, { kind: "turn" }> => resource.kind === "turn"
   );
   if (turns.length === 0) return "skipped";
 
-  const apiToken = ctx.env.get("CLOUDFLARE_API_TOKEN");
-  /**
-   * The branded info line the ensure reports through.
-   *
-   * @param message - The line to render.
-   * @example
-   * ```ts
-   * note('TURN key "app-turn" provisioned.');
-   * ```
-   */
-  const note = (message: string): void => {
-    ui.info(message);
-  };
+  // The provision phase already rendered its degraded warning in the result panel — just reflect it.
+  if (provisioned.degraded.length > 0) return "degraded";
 
-  const outcomes: TurnOutcome[] = [];
-  for (const resource of turns) {
-    ctx.emit("deploy:phase", { phase: "turn", detail: resource.name });
-    outcomes.push(
-      await ensureTurnKey(resource, { accountId, scriptName: manifest.name, apiToken, note })
+  // Nothing captured → every declared turn resource already existed (both secrets bound).
+  if (Object.keys(provisioned.pendingSecrets).length === 0) return "exists";
+
+  const ui = createBrandConsole();
+  ctx.emit("deploy:phase", { phase: "turn", detail: "bind secrets" });
+  try {
+    await bindTurnSecrets(manifest.name, provisioned.pendingSecrets, {
+      accountId,
+      token: ctx.env?.get("CLOUDFLARE_API_TOKEN") ?? ""
+    });
+    ui.info(
+      `TURN credentials bound (${Object.keys(provisioned.pendingSecrets).join(", ")}) — internet play is on.`
     );
+    return "provisioned";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const instruction = turns[0] ? ` ${turnInstruction(turns[0])}` : "";
+    ui.warn(`${message}.${instruction}`);
+    return "degraded";
   }
-
-  // Aggregate: any degraded resource marks the whole phase degraded; else provisioned beats exists.
-  if (outcomes.includes("degraded")) return "degraded";
-  return outcomes.includes("provisioned") ? "provisioned" : "exists";
 };
 
 /**
  * Run the post-deploy remote steps — REACHED ONLY ON A SUCCESSFUL DEPLOY (every gate in `run` returns
- * early before here), so a deploy that never happened never touches a remote DB. First ensures the
- * manifest's `turn` resources (fail-open — never errors the report), then applies remote D1
+ * early before here), so a deploy that never happened never touches a remote DB. Applies remote D1
  * migrations (when requested), then loads the configured seed (when requested) — but skips the seed
  * if the migration it depends on failed. A migration/seed failure is RENDERED inline and CAPTURED in
  * `errors` (never thrown), so one failed step still yields a complete, honest report.
@@ -663,25 +701,18 @@ const ensureTurnResources = async (
  * @param want - Which post-steps the caller requested.
  * @param want.migration - Whether to apply pending remote D1 migrations.
  * @param want.seed - Whether to load the configured remote seed (and reset its KV keys).
- * @param manifest - The assembled manifest (turn resources + the stage-qualified worker name).
- * @param accountId - The Cloudflare account id the auth preflight resolved.
- * @returns The turn + migration + seed outcomes and any captured branded errors.
+ * @returns The migration + seed outcomes and any captured branded errors.
  * @example
  * ```ts
- * const post = await runPostDeploy(ctx, { migration: true, seed: true }, manifest, auth.accountId);
+ * const post = await runPostDeploy(ctx, { migration: true, seed: true });
  * ```
  */
 const runPostDeploy = async (
   ctx: Ctx,
-  want: { migration: boolean; seed: boolean },
-  manifest: ExternalManifest,
-  accountId: string
+  want: { migration: boolean; seed: boolean }
 ): Promise<PostDeploy> => {
   const ui = createBrandConsole();
   const errors: string[] = [];
-
-  // TURN keys first (manifest-driven, fail-open), then migration + seed.
-  const turn = await ensureTurnResources(ctx, manifest, accountId, ui);
 
   // Apply remote migrations first — the seed below depends on the schema they create. Wrangler's raw
   // migration TUI is captured (hidden); the branded panel reports exactly what applied.
@@ -731,7 +762,7 @@ const runPostDeploy = async (
     }
   }
 
-  return { turn, migration, seed, errors };
+  return { migration, seed, errors };
 };
 
 /**
@@ -803,15 +834,17 @@ const detachQueueConsumers = async (worker: string, resources: ProvisionedRef[])
  * @param resources - The existing data resources to delete (with captured ids for kv).
  * @param durableObjects - The Durable Object class names, recorded as deleted once the Worker is gone.
  * @returns The destroyed rows and any captured per-resource failures.
+ * @param deps - The REST context the turn teardown consumes (wrangler-CLI kinds ignore it).
  * @example
  * ```ts
- * const { deleted, failed } = await destroyTargets("app-dev", plan.exists, ["Room"]);
+ * const { deleted, failed } = await destroyTargets("app-dev", plan.exists, ["Room"], deps);
  * ```
  */
 const destroyTargets = async (
   worker: string | undefined,
   resources: ProvisionedRef[],
-  durableObjects: string[]
+  durableObjects: string[],
+  deps: ProvisionDeps
 ): Promise<{ deleted: TeardownRow[]; failed: { row: TeardownRow; error: string }[] }> => {
   const deleted: TeardownRow[] = [];
   const failed: { row: TeardownRow; error: string }[] = [];
@@ -838,7 +871,7 @@ const destroyTargets = async (
   for (const ref of resources) {
     const row: TeardownRow = { kind: ref.resource.kind, name: resourceName(ref.resource) };
     try {
-      await destroyResource(ref);
+      await destroyResource(ref, deps);
       deleted.push(row);
     } catch (error) {
       failed.push({ row, error: error instanceof Error ? error.message : String(error) });
@@ -958,6 +991,12 @@ export const createDeployApi = (ctx: Ctx) => ({
     const url = await guidedDeployStep(ctx, manifest, stage, deps);
     if (url === undefined) return aborted(ctx, stage, startedAt);
 
+    // Bind the TURN credentials captured at the provision step — the one action that physically
+    // must follow `wrangler deploy` (worker secrets need an existing script; the same class as the
+    // DO migration wrangler applies at deploy). A bind failure DEGRADES (warning + STUN fallback,
+    // next run's preflight sees the unbound pair and recreates); it never fails the live deploy.
+    const turn = await bindProvisionedTurn(ctx, manifest, auth.accountId, provisioned);
+
     // Terminal summary panel — the deployed URL leads (the headline), then stage, the resource tally,
     // and how long the whole deploy took.
     const resources = {
@@ -974,15 +1013,12 @@ export const createDeployApi = (ctx: Ctx) => ({
     });
 
     // Post-deploy remote steps — REACHED ONLY HERE, after a live deploy (every gate above returns
-    // early). The manifest's turn resources (fail-open), then migration + seed, run against the live
-    // worker/remote DB and fold any failure into the report rather than throwing, so the report is
-    // complete whether they ran, were skipped, or failed.
-    const post = await runPostDeploy(
-      ctx,
-      { migration: opts?.migration === true, seed: opts?.seed === true },
-      manifest,
-      auth.accountId
-    );
+    // early). Migration + seed run against the remote DB and fold any failure into the report rather
+    // than throwing, so the report is complete whether they ran, were skipped, or failed.
+    const post = await runPostDeploy(ctx, {
+      migration: opts?.migration === true,
+      seed: opts?.seed === true
+    });
 
     return {
       ok: post.errors.length === 0,
@@ -992,7 +1028,7 @@ export const createDeployApi = (ctx: Ctx) => ({
       resources,
       migration: post.migration,
       seed: post.seed,
-      turn: post.turn,
+      turn,
       elapsedMs: Date.now() - startedAt,
       errors: post.errors
     };
@@ -1058,8 +1094,13 @@ export const createDeployApi = (ctx: Ctx) => ({
     const durableObjects =
       worker === undefined ? [] : plan.ships.map(resource => resourceName(resource));
 
+    // TURN keys are torn down only when ATTRIBUTABLE (the preflight captured the uid of a key
+    // matching the configured name); a hand-created key under another name is left alone — its
+    // worker secrets die with the Worker anyway. Unattributable turn refs leave the teardown set.
+    const targets = plan.exists.filter(ref => ref.resource.kind !== "turn" || ref.id !== undefined);
+
     // Nothing exists for this stage → idempotent no-op, not a failure.
-    const rows = buildTeardownRows(plan.exists, durableObjects, worker);
+    const rows = buildTeardownRows(targets, durableObjects, worker);
     if (rows.length === 0) {
       ui.check(true, "nothing to destroy", `stage "${stage}"`);
       return {
@@ -1091,7 +1132,11 @@ export const createDeployApi = (ctx: Ctx) => ({
 
     // Destroy — Worker first (takes the DO storage with it), then the data stores; resilient.
     ctx.emit("deploy:phase", { phase: "destroy" });
-    const { deleted, failed } = await destroyTargets(worker, plan.exists, durableObjects);
+    const { deleted, failed } = await destroyTargets(worker, targets, durableObjects, {
+      rest: { accountId: plan.accountId, token },
+      // eslint-disable-next-line unicorn/no-null -- TurnExisting.workerSecrets is null-when-missing by contract
+      turnExisting: plan.turn ?? { workerSecrets: null, keysByName: new Map() }
+    });
     renderTeardownResult(ui, { deleted, failed });
 
     return {

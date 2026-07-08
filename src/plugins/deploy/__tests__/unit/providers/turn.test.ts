@@ -1,12 +1,23 @@
 /**
- * Unit tests for the TURN-key provisioning adapter (`ensureTurnKey`): idempotent skip when both
- * secrets are bound, the create-key → bind-secrets happy path over the Cloudflare REST API, and
- * every fail-open rung (no token / scope-rejected create / malformed body / thrown fetch / a failed
- * secret bind) — each must `note()` exactly ONE actionable line, resolve "degraded", and NEVER
- * throw (the deploy continues).
+ * Unit tests for the TURN provisioning adapter (standard-flow edition): the fail-open preflight
+ * (`fetchTurnExisting`), the secrets-bound exists rule (`turnExists` — a hand-bound key counts, a
+ * same-name secretless key does not), provision-phase creation with stale-key cleanup
+ * (`provisionTurn` — loud per-step errors), the post-deploy bind (`bindTurnSecrets`), and teardown
+ * (`deleteTurnKey`).
  */
+/* eslint-disable unicorn/no-null -- TurnExisting.workerSecrets is `null` by contract when the
+   script does not exist yet; the REST double and fixtures must produce exactly that shape. */
 import { describe, expect, it } from "vitest";
-import { ensureTurnKey, type TurnDeps } from "../../../providers/turn";
+import {
+  bindTurnSecrets,
+  deleteTurnKey,
+  fetchTurnExisting,
+  provisionTurn,
+  type TurnExisting,
+  type TurnRestDeps,
+  turnExists,
+  turnInstruction
+} from "../../../providers/turn";
 import type { ResourceManifest } from "../../../types";
 
 /** The default-named turn resource under test. */
@@ -21,164 +32,204 @@ const RESOURCE: Extract<ResourceManifest, { kind: "turn" }> = {
 type Call = { method: string; url: string; body?: unknown };
 
 /**
- * A scripted Cloudflare REST double: records calls, answers by URL/method, and returns the standard
+ * A scripted Cloudflare REST double: records calls, answers by URL/method with the standard
  * `{ success, result }` envelope.
  */
 function cfApi(script: {
-  secrets?: string[] | "fail";
-  create?: { uid?: string; key?: string } | "forbidden" | "throw";
+  secrets?: string[] | "missing-script";
+  keys?: Array<{ uid: string; name: string }> | "forbidden";
+  create?: { uid?: string; key?: string } | "forbidden";
   put?: "ok" | "fail";
-}): { fetchImpl: typeof fetch; calls: Call[] } {
+  del?: "ok" | "fail";
+}): { deps: TurnRestDeps; calls: Call[] } {
   const calls: Call[] = [];
+
+  // Per-endpoint answerers keep the dispatch flat (one route, one function).
+  const answerSecretsList = (): Response =>
+    script.secrets === "missing-script"
+      ? Response.json({ success: false, errors: [{ message: "not found" }] }, { status: 404 })
+      : Response.json({
+          success: true,
+          result: (script.secrets ?? []).map(name => ({ name, type: "secret_text" }))
+        });
+  const answerKeysList = (): Response =>
+    script.keys === "forbidden"
+      ? Response.json({ success: false }, { status: 403 })
+      : Response.json({ success: true, result: script.keys ?? [] });
+  const answerDelete = (): Response =>
+    script.del === "fail"
+      ? Response.json({ success: false }, { status: 500 })
+      : Response.json({ success: true, result: null });
+  const answerCreate = (): Response =>
+    script.create === "forbidden"
+      ? Response.json(
+          { success: false, errors: [{ message: "lacks permission" }] },
+          { status: 403 }
+        )
+      : Response.json({ success: true, result: script.create ?? {} }, { status: 201 });
+  const answerPut = (body: { name?: string } | undefined): Response =>
+    script.put === "fail"
+      ? Response.json({ success: false }, { status: 500 })
+      : Response.json({ success: true, result: { name: body?.name } });
+
   const fetchImpl = (async (url: unknown, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     const body = init?.body === undefined ? undefined : JSON.parse(String(init.body));
     calls.push({ method, url: String(url), body });
+    const at = String(url);
 
-    if (String(url).includes("/workers/scripts/") && method === "GET") {
-      if (script.secrets === "fail") return Response.json({ success: false }, { status: 403 });
-      const names = (script.secrets ?? []).map(name => ({ name, type: "secret_text" }));
-      return Response.json({ success: true, result: names });
-    }
-    if (String(url).includes("/calls/turn_keys")) {
-      if (script.create === "throw") throw new Error("network down");
-      if (script.create === "forbidden") {
-        return Response.json(
-          { success: false, errors: [{ message: "lacks permission" }] },
-          { status: 403 }
-        );
-      }
-      return Response.json({ success: true, result: script.create ?? {} }, { status: 201 });
-    }
-    if (String(url).includes("/workers/scripts/") && method === "PUT") {
-      if (script.put === "fail") return Response.json({ success: false }, { status: 500 });
-      return Response.json({ success: true, result: { name: body?.name } });
-    }
-    throw new Error(`unexpected call: ${method} ${String(url)}`);
+    if (at.includes("/workers/scripts/") && method === "GET") return answerSecretsList();
+    if (at.includes("/calls/turn_keys") && method === "GET") return answerKeysList();
+    if (at.includes("/calls/turn_keys") && method === "DELETE") return answerDelete();
+    if (at.includes("/calls/turn_keys") && method === "POST") return answerCreate();
+    if (at.includes("/workers/scripts/") && method === "PUT") return answerPut(body);
+    throw new Error(`unexpected call: ${method} ${at}`);
   }) as unknown as typeof fetch;
-  return { fetchImpl, calls };
+
+  return { deps: { accountId: "acc-42", token: "cf-token", fetchImpl }, calls };
 }
 
-/** Build the deps bundle over a scripted API + a captured note sink. */
-function makeDeps(
-  fetchImpl: typeof fetch,
-  apiToken: string | undefined = "cf-token"
-): { deps: TurnDeps; notes: string[] } {
-  const notes: string[] = [];
-  return {
-    deps: {
-      accountId: "acc-42",
-      scriptName: "party-app",
-      apiToken,
-      note: message => {
-        notes.push(message);
-      },
-      fetchImpl
-    },
-    notes
-  };
-}
+describe("fetchTurnExisting (fail-open preflight)", () => {
+  it("reads the worker's secret names + the account keys by name", async () => {
+    const { deps } = cfApi({
+      secrets: ["TURN_KEY_ID", "OTHER"],
+      keys: [{ uid: "uid-1", name: "party-app-turn" }]
+    });
 
-describe("ensureTurnKey", () => {
-  it("skips read-only when both secrets are already bound (idempotent redeploys)", async () => {
-    const { fetchImpl, calls } = cfApi({ secrets: ["TURN_KEY_ID", "TURN_KEY_API_TOKEN", "OTHER"] });
-    const { deps, notes } = makeDeps(fetchImpl);
+    const existing = await fetchTurnExisting(deps, "party-app");
 
-    expect(await ensureTurnKey(RESOURCE, deps)).toBe("exists");
-    expect(calls).toHaveLength(1); // the secrets listing only — no create, no puts
-    expect(notes).toHaveLength(1);
-    expect(notes[0]).toContain("already provisioned");
+    expect([...(existing.workerSecrets ?? [])]).toEqual(["TURN_KEY_ID", "OTHER"]);
+    expect(existing.keysByName.get("party-app-turn")).toBe("uid-1");
   });
 
-  it("creates the key against the account and binds BOTH secrets (the happy path)", async () => {
-    const { fetchImpl, calls } = cfApi({
-      secrets: [],
-      create: { uid: "key-uid", key: "key-secret" }
+  it("a missing script resolves workerSecrets: null; a forbidden key listing resolves empty (never throws)", async () => {
+    const { deps } = cfApi({ secrets: "missing-script", keys: "forbidden" });
+
+    const existing = await fetchTurnExisting(deps, "party-app");
+
+    expect(existing.workerSecrets).toBeNull();
+    expect(existing.keysByName.size).toBe(0);
+  });
+});
+
+/** A TurnExisting fixture with the given secret names bound (script exists). */
+const withSecrets = (names: string[]): TurnExisting => ({
+  workerSecrets: new Set(names),
+  keysByName: new Map()
+});
+
+describe("turnExists (secrets-bound rule)", () => {
+  it("both secrets bound → exists, regardless of any key name (a hand-bound key counts)", () => {
+    expect(turnExists(RESOURCE, withSecrets(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"]))).toBe(true);
+  });
+
+  it("half-bound, none, or no script → not provisioned (a same-name key alone never counts)", () => {
+    expect(turnExists(RESOURCE, withSecrets(["TURN_KEY_ID"]))).toBe(false);
+    expect(turnExists(RESOURCE, withSecrets([]))).toBe(false);
+    expect(
+      turnExists(RESOURCE, { workerSecrets: null, keysByName: new Map([["party-app-turn", "u1"]]) })
+    ).toBe(false);
+  });
+});
+
+describe("provisionTurn (standard provision phase)", () => {
+  it("creates the key and yields uid + the once-returned credentials for the post-deploy bind", async () => {
+    const { deps, calls } = cfApi({ create: { uid: "key-uid", key: "key-secret" } });
+
+    const outcome = await provisionTurn(
+      RESOURCE,
+      { workerSecrets: new Set(), keysByName: new Map() },
+      deps
+    );
+
+    expect(outcome).toEqual({
+      id: "key-uid",
+      secrets: { TURN_KEY_ID: "key-uid", TURN_KEY_API_TOKEN: "key-secret" }
     });
-    const { deps, notes } = makeDeps(fetchImpl);
-
-    expect(await ensureTurnKey(RESOURCE, deps)).toBe("provisioned");
-
-    const create = calls.find(call => call.url.includes("/calls/turn_keys"));
+    const create = calls.find(call => call.method === "POST");
     expect(create?.url).toBe(
       "https://api.cloudflare.com/client/v4/accounts/acc-42/calls/turn_keys"
     );
     expect(create?.body).toEqual({ name: "party-app-turn" });
+  });
+
+  it("deletes a stale same-name key first (its secret is unrecoverable — keys never accumulate)", async () => {
+    const { deps, calls } = cfApi({ create: { uid: "new-uid", key: "new-secret" } });
+
+    await provisionTurn(
+      RESOURCE,
+      { workerSecrets: new Set(), keysByName: new Map([["party-app-turn", "stale-uid"]]) },
+      deps
+    );
+
+    const del = calls.find(call => call.method === "DELETE");
+    expect(del?.url).toContain("/calls/turn_keys/stale-uid");
+    expect(calls.findIndex(c => c.method === "DELETE")).toBeLessThan(
+      calls.findIndex(c => c.method === "POST")
+    );
+  });
+
+  it("throws PER-STEP with the HTTP status on failure (create turn_keys → 403)", async () => {
+    const { deps } = cfApi({ create: "forbidden" });
+
+    await expect(
+      provisionTurn(RESOURCE, { workerSecrets: new Set(), keysByName: new Map() }, deps)
+    ).rejects.toThrow(/create turn_keys → HTTP 403 \(lacks permission\)/);
+  });
+
+  it("throws on a malformed create response (no uid/key)", async () => {
+    const { deps } = cfApi({ create: { uid: "id-only" } });
+
+    await expect(
+      provisionTurn(RESOURCE, { workerSecrets: new Set(), keysByName: new Map() }, deps)
+    ).rejects.toThrow(/malformed response/);
+  });
+});
+
+describe("bindTurnSecrets (post-deploy bind)", () => {
+  it("PUTs each secret onto the deployed script", async () => {
+    const { deps, calls } = cfApi({ put: "ok" });
+
+    await bindTurnSecrets("party-app", { TURN_KEY_ID: "u", TURN_KEY_API_TOKEN: "s" }, deps);
 
     const puts = calls.filter(call => call.method === "PUT");
     expect(puts.map(call => call.body)).toEqual([
-      { name: "TURN_KEY_ID", text: "key-uid", type: "secret_text" },
-      { name: "TURN_KEY_API_TOKEN", text: "key-secret", type: "secret_text" }
+      { name: "TURN_KEY_ID", text: "u", type: "secret_text" },
+      { name: "TURN_KEY_API_TOKEN", text: "s", type: "secret_text" }
     ]);
     expect(puts.every(call => call.url.includes("/workers/scripts/party-app/secrets"))).toBe(true);
-    expect(notes).toHaveLength(1);
-    expect(notes[0]).toContain("provisioned");
   });
 
-  it("a half-bound pair is re-ensured with a fresh key (a torn earlier run heals)", async () => {
-    const { fetchImpl, calls } = cfApi({
-      secrets: ["TURN_KEY_ID"],
-      create: { uid: "new-uid", key: "new-secret" }
-    });
-    const { deps } = makeDeps(fetchImpl);
+  it("throws per-secret with the step label on failure", async () => {
+    const { deps } = cfApi({ put: "fail" });
 
-    expect(await ensureTurnKey(RESOURCE, deps)).toBe("provisioned");
-    expect(calls.filter(call => call.method === "PUT")).toHaveLength(2);
+    await expect(bindTurnSecrets("party-app", { TURN_KEY_ID: "u" }, deps)).rejects.toThrow(
+      /bind secret TURN_KEY_ID → HTTP 500/
+    );
+  });
+});
+
+describe("deleteTurnKey (teardown)", () => {
+  it("deletes by uid", async () => {
+    const { deps, calls } = cfApi({ del: "ok" });
+
+    await deleteTurnKey("key-uid", deps);
+
+    expect(calls[0]?.method).toBe("DELETE");
+    expect(calls[0]?.url).toContain("/calls/turn_keys/key-uid");
   });
 
-  it("no API token → one instruction line, zero API calls, degraded (fail-open)", async () => {
-    const { fetchImpl, calls } = cfApi({});
-    // Empty string = the "unset env var" shape the pipeline hands through (a default-parameter
-    // `undefined` would silently re-default to the test token).
-    const { deps, notes } = makeDeps(fetchImpl, "");
-
-    expect(await ensureTurnKey(RESOURCE, deps)).toBe("degraded");
-    expect(calls).toHaveLength(0);
-    expect(notes).toHaveLength(1);
-    expect(notes[0]).toContain("Calls: Edit");
-    expect(notes[0]).toContain("wrangler secret put TURN_KEY_ID");
+  it("throws with the status on failure", async () => {
+    const { deps } = cfApi({ del: "fail" });
+    await expect(deleteTurnKey("key-uid", deps)).rejects.toThrow(/delete turn_keys → HTTP 500/);
   });
+});
 
-  it("scope-rejected create, malformed body, thrown fetch, failed listing — each degrades with ONE line", async () => {
-    const cases = [
-      cfApi({ secrets: [], create: "forbidden" }),
-      cfApi({ secrets: [], create: { uid: "id-only" } }),
-      cfApi({ secrets: [], create: "throw" }),
-      cfApi({ secrets: "fail" })
-    ];
-
-    for (const { fetchImpl } of cases) {
-      const { deps, notes } = makeDeps(fetchImpl);
-      await expect(ensureTurnKey(RESOURCE, deps)).resolves.toBe("degraded");
-      expect(notes).toHaveLength(1);
-      expect(notes[0]).toContain("not provisioned");
-    }
-  });
-
-  it("a failed secret bind degrades (the fresh-key re-ensure covers the tear on the next deploy)", async () => {
-    const { fetchImpl } = cfApi({
-      secrets: [],
-      create: { uid: "key-uid", key: "key-secret" },
-      put: "fail"
-    });
-    const { deps, notes } = makeDeps(fetchImpl);
-
-    expect(await ensureTurnKey(RESOURCE, deps)).toBe("degraded");
-    expect(notes).toHaveLength(1);
-  });
-
-  it("binds under renamed secret bindings when the instance overrides them", async () => {
-    const resource = { ...RESOURCE, keyIdBinding: "MY_KEY", apiTokenBinding: "MY_TOKEN" };
-    const { fetchImpl, calls } = cfApi({
-      secrets: [],
-      create: { uid: "key-uid", key: "key-secret" }
-    });
-    const { deps } = makeDeps(fetchImpl);
-
-    await ensureTurnKey(resource, deps);
-    expect(calls.filter(call => call.method === "PUT").map(call => call.body)).toEqual([
-      { name: "MY_KEY", text: "key-uid", type: "secret_text" },
-      { name: "MY_TOKEN", text: "key-secret", type: "secret_text" }
-    ]);
+describe("turnInstruction", () => {
+  it("carries both the automatic (scope) and manual (secret names) paths in one line", () => {
+    const line = turnInstruction(RESOURCE);
+    expect(line).toContain("Cloudflare Calls: Edit");
+    expect(line).toContain("wrangler secret put TURN_KEY_ID");
+    expect(line).toContain("wrangler secret put TURN_KEY_API_TOKEN");
   });
 });

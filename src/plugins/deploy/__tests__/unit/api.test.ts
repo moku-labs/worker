@@ -1300,7 +1300,8 @@ describe("createDeployApi", () => {
       kind: "turn",
       name: "test-turn",
       keyIdBinding: "TURN_KEY_ID",
-      apiTokenBinding: "TURN_KEY_API_TOKEN"
+      apiTokenBinding: "TURN_KEY_API_TOKEN",
+      verifyPath: false
     };
 
     // An earlier guided-retry test replaces the module-mock implementation with a persistent

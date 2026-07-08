@@ -20,6 +20,14 @@ export type TurnInstance = {
   keyIdBinding?: string;
   /** Worker-secret name the created key's API token binds to. Default `"TURN_KEY_API_TOKEN"`. */
   apiTokenBinding?: string;
+  /**
+   * Same-origin path of the app's credential-mint endpoint, FUNCTIONALLY verified at preflight by
+   * calling the already-deployed worker (needs no Calls scope): a live mint proves the bound key
+   * works; a mint failure means a dead/deleted key → the resource is treated as missing and the
+   * deploy converges. Default `"/api/ice"` (`@moku-labs/room/server`'s hub endpoint); set `false`
+   * to disable functional verification.
+   */
+  verifyPath?: string | false;
 };
 
 /** turn plugin configuration — a keyed map of TURN key instances (usually exactly one). */
@@ -30,6 +38,9 @@ const DEFAULT_KEY_ID_BINDING = "TURN_KEY_ID";
 
 /** Default worker-secret name for the TURN key API token. */
 const DEFAULT_API_TOKEN_BINDING = "TURN_KEY_API_TOKEN";
+
+/** Default functional-verification path (`@moku-labs/room/server`'s hub credential endpoint). */
+const DEFAULT_VERIFY_PATH = "/api/ice";
 
 /** turn public API surface (mounted at app.turn). */
 export type TurnApi = {
@@ -51,6 +62,7 @@ export type TurnApi = {
     name: string;
     keyIdBinding: string;
     apiTokenBinding: string;
+    verifyPath: string | false;
   }>;
 };
 
@@ -76,7 +88,8 @@ export const createTurnApi = (ctx: Context): TurnApi => ({
       kind: "turn" as const,
       name: instance.name,
       keyIdBinding: instance.keyIdBinding ?? DEFAULT_KEY_ID_BINDING,
-      apiTokenBinding: instance.apiTokenBinding ?? DEFAULT_API_TOKEN_BINDING
+      apiTokenBinding: instance.apiTokenBinding ?? DEFAULT_API_TOKEN_BINDING,
+      verifyPath: instance.verifyPath ?? DEFAULT_VERIFY_PATH
     }));
   }
 });

@@ -24,6 +24,12 @@ turn: { relay: { name: "myapp-turn" } }
 
 ## What the deploy pipeline does — the STANDARD resource flow
 
+0. **Functional verification (needs NO Calls scope).** When a prior deploy exists, the preflight
+   CALLS the deployed worker's credential endpoint (`verifyPath`, default `/api/ice`; `false`
+   disables): a live mint proves the bound key works; a `502` proves it's DEAD (e.g. the key was
+   deleted in the dashboard) — the resource is then treated as **missing** and the deploy converges
+   (recreate + rebind), instead of a false `(exists)`. Unverifiable cases (no prior deploy,
+   endpoint absent, network) are never punished.
 1. **Preflight** (`checkInfra` / the plan panel): NAME-ANCHORED, like every resource row — a turn
    resource **exists when a key with the DECLARED name exists AND both secrets are bound on the
    worker**. Bound secrets from a differently-named hand-created key do NOT satisfy the

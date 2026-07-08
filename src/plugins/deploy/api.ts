@@ -184,8 +184,14 @@ const applyPlan = async (ctx: Ctx, plan: InfraPlan, ci: boolean): Promise<Provis
   // surfaces as that resource's own degraded error, never a crash for token-less compositions.
   const deps: ProvisionDeps = {
     rest: { accountId: plan.accountId, token: ctx.env?.get("CLOUDFLARE_API_TOKEN") ?? "" },
-    // eslint-disable-next-line unicorn/no-null -- TurnExisting.workerSecrets is null-when-missing by contract
-    turnExisting: plan.turn ?? { workerSecrets: null, keysByName: new Map(), keysListable: false }
+    /* eslint-disable unicorn/no-null -- TurnExisting fields are null-when-missing by contract */
+    turnExisting: plan.turn ?? {
+      workerSecrets: null,
+      keysByName: new Map(),
+      keysListable: false,
+      mintOk: null
+    }
+    /* eslint-enable unicorn/no-null */
   };
 
   // Reuse the ids of resources that already exist; announce each as skipped.
@@ -1134,8 +1140,14 @@ export const createDeployApi = (ctx: Ctx) => ({
     ctx.emit("deploy:phase", { phase: "destroy" });
     const { deleted, failed } = await destroyTargets(worker, targets, durableObjects, {
       rest: { accountId: plan.accountId, token },
-      // eslint-disable-next-line unicorn/no-null -- TurnExisting.workerSecrets is null-when-missing by contract
-      turnExisting: plan.turn ?? { workerSecrets: null, keysByName: new Map(), keysListable: false }
+      /* eslint-disable unicorn/no-null -- TurnExisting fields are null-when-missing by contract */
+      turnExisting: plan.turn ?? {
+        workerSecrets: null,
+        keysByName: new Map(),
+        keysListable: false,
+        mintOk: null
+      }
+      /* eslint-enable unicorn/no-null */
     });
     renderTeardownResult(ui, { deleted, failed });
 

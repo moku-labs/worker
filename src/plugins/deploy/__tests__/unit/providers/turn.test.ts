@@ -44,6 +44,7 @@ function cfApi(script: {
   del?: "ok" | "fail";
   subdomain?: string;
   mint?: "ok" | "dead" | "not-an-endpoint" | "network";
+  envMint?: "ok" | "rejected" | "network";
 }): { deps: TurnRestDeps; calls: Call[] } {
   const calls: Call[] = [];
 
@@ -75,6 +76,20 @@ function cfApi(script: {
       ? Response.json({ success: false }, { status: 500 })
       : Response.json({ success: true, result: { name: body?.name } });
 
+  const answerEnvMint = (): Response => {
+    if (script.envMint === "network") throw new Error("network down");
+    if (script.envMint === "rejected") return Response.json({ success: false }, { status: 403 });
+    return Response.json(
+      { iceServers: { urls: ["turn:turn.cloudflare.com:3478"] } },
+      { status: 201 }
+    );
+  };
+
+  const answerWorkerMint = (): Response => {
+    if (script.mint === "network") throw new Error("network down");
+    return answerMint();
+  };
+
   const answerMint = (): Response => {
     if (script.mint === "dead") return Response.json({ error: "mint-failed" }, { status: 502 });
     if (script.mint === "not-an-endpoint") return new Response("<html>", { status: 404 });
@@ -87,10 +102,8 @@ function cfApi(script: {
     calls.push({ method, url: String(url), body });
     const at = String(url);
 
-    if (at.includes(".workers.dev")) {
-      if (script.mint === "network") throw new Error("network down");
-      return answerMint();
-    }
+    if (at.includes("rtc.live.cloudflare.com")) return answerEnvMint();
+    if (at.includes(".workers.dev")) return answerWorkerMint();
     if (at.includes("/workers/subdomain")) {
       return Response.json({ success: true, result: { subdomain: script.subdomain ?? "acme" } });
     }
@@ -338,6 +351,78 @@ describe("functional verification (verifyPath — needs no Calls scope)", () => 
 
     expect(existing.mintOk).toBeNull();
     expect(calls.some(call => call.url.includes(".workers.dev"))).toBe(false);
+  });
+});
+
+describe("escape hatch — env-provided key pair (.env.local)", () => {
+  const PAIR = { keyId: "env-key-uid", apiToken: "env-key-secret" };
+
+  it("validates the pair by ACTUALLY MINTING against rtc.live (its own confirmation)", async () => {
+    const { deps, calls } = cfApi({ secrets: [], keys: "forbidden", envMint: "ok" });
+
+    const existing = await fetchTurnExisting(deps, "party-app", false, PAIR);
+
+    expect(existing.envKey).toEqual({ ...PAIR, mintOk: true });
+    const mintCall = calls.find(call => call.url.includes("rtc.live.cloudflare.com"));
+    expect(mintCall?.url).toContain("/turn/keys/env-key-uid/credentials/generate");
+  });
+
+  it("a rejected pair validates false; a network failure stays unverifiable (null)", async () => {
+    const rejected = await fetchTurnExisting(
+      cfApi({ secrets: [], keys: "forbidden", envMint: "rejected" }).deps,
+      "party-app",
+      false,
+      PAIR
+    );
+    expect(rejected.envKey?.mintOk).toBe(false);
+
+    const network = await fetchTurnExisting(
+      cfApi({ secrets: [], keys: "forbidden", envMint: "network" }).deps,
+      "party-app",
+      false,
+      PAIR
+    );
+    expect(network.envKey?.mintOk).toBeNull();
+  });
+
+  it("env mode: exists ONLY when the deployed endpoint mints live; else missing → re-bind converges", () => {
+    const base = existingState(["TURN_KEY_ID", "TURN_KEY_API_TOKEN"], [], false);
+    const envKey = { ...PAIR, mintOk: true as boolean | null };
+
+    expect(turnExists(RESOURCE, { ...base, mintOk: true, envKey })).toBe(true);
+    expect(turnExists(RESOURCE, { ...base, mintOk: null, envKey })).toBe(false); // unverified → converge
+    expect(turnExists(RESOURCE, { ...base, mintOk: false, envKey })).toBe(false); // dead → converge
+    expect(turnExists(RESOURCE, { ...existingState([], [], false), mintOk: null, envKey })).toBe(
+      false
+    ); // unbound → converge
+  });
+
+  it("provision adopts the env pair — NO Cloudflare account API calls, no uid (teardown never deletes a user key)", async () => {
+    const { deps, calls } = cfApi({});
+    const existing = {
+      ...existingState([], [], false),
+      envKey: { ...PAIR, mintOk: true as boolean | null }
+    };
+
+    const outcome = await provisionTurn(RESOURCE, existing, deps);
+
+    expect(outcome).toEqual({
+      secrets: { TURN_KEY_ID: "env-key-uid", TURN_KEY_API_TOKEN: "env-key-secret" }
+    });
+    expect(outcome.id).toBeUndefined();
+    expect(calls.filter(call => call.url.includes("api.cloudflare.com"))).toEqual([]);
+  });
+
+  it("a pair that failed its mint throws the precise env error (→ degraded warning)", async () => {
+    const { deps } = cfApi({});
+    const existing = {
+      ...existingState([], [], false),
+      envKey: { ...PAIR, mintOk: false as boolean | null }
+    };
+
+    await expect(provisionTurn(RESOURCE, existing, deps)).rejects.toThrow(
+      /env TURN credentials rejected — TURN_KEY_ID\/TURN_KEY_API_TOKEN in \.env\.local failed a live mint/
+    );
   });
 });
 

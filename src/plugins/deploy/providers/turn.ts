@@ -64,6 +64,15 @@ export type TurnExisting = {
    * never punished.
    */
   mintOk: boolean | null;
+  /**
+   * The ESCAPE-HATCH source pair from the deploy environment (`.env.local`: the resource's
+   * `keyIdBinding`/`apiTokenBinding` names, default `TURN_KEY_ID`/`TURN_KEY_API_TOKEN`), when both
+   * are set. VALIDATED by an actual credential mint against `rtc.live.cloudflare.com` — the TURN
+   * key's own token authorizes itself, so this needs NO Cloudflare account API and sidesteps the
+   * known Calls-scope 403. `mintOk`: `true` = the pair demonstrably mints (the provision
+   * confirmation), `false` = rejected (typo/deleted key), `null` = unverifiable (network).
+   */
+  envKey?: { keyId: string; apiToken: string; mintOk: boolean | null };
 };
 
 /**
@@ -78,7 +87,7 @@ export type TurnExisting = {
  * ```
  */
 export const turnInstruction = (resource: TurnManifest): string =>
-  `The app falls back to STUN until provisioned. Automatic path: add the "Cloudflare Calls: Edit" permission to CLOUDFLARE_API_TOKEN and redeploy. Manual path: create a TURN key (dash.cloudflare.com → Realtime → TURN) and bind it: wrangler secret put ${resource.keyIdBinding} / wrangler secret put ${resource.apiTokenBinding}.`;
+  `The app falls back to STUN until provisioned. Easiest: create a TURN key (dash.cloudflare.com → Realtime → TURN) and put ${resource.keyIdBinding} + ${resource.apiTokenBinding} into .env.local — the next deploy validates and binds it. Or add the "Cloudflare Calls: Edit" permission to CLOUDFLARE_API_TOKEN for auto-create, or bind by hand: wrangler secret put ${resource.keyIdBinding} / wrangler secret put ${resource.apiTokenBinding}.`;
 
 /**
  * One Cloudflare REST call. Resolves the envelope's `result`; THROWS a per-step branded error
@@ -154,6 +163,42 @@ async function verifyMint(url: string, fetchImpl: typeof fetch): Promise<boolean
   }
 }
 
+/** Cloudflare Realtime TURN credential-mint root — the key's own token authorizes these calls. */
+const RTC_TURN_BASE = "https://rtc.live.cloudflare.com/v1/turn/keys";
+
+/**
+ * Validate a TURN key pair by ACTUALLY MINTING a short-lived credential with it — the ground-truth
+ * check that needs no Cloudflare account API at all (the key's own token authorizes itself).
+ *
+ * @param keyId - The TURN key id.
+ * @param apiToken - The TURN key's API token.
+ * @param fetchImpl - Injectable fetch.
+ * @returns `true` (mints), `false` (rejected — bad pair or deleted key), `null` (network — unverifiable).
+ * @example
+ * ```ts
+ * const ok = await verifyKeyPair(envKeyId, envApiToken, fetch);
+ * ```
+ */
+async function verifyKeyPair(
+  keyId: string,
+  apiToken: string,
+  fetchImpl: typeof fetch
+): Promise<boolean | null> {
+  try {
+    const response = await fetchImpl(`${RTC_TURN_BASE}/${keyId}/credentials/generate`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ttl: 300 }),
+      signal: AbortSignal.timeout(5000)
+    });
+    if (response.ok) return true;
+    // A definite rejection (401/403/404) means the pair is unusable; 5xx stays unverifiable.
+    return response.status < 500 ? false : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Preflight read for the plan: the worker's bound secret names, the account's TURN keys by name
  * (best-effort — stale-key cleanup + teardown ids only), and the live functional mint check of the
@@ -164,6 +209,9 @@ async function verifyMint(url: string, fetchImpl: typeof fetch): Promise<boolean
  * @param deps - Account/token/fetch bundle.
  * @param scriptName - The stage-qualified worker script name.
  * @param verifyPath - The credential-endpoint path to functionally verify; `false` disables.
+ * @param envPair - The .env.local escape-hatch pair to validate by a real mint, when set.
+ * @param envPair.keyId - The env pair's key id.
+ * @param envPair.apiToken - The env pair's key API token.
  * @returns The turn-relevant existing state.
  * @example
  * ```ts
@@ -173,7 +221,8 @@ async function verifyMint(url: string, fetchImpl: typeof fetch): Promise<boolean
 export async function fetchTurnExisting(
   deps: TurnRestDeps,
   scriptName: string,
-  verifyPath: string | false
+  verifyPath: string | false,
+  envPair?: { keyId: string; apiToken: string }
 ): Promise<TurnExisting> {
   // The worker's secret names — the ground truth for "provisioned". 404 = script not deployed yet.
   let workerSecrets: Set<string> | null = null;
@@ -233,7 +282,16 @@ export async function fetchTurnExisting(
     }
   }
 
-  return { workerSecrets, keysByName, keysListable, mintOk };
+  // The escape-hatch pair from the deploy env — validated by a real mint (its own confirmation).
+  let envKey: TurnExisting["envKey"];
+  if (envPair !== undefined) {
+    envKey = {
+      ...envPair,
+      mintOk: await verifyKeyPair(envPair.keyId, envPair.apiToken, deps.fetchImpl ?? fetch)
+    };
+  }
+
+  return { workerSecrets, keysByName, keysListable, mintOk, ...(envKey ? { envKey } : {}) };
 }
 
 /**
@@ -264,14 +322,23 @@ export function turnExists(resource: TurnManifest, existing: TurnExisting): bool
   // deploy converges regardless of what the name listing says.
   if (existing.mintOk === false) return false;
 
+  // ESCAPE-HATCH mode (env pair supplied): the deployed endpoint's live mint is the whole truth —
+  // it works → exists; unverifiable/unbound → missing, and the env pair re-binds (no Calls API).
+  if (existing.envKey !== undefined) {
+    return secretsBound && existing.mintOk === true;
+  }
+
   if (!existing.keysListable) return secretsBound;
   return existing.keysByName.has(resource.name) && secretsBound;
 }
 
 /** What provisioning one TURN key yields: the key's uid + the secret values to bind post-deploy. */
 export type TurnProvisionOutcome = {
-  /** The created key's uid (also written into the plan ids for teardown). */
-  id: string;
+  /**
+   * The created key's uid (teardown attribution). ABSENT in escape-hatch mode — a user-managed
+   * `.env.local` key must never be deleted by teardown.
+   */
+  id?: string;
   /** Secret binding name → value, held IN MEMORY until the post-deploy bind (never in config). */
   secrets: Record<string, string>;
 };
@@ -298,6 +365,24 @@ export async function provisionTurn(
   existing: TurnExisting,
   deps: TurnRestDeps
 ): Promise<TurnProvisionOutcome> {
+  // ESCAPE-HATCH mode: adopt the .env.local pair — validated by its own mint at preflight — and
+  // hand it to the post-deploy bind. Touches NO Cloudflare account API (sidesteps the known
+  // Calls-scope 403). A pair that failed its mint is a hard, precise error → degraded warning.
+  if (existing.envKey !== undefined) {
+    if (existing.envKey.mintOk === false) {
+      throw new Error(
+        `[worker] env TURN credentials rejected — ${resource.keyIdBinding}/${resource.apiTokenBinding} in .env.local failed a live mint (typo, or the key was deleted)`
+      );
+    }
+    return {
+      // No uid on purpose: teardown must never delete a USER-MANAGED key.
+      secrets: {
+        [resource.keyIdBinding]: existing.envKey.keyId,
+        [resource.apiTokenBinding]: existing.envKey.apiToken
+      }
+    };
+  }
+
   // No token → nothing to create with; one clean step error (→ the degraded warning + instruction).
   if (deps.token === "") {
     throw new Error("[worker] create turn_keys → CLOUDFLARE_API_TOKEN is not set");

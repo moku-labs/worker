@@ -68,6 +68,10 @@ const checkExisting = (
  * @param turn.keysByName - Account TURN keys by name → uid (best-effort).
  * @param turn.keysListable - Whether the key listing succeeded (false → functional fallback).
  * @param turn.mintOk - Live mint check of the deployed endpoint (false = dead key → missing).
+ * @param turn.envKey - The .env.local escape-hatch pair, when set (mint-validated).
+ * @param turn.envKey.keyId - The env pair's key id.
+ * @param turn.envKey.apiToken - The env pair's key API token.
+ * @param turn.envKey.mintOk - The pair's own mint validation result.
  * @returns The exists/missing/ships buckets.
  * @example
  * ```ts
@@ -82,6 +86,7 @@ const partitionResources = (
     keysByName: Map<string, string>;
     keysListable: boolean;
     mintOk: boolean | null;
+    envKey?: { keyId: string; apiToken: string; mintOk: boolean | null };
   }
 ): { exists: ProvisionedRef[]; missing: ResourceManifest[]; ships: ResourceManifest[] } => {
   const exists: ProvisionedRef[] = [];
@@ -105,6 +110,9 @@ const partitionResources = (
       if (!turnExists(resource, turn)) return undefined;
       const id = turn.keysByName.get(resource.name);
       // Say exactly what was verified — never a bare "(exists)" for something nobody checked.
+      if (turn.envKey !== undefined) {
+        return { resource, note: "env key (.env.local) — mint verified live" };
+      }
       if (!turn.keysListable) {
         const note =
           turn.mintOk === true
@@ -172,6 +180,16 @@ export const planInfra = async (ctx: Ctx, manifest: ExternalManifest): Promise<I
   const turnResources = manifest.resources.filter(
     (resource): resource is Extract<ResourceManifest, { kind: "turn" }> => resource.kind === "turn"
   );
+  // Escape hatch: a TURN key pair in the deploy env (.env.local — the resource's binding names)
+  // becomes the provisioning SOURCE, validated by its own mint; no Cloudflare account API needed.
+  const first = turnResources[0];
+  const envKeyId = first ? ctx.env?.get(first.keyIdBinding) : undefined;
+  const envApiToken = first ? ctx.env?.get(first.apiTokenBinding) : undefined;
+  const envPair =
+    envKeyId !== undefined && envKeyId !== "" && envApiToken !== undefined && envApiToken !== ""
+      ? { keyId: envKeyId, apiToken: envApiToken }
+      : undefined;
+
   const turn =
     turnResources.length > 0
       ? await fetchTurnExisting(
@@ -179,7 +197,8 @@ export const planInfra = async (ctx: Ctx, manifest: ExternalManifest): Promise<I
           manifest.name,
           // One functional check per script — the first declared resource's path (the usual case
           // is exactly one turn resource).
-          turnResources[0]?.verifyPath ?? false
+          first?.verifyPath ?? false,
+          envPair
         )
       : /* eslint-disable unicorn/no-null -- TurnExisting fields are null-when-missing by contract */
         {

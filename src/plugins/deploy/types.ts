@@ -263,6 +263,11 @@ export type InfraPlan = {
      * deploy, verification disabled, endpoint absent, or network failure — never punished).
      */
     mintOk: boolean | null;
+    /**
+     * The escape-hatch source pair from the deploy env (`.env.local`), validated by its own mint —
+     * present only when both env vars are set. See the turn plugin README.
+     */
+    envKey?: { keyId: string; apiToken: string; mintOk: boolean | null };
   };
   /** Declared resources the account listing confirmed already exist (with captured ids where applicable). */
   exists: ProvisionedRef[];

@@ -16,6 +16,7 @@ import { durableObjectsPlugin } from "../durable-objects";
 import { kvPlugin } from "../kv";
 import { queuesPlugin } from "../queues";
 import { storagePlugin } from "../storage";
+import { turnPlugin } from "../turn";
 import { ensureEnvLocal } from "./auth/env-file";
 import { ciToken as deriveCiToken, requiredToken as deriveRequiredToken } from "./auth/permissions";
 import { renderAuthSetup } from "./auth/render";
@@ -40,6 +41,7 @@ import { promptLine } from "./prompt";
 import { destroyResource, provisionResource } from "./providers";
 import { detachQueueConsumer } from "./providers/queues";
 import { uploadDirToR2 } from "./providers/r2";
+import { ensureTurnKey, type TurnOutcome } from "./providers/turn";
 import { deleteWorker } from "./providers/worker";
 import { runWrangler, runWranglerInherit } from "./runner";
 import { parseMigrationsApplied, parseSeedStats, resolveD1, runConfiguredSeed } from "./seed";
@@ -83,7 +85,8 @@ const assembleManifest = (ctx: Ctx, stage: string): ExternalManifest => {
     ctx.has("kv") ? ctx.require(kvPlugin).deployManifest() : [],
     ctx.has("d1") ? ctx.require(d1Plugin).deployManifest() : [],
     ctx.has("queues") ? ctx.require(queuesPlugin).deployManifest() : [],
-    ctx.has("durableObjects") ? ctx.require(durableObjectsPlugin).deployManifest() : []
+    ctx.has("durableObjects") ? ctx.require(durableObjectsPlugin).deployManifest() : [],
+    ctx.has("turn") ? ctx.require(turnPlugin).deployManifest() : []
   ].flat();
 
   return {
@@ -216,6 +219,7 @@ const aborted = (ctx: Ctx, stage: string, startedAt: number): DeployReport => {
     stage,
     migration: "skipped",
     seed: "skipped",
+    turn: "skipped",
     elapsedMs: Date.now() - startedAt,
     errors: []
   };
@@ -283,17 +287,18 @@ const guidedTokenSetup = async (
  *
  * @param ctx - The deploy plugin context.
  * @param deps - Interactivity + the confirm prompt.
- * @returns True when the token verified; false when the user must set it up and re-run.
+ * @returns The verified auth status (the run threads its `accountId` into the post-deploy steps);
+ *   false when the user must set the token up and re-run.
  * @throws {Error} Re-throws the branded auth error in CI / non-interactive runs.
  * @example
  * ```ts
- * if (!(await guidedAuth(ctx, { interactive, confirm }))) return;
+ * const auth = await guidedAuth(ctx, { interactive, confirm });
+ * if (auth === false) return;
  * ```
  */
-const guidedAuth = async (ctx: Ctx, deps: GuidedDeps): Promise<boolean> => {
+const guidedAuth = async (ctx: Ctx, deps: GuidedDeps): Promise<AuthStatus | false> => {
   try {
-    await runVerifyAuth(ctx);
-    return true;
+    return await runVerifyAuth(ctx);
   } catch (error) {
     // CI / non-TTY: no human to guide — keep the fail-fast contract.
     if (!deps.interactive) throw error;
@@ -554,8 +559,10 @@ const applyRemoteMigrations = async (ctx: Ctx): Promise<MigrationOutcome[]> => {
   return outcomes;
 };
 
-/** The migration + seed outcome of the post-deploy stage, folded into the {@link DeployReport}. */
+/** The turn + migration + seed outcome of the post-deploy stage, folded into the {@link DeployReport}. */
 type PostDeploy = {
+  /** TURN-key provisioning outcome (manifest-driven; "skipped" when no turn resource is declared). */
+  turn: DeployReport["turn"];
   /** Remote D1 migration outcome. */
   migration: DeployReport["migration"];
   /** Remote seed outcome. */
@@ -590,28 +597,91 @@ const captureFailure = (
 };
 
 /**
+ * Ensure every declared `turn` resource on the just-deployed worker — the manifest-driven TURN
+ * phase of the post-deploy stage. Runs here (not in the provision phase) because worker secrets can
+ * only bind to an EXISTING script. Deliberately fail-open, unlike the other resource kinds: the
+ * per-resource adapter never throws — an impediment prints one instruction line and degrades the
+ * outcome, never the deploy (the consumer's ICE ladder falls back to STUN).
+ *
+ * @param ctx - The deploy plugin context (env token).
+ * @param manifest - The assembled manifest (its `turn` resources + the stage-qualified worker name).
+ * @param accountId - The Cloudflare account id the auth preflight resolved.
+ * @param ui - The branded console the outcome lines render through.
+ * @returns The aggregate outcome ("skipped" when no turn resource is declared; the worst otherwise).
+ * @example
+ * ```ts
+ * const turn = await ensureTurnResources(ctx, manifest, auth.accountId, ui);
+ * ```
+ */
+const ensureTurnResources = async (
+  ctx: Ctx,
+  manifest: ExternalManifest,
+  accountId: string,
+  ui: ReturnType<typeof createBrandConsole>
+): Promise<DeployReport["turn"]> => {
+  const turns = manifest.resources.filter(
+    (resource): resource is Extract<ResourceManifest, { kind: "turn" }> => resource.kind === "turn"
+  );
+  if (turns.length === 0) return "skipped";
+
+  const apiToken = ctx.env.get("CLOUDFLARE_API_TOKEN");
+  /**
+   * The branded info line the ensure reports through.
+   *
+   * @param message - The line to render.
+   * @example
+   * ```ts
+   * note('TURN key "app-turn" provisioned.');
+   * ```
+   */
+  const note = (message: string): void => {
+    ui.info(message);
+  };
+
+  const outcomes: TurnOutcome[] = [];
+  for (const resource of turns) {
+    ctx.emit("deploy:phase", { phase: "turn", detail: resource.name });
+    outcomes.push(
+      await ensureTurnKey(resource, { accountId, scriptName: manifest.name, apiToken, note })
+    );
+  }
+
+  // Aggregate: any degraded resource marks the whole phase degraded; else provisioned beats exists.
+  if (outcomes.includes("degraded")) return "degraded";
+  return outcomes.includes("provisioned") ? "provisioned" : "exists";
+};
+
+/**
  * Run the post-deploy remote steps — REACHED ONLY ON A SUCCESSFUL DEPLOY (every gate in `run` returns
- * early before here), so a deploy that never happened never touches a remote DB. Applies remote D1
+ * early before here), so a deploy that never happened never touches a remote DB. First ensures the
+ * manifest's `turn` resources (fail-open — never errors the report), then applies remote D1
  * migrations (when requested), then loads the configured seed (when requested) — but skips the seed
- * if the migration it depends on failed. Each step's failure is RENDERED inline and CAPTURED in
+ * if the migration it depends on failed. A migration/seed failure is RENDERED inline and CAPTURED in
  * `errors` (never thrown), so one failed step still yields a complete, honest report.
  *
  * @param ctx - The deploy plugin context.
  * @param want - Which post-steps the caller requested.
  * @param want.migration - Whether to apply pending remote D1 migrations.
  * @param want.seed - Whether to load the configured remote seed (and reset its KV keys).
- * @returns The migration + seed outcomes and any captured branded errors.
+ * @param manifest - The assembled manifest (turn resources + the stage-qualified worker name).
+ * @param accountId - The Cloudflare account id the auth preflight resolved.
+ * @returns The turn + migration + seed outcomes and any captured branded errors.
  * @example
  * ```ts
- * const post = await runPostDeploy(ctx, { migration: true, seed: true });
+ * const post = await runPostDeploy(ctx, { migration: true, seed: true }, manifest, auth.accountId);
  * ```
  */
 const runPostDeploy = async (
   ctx: Ctx,
-  want: { migration: boolean; seed: boolean }
+  want: { migration: boolean; seed: boolean },
+  manifest: ExternalManifest,
+  accountId: string
 ): Promise<PostDeploy> => {
   const ui = createBrandConsole();
   const errors: string[] = [];
+
+  // TURN keys first (manifest-driven, fail-open), then migration + seed.
+  const turn = await ensureTurnResources(ctx, manifest, accountId, ui);
 
   // Apply remote migrations first — the seed below depends on the schema they create. Wrangler's raw
   // migration TUI is captured (hidden); the branded panel reports exactly what applied.
@@ -661,7 +731,7 @@ const runPostDeploy = async (
     }
   }
 
-  return { migration, seed, errors };
+  return { turn, migration, seed, errors };
 };
 
 /**
@@ -851,9 +921,11 @@ export const createDeployApi = (ctx: Ctx) => ({
     const startedAt = Date.now();
 
     // Auth preflight — verify the .env token up front. A missing/invalid token is guided (offer the
-    // `.env.local` scaffold, then point at the re-run), not a silent stack trace.
+    // `.env.local` scaffold, then point at the re-run), not a silent stack trace. The verified
+    // status is kept: its accountId is threaded into the registered post-deploy steps.
     ctx.emit("deploy:phase", { phase: "auth" });
-    if (!(await guidedAuth(ctx, deps))) return aborted(ctx, stage, startedAt);
+    const auth = await guidedAuth(ctx, deps);
+    if (auth === false) return aborted(ctx, stage, startedAt);
 
     // Build the web site first (when a hook is wired in from the consumer's script).
     const webBuild = opts?.webBuild ?? ctx.config.webBuild;
@@ -902,12 +974,15 @@ export const createDeployApi = (ctx: Ctx) => ({
     });
 
     // Post-deploy remote steps — REACHED ONLY HERE, after a live deploy (every gate above returns
-    // early). Migration + seed run against the remote DB and fold any failure into the report rather
-    // than throwing, so the report is complete whether they ran, were skipped, or failed.
-    const post = await runPostDeploy(ctx, {
-      migration: opts?.migration === true,
-      seed: opts?.seed === true
-    });
+    // early). The manifest's turn resources (fail-open), then migration + seed, run against the live
+    // worker/remote DB and fold any failure into the report rather than throwing, so the report is
+    // complete whether they ran, were skipped, or failed.
+    const post = await runPostDeploy(
+      ctx,
+      { migration: opts?.migration === true, seed: opts?.seed === true },
+      manifest,
+      auth.accountId
+    );
 
     return {
       ok: post.errors.length === 0,
@@ -917,6 +992,7 @@ export const createDeployApi = (ctx: Ctx) => ({
       resources,
       migration: post.migration,
       seed: post.seed,
+      turn: post.turn,
       elapsedMs: Date.now() - startedAt,
       errors: post.errors
     };
@@ -992,6 +1068,7 @@ export const createDeployApi = (ctx: Ctx) => ({
         stage,
         migration: "skipped",
         seed: "skipped",
+        turn: "skipped",
         elapsedMs: Date.now() - startedAt,
         errors: []
       };
@@ -1023,6 +1100,7 @@ export const createDeployApi = (ctx: Ctx) => ({
       stage,
       migration: "skipped",
       seed: "skipped",
+      turn: "skipped",
       elapsedMs: Date.now() - startedAt,
       errors: failed.map(failure => failure.error)
     };

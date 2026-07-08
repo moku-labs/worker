@@ -147,4 +147,28 @@ describe("planInfra", () => {
 
     expect(listExisting).toHaveBeenCalledWith("test-token", "acc-123", new Set(["kv", "d1"]));
   });
+
+  it("excludes turn resources from the plan entirely (never listed, never in any bucket)", async () => {
+    vi.mocked(listExisting).mockResolvedValue(emptyExisting());
+
+    const plan = await planInfra(
+      makeCtx("acc-123"),
+      manifest([
+        { kind: "kv", name: "cache", binding: "KV" },
+        {
+          kind: "turn",
+          name: "app-turn",
+          keyIdBinding: "TURN_KEY_ID",
+          apiTokenBinding: "TURN_KEY_API_TOKEN"
+        }
+      ])
+    );
+
+    // TURN keys are ensured in the built-in post-deploy phase — the account listing can't judge
+    // them (the key secret is unrecoverable), so the plan neither lists nor provisions them.
+    expect(listExisting).toHaveBeenCalledWith("test-token", "acc-123", new Set(["kv"]));
+    expect(plan.missing).toEqual([{ kind: "kv", name: "cache", binding: "KV" }]);
+    expect(plan.exists).toEqual([]);
+    expect(plan.ships).toEqual([]);
+  });
 });

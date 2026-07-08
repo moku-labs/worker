@@ -175,7 +175,8 @@ export type ResourceManifest =
   | { kind: "kv"; name: string; binding: string }
   | { kind: "d1"; name: string; binding: string; migrations?: string }
   | { kind: "queue"; name: string; binding: string; consumer?: boolean; maxBatchTimeout?: number }
-  | { kind: "do"; binding: string; className: string };
+  | { kind: "do"; binding: string; className: string }
+  | { kind: "turn"; name: string; keyIdBinding: string; apiTokenBinding: string };
 
 /**
  * The whole deploy manifest the pipeline consumes (assembled, or caller-supplied for the
@@ -291,6 +292,13 @@ export type DeployReport = {
   migration: "skipped" | "applied" | "failed";
   /** Remote seed outcome — "skipped" (not requested), "applied", or "failed". */
   seed: "skipped" | "applied" | "failed";
+  /**
+   * TURN-key provisioning outcome (only when a `turn` resource is declared): "skipped" (none
+   * declared), "exists" (both secrets already bound — idempotent no-op), "provisioned" (key created
+   * + secrets bound this run), or "degraded" (could not provision — an instruction line was printed
+   * and the deploy continued; the app's ICE ladder falls back to STUN).
+   */
+  turn: "skipped" | "exists" | "provisioned" | "degraded";
   /** Wall-clock duration of the whole run (ms). */
   elapsedMs: number;
   /** Branded failure message(s) — empty when `ok`; one per failed step otherwise. */

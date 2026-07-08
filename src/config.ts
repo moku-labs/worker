@@ -20,9 +20,9 @@ export type WorkerEvents = {
   "request:end": { method: string; path: string; status: number; ms: number };
   "deploy:phase": { phase: string; detail?: string };
   "deploy:complete": { url: string };
-  "provision:resource": { kind: "kv" | "r2" | "d1" | "queue" | "do"; name: string };
+  "provision:resource": { kind: "kv" | "r2" | "d1" | "queue" | "do" | "turn"; name: string };
   "provision:plan": { exists: number; missing: number; ships: number; account: string };
-  "provision:skip": { kind: "kv" | "r2" | "d1" | "queue" | "do"; name: string };
+  "provision:skip": { kind: "kv" | "r2" | "d1" | "queue" | "do" | "turn"; name: string };
   "auth:verified": { account: string; accountId: string; scopes: string[] };
   "dev:phase": { phase: string; detail?: string };
   "dev:rebuilt": { files: number; ms: number };

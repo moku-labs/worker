@@ -10,8 +10,13 @@ import type { Ctx, ExternalManifest, InfraPlan, ProvisionedRef, ResourceManifest
 import type { ExistingResources, ListableKind } from "./cloudflare";
 import { listExisting, resolveAccount } from "./cloudflare";
 
-/** A provisionable resource — every kind EXCEPT a Durable Object, which ships with the Worker. */
-type ProvisionableManifest = Exclude<ResourceManifest, { kind: "do" }>;
+/**
+ * A provisionable resource — every kind EXCEPT a Durable Object (ships with the Worker) and a TURN
+ * key (worker-scoped secrets, ensured in the built-in post-deploy phase — a script must exist
+ * before its secrets can bind, and the key secret is unrecoverable after creation, so the account
+ * listing cannot judge its real state).
+ */
+type ProvisionableManifest = Exclude<ResourceManifest, { kind: "do" | "turn" }>;
 
 /**
  * Decide whether a single API-provisioned resource already exists in the account, recovering its id
@@ -71,20 +76,23 @@ export const planInfra = async (ctx: Ctx, manifest: ExternalManifest): Promise<I
     ? { id: pinnedAccountId, name: pinnedAccountId }
     : await resolveAccount(token);
 
-  // Query only the kinds the app declares (DO is never listed — it ships with the script), so the
-  // token needs read permission on just those kinds.
+  // Query only the kinds the app declares (DO is never listed — it ships with the script; TURN is
+  // never listed — ensured post-deploy against the worker's own secrets), so the token needs read
+  // permission on just those kinds.
   const kinds = new Set<ListableKind>();
   for (const resource of manifest.resources) {
-    if (resource.kind !== "do") kinds.add(resource.kind);
+    if (resource.kind !== "do" && resource.kind !== "turn") kinds.add(resource.kind);
   }
   const existing = await listExisting(token, account.id, kinds);
 
-  // Partition the declared resources: DOs ship with the Worker; the rest are already-existing vs
-  // still-missing per the account listing.
+  // Partition the declared resources: TURN keys are ensured in the built-in post-deploy phase
+  // (excluded from the plan entirely — see ProvisionableManifest); DOs ship with the Worker; the
+  // rest are already-existing vs still-missing per the account listing.
+  const planned = manifest.resources.filter(resource => resource.kind !== "turn");
   const exists: ProvisionedRef[] = [];
   const missing: ResourceManifest[] = [];
   const ships: ResourceManifest[] = [];
-  for (const resource of manifest.resources) {
+  for (const resource of planned) {
     if (resource.kind === "do") {
       ships.push(resource);
       continue;

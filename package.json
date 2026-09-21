@@ -52,8 +52,8 @@
     "release": "moku-release"
   },
   "dependencies": {
-    "@moku-labs/common": "0.3.0",
-    "@moku-labs/core": "1.5.0"
+    "@moku-labs/common": "0.3.2",
+    "@moku-labs/core": "1.6.0"
   },
   "peerDependencies": {
     "wrangler": ">=3"

@@ -27,7 +27,11 @@
       }
     }
   },
-  "files": ["dist", "LICENSE", "README.md"],
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "sideEffects": false,
   "publishConfig": {
     "access": "public"
@@ -51,11 +55,9 @@
     "release:doctor": "moku-release doctor",
     "release": "moku-release"
   },
-  "dependencies": {
-    "@moku-labs/common": "0.3.2",
-    "@moku-labs/core": "1.6.0"
-  },
   "peerDependencies": {
+    "@moku-labs/common": "^0.3.4",
+    "@moku-labs/core": "^1.7.1",
     "wrangler": ">=3"
   },
   "peerDependenciesMeta": {
@@ -69,6 +71,8 @@
     "@biomejs/biome": "2.4.16",
     "@cloudflare/workers-types": "4.20260617.1",
     "@moku-labs/ci": "1.2.6",
+    "@moku-labs/common": "0.3.4",
+    "@moku-labs/core": "1.7.1",
     "@types/bun": "1.3.14",
     "@vitest/coverage-istanbul": "4.0.18",
     "eslint": "9.39.3",

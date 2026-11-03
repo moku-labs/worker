@@ -15,7 +15,7 @@
  * - `config` — `Partial<WorkerConfig>`; defaults `{ stage: "production", name: "worker", compatibilityDate: "" }`.
  *   `config.stage` is the single stage source, read off `ctx.global.stage`; `deploy`/`cli` use it to
  *   suffix resource names (`production` = bare). There is no stage plugin.
- * - `pluginConfigs` — per-plugin config overrides keyed by plugin name (e.g. `server.endpoints`, `bindings.required`); default `{}`.
+ * - `pluginConfigs` — per-plugin config overrides keyed by plugin name (e.g. `server.endpoints`, `deploy.configFile`); default `{}`.
  * - `plugins` — extra `PluginInstance[]` appended to the defaults; default `[]`. Do NOT re-list a default plugin.
  * - `onReady` — optional `(app) => void`, runs after every plugin's `onInit`.
  * - `onError` — optional `(error) => void` boot/lifecycle error handler.

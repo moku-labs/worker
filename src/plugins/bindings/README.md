@@ -36,17 +36,7 @@ const ok = app.bindings.has(env, "DB"); // false if DB is absent
 
 ## Configuration
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `required` | `string[]` | `[]` | Binding names downstream plugins assert are present. Read-only after `createApp`. |
-
-```typescript
-createApp({
-  pluginConfigs: {
-    bindings: { required: ["MY_KV", "DB"] }
-  }
-});
-```
+None. To require a binding, call `require` where you need it: it throws when the binding is missing.
 
 ## Usage in downstream binding plugins
 

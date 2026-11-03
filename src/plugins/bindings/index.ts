@@ -18,7 +18,7 @@ import type { Config } from "./types";
 export type { BindingsApi, Config, Context } from "./types";
 
 /** Typed config default — no inline `as` cast (R6 / spec/11 §Part 2). */
-const defaultConfig: Config = { required: [] };
+const defaultConfig: Config = {};
 
 /**
  * Standard-tier stateless resolver — the binding-family dependency root.

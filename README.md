@@ -169,14 +169,13 @@ import { createApp, kvPlugin } from "@moku-labs/worker";
 const app = createApp({
   plugins: [kvPlugin], // append only what you add
   pluginConfigs: {
-    bindings: { required: ["MY_KV"] }, // fail fast if the binding is missing
     kv: { cache: { name: "my-cache", binding: "MY_KV" } } // keyed map; single entry = default
   }
 });
 ```
 
 > [!IMPORTANT]
-> The final plugin list is `[…frameworkDefaults, …yourPlugins]`. Defaults are `[log, env, bindings, server]`, registered first; your `plugins` append after. **Do not re-list a default** — re-listing collides on name and throws `TypeError: [worker] Duplicate plugin name: "bindings"` at init. `pluginConfigs` is keyed by name, so you can still configure a default (e.g. `bindings.required`) without listing it.
+> The final plugin list is `[…frameworkDefaults, …yourPlugins]`. Defaults are `[log, env, bindings, server]`, registered first; your `plugins` append after. **Do not re-list a default** — re-listing collides on name and throws `TypeError: [worker] Duplicate plugin name: "bindings"` at init. `pluginConfigs` is keyed by name, so you can still configure a default (e.g. `server.endpoints`) without listing it.
 
 ## Runtime vs. node-only
 
@@ -200,7 +199,7 @@ The global `WorkerConfig`, passed as `createApp({ config })` — flat, with comp
 | `stage` | `"production" \| "development" \| "test"` | `"production"` | Production-safe default. Read via `ctx.global.stage`; `deploy`/`cli` use it to suffix resource names (`production` = bare). |
 | `compatibilityDate` | `string` | `""` | Cloudflare compatibility date; `deploy` uses it as `compatibility_date`. |
 
-Per-plugin config goes under `pluginConfigs.<name>` (e.g. `server.endpoints`, `kv.binding`, `bindings.required`, `deploy.configFile`). Every config is flat with complete defaults — overriding one key never drops siblings — and **frozen** after `createApp`. Each field is documented in that plugin's README, linked in the [Plugins](#plugins) table.
+Per-plugin config goes under `pluginConfigs.<name>` (e.g. `server.endpoints`, `kv.cache`, `deploy.configFile`). Every config is flat with complete defaults — overriding one key never drops siblings — and **frozen** after `createApp`. Each field is documented in that plugin's README, linked in the [Plugins](#plugins) table.
 
 ## Events
 

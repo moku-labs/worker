@@ -4,16 +4,8 @@
 import type { PluginCtx } from "@moku-labs/core";
 import type { WorkerEnv as WorkerEnvironment, WorkerEvents } from "../../config";
 
-/**
- * bindings config. Flat (spec/05 §3,§6) — a complete default so omission
- * never yields undefined.
- *
- * @example
- * ```typescript
- * { required: ["MY_KV", "DB"] }
- * ```
- */
-export type Config = { required: string[] };
+/** bindings config: none. The plugin is a pure resolver over the `env` of each call. */
+export type Config = Record<string, never>;
 
 /**
  * The app.bindings surface — a stateless resolver over a request-supplied env.

@@ -31,19 +31,14 @@ const testCoreConfig = createCoreConfig<WorkerConfig, WorkerEvents>("worker", {
 /**
  * Builds a minimal test app that includes only the bindings plugin.
  *
- * @param requiredBindings - Binding names to assert via config.required.
  * @returns A created app instance.
  */
-const createTestApp = (requiredBindings: string[] = []) => {
+const createTestApp = () => {
   const { createApp } = testCoreConfig.createCore(testCoreConfig, {
     plugins: [bindingsPlugin]
   });
 
-  return createApp({
-    pluginConfigs: {
-      bindings: { required: requiredBindings }
-    }
-  });
+  return createApp();
 };
 
 // ---------------------------------------------------------------------------
@@ -59,7 +54,7 @@ describe("bindings plugin (integration)", () => {
     });
 
     it("app.bindings.require returns the bound value from a stub env", () => {
-      const app = createTestApp(["DB"]);
+      const app = createTestApp();
       const stubEnv = { DB: { prepare: () => undefined } };
 
       const result = app.bindings.require<{ prepare: () => undefined }>(stubEnv, "DB");
@@ -68,7 +63,7 @@ describe("bindings plugin (integration)", () => {
     });
 
     it("app.bindings.has returns true for a present key", () => {
-      const app = createTestApp(["DB"]);
+      const app = createTestApp();
       const stubEnv = { DB: {} };
 
       expect(app.bindings.has(stubEnv, "DB")).toBe(true);
